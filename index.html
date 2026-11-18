@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mapa para camiones</title>
+  <meta name="description" content="Por dónde no pasa un camión: pasos bajos, límites de peso, calles prohibidas y sin salida.">
+  <meta name="theme-color" content="#1f2a36">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="css/estilos.css">
+</head>
+<body>
+  <header class="barra">
+    <div class="titulo">Mapa para camiones</div>
+    <button id="btn-camion" class="boton boton-camion" type="button" aria-controls="ventana-camion">
+      <span class="camion-etiqueta">Mi camión</span>
+      <span id="camion-resumen" class="camion-resumen">Cargar medidas</span>
+    </button>
+    <button id="btn-capas" class="boton" type="button" aria-controls="panel-capas" aria-expanded="false">Capas</button>
+  </header>
+
+  <main id="mapa" aria-label="Mapa"></main>
+
+  <section id="panel-capas" class="panel" hidden aria-label="Capas del mapa">
+    <div class="panel-cabecera">
+      <strong>Qué mostrar</strong>
+      <button id="cerrar-capas" class="boton-x" type="button" aria-label="Cerrar">×</button>
+    </div>
+    <ul id="lista-capas" class="lista-capas"></ul>
+    <p id="nota-datos" class="panel-nota"></p>
+  </section>
+
+  <div id="ventana-camion" class="ventana-fondo" hidden>
+    <form id="form-camion" class="ventana" novalidate role="dialog" aria-modal="true" aria-labelledby="titulo-camion">
+      <h2 id="titulo-camion">Medidas de tu camión</h2>
+      <p class="ventana-ayuda">Con estas medidas el mapa te marca en rojo por dónde no pasás.
+        Se guardan en este teléfono; las podés cambiar cuando quieras con el botón "Mi camión".</p>
+
+      <label class="campo" for="c-altura">Altura total, con la carga (metros)</label>
+      <input id="c-altura" name="altura" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 4,10">
+      <div id="e-altura" class="campo-error" aria-live="polite"></div>
+
+      <label class="campo" for="c-peso">Peso total, con la carga (toneladas)</label>
+      <input id="c-peso" name="peso" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 45">
+      <div id="e-peso" class="campo-error" aria-live="polite"></div>
+
+      <label class="campo" for="c-largo">Largo total (metros)</label>
+      <input id="c-largo" name="largo" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 18,60">
+      <div id="e-largo" class="campo-error" aria-live="polite"></div>
+
+      <div class="ventana-botones">
+        <button id="cancelar-camion" class="boton boton-secundario" type="button">Cancelar</button>
+        <button class="boton boton-principal" type="submit">Guardar</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="mensaje" class="mensaje" role="status" hidden></div>
+
+  <footer class="pie">
+    <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© Colaboradores de OpenStreetMap</a>
+    <span>Información de referencia. Puede estar incompleta. Respetá siempre la señalización.</span>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="js/mapa.js"></script>
+</body>
+</html>

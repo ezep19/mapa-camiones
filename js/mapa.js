@@ -229,6 +229,7 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
     armarPanel();
     armarPanelLugares();
     ocultarMensaje();
+    revisarAvisoZona();
   })
   .catch(function (e) {
     console.error(e);
@@ -536,7 +537,15 @@ function armarPanel() {
     lista.appendChild(li);
   });
   var fechas = zonasCargadas.map(function (z) { return z.zona.titulo + ': ' + fecha(z.zona.actualizado); });
-  document.getElementById('nota-datos').textContent = 'Datos actualizados — ' + fechas.join(' · ');
+  var nota = document.getElementById('nota-datos');
+  nota.textContent = 'Datos actualizados — ' + fechas.join(' · ');
+  zonasCargadas.forEach(function (z) {
+    if (!z.zona.aviso) return;
+    var p = document.createElement('span');
+    p.className = 'nota-aviso';
+    p.textContent = '⚠ ' + z.zona.aviso;
+    nota.appendChild(p);
+  });
   armarBotonesZonas();
 }
 
@@ -558,7 +567,9 @@ function armarBotonesZonas() {
     b.textContent = z.zona.titulo;
     b.addEventListener('click', function () {
       abrirPanel(false);
-      mapa.fitBounds(z.zona.limites);
+      var ir = z.zona.ir_a;
+      if (ir && ir.centro) mapa.setView(ir.centro, ir.zoom || 13);
+      else mapa.fitBounds(z.zona.limites);
     });
     caja.appendChild(b);
   });
@@ -569,7 +580,27 @@ function armarBotonesZonas() {
 mapa.on('moveend', function () {
   var c = mapa.getCenter();
   guardar(CLAVE_VISTA, { lat: +c.lat.toFixed(5), lng: +c.lng.toFixed(5), zoom: mapa.getZoom() });
+  revisarAvisoZona();
 });
+
+// Aviso especial de una zona (ej.: Mar del Plata casi no tiene restricciones cargadas).
+// Se muestra una vez cada vez que se abre la página, al mirar esa zona.
+var avisosMostrados = {};
+function revisarAvisoZona() {
+  var c = mapa.getCenter();
+  zonasCargadas.forEach(function (z) {
+    var lim = z.zona.limites;
+    if (!z.zona.aviso || !lim || avisosMostrados[z.zona.id]) return;
+    if (c.lat < lim[0][0] || c.lat > lim[1][0] || c.lng < lim[0][1] || c.lng > lim[1][1]) return;
+    avisosMostrados[z.zona.id] = true;
+    mostrarMensaje('⚠ ' + z.zona.aviso + ' (tocá para cerrar)');
+    setTimeout(function () {
+      var m = document.getElementById('mensaje');
+      if (m.textContent.indexOf(z.zona.aviso) !== -1) ocultarMensaje();
+    }, 15000);
+  });
+}
+document.getElementById('mensaje').addEventListener('click', ocultarMensaje);
 
 var botonCapas = document.getElementById('btn-capas');
 var panel = document.getElementById('panel-capas');

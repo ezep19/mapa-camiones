@@ -114,6 +114,29 @@ body {
   color: var(--texto-suave);
 }
 
+/* Botones para saltar a cada zona descargada */
+.ir-zonas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid var(--borde);
+}
+.ir-zonas[hidden] { display: none; }
+.ir-zonas-titulo { font-size: 0.9rem; color: var(--texto-suave); width: 100%; }
+.boton-zona {
+  min-height: var(--tocable);
+  padding: 0 14px;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  background: var(--fondo);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.boton-zona:active { background: var(--borde); }
+
 .lista-capas { list-style: none; margin: 0; padding: 0; }
 .lista-capas label {
   display: flex;
@@ -143,6 +166,49 @@ body {
 }
 
 .panel-nota { margin: 10px 0 0; font-size: 0.85rem; color: var(--texto-suave); }
+
+/* ===== Lugares útiles ===== */
+.panel-subtitulo {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 2px solid var(--borde);
+  font-weight: 700;
+}
+.panel-subtitulo[hidden], .lista-capas[hidden] { display: none; }
+.panel-subtitulo small { font-weight: 400; color: var(--texto-suave); }
+.muestra-lugar { flex: none; width: 30px; text-align: center; font-size: 1.3rem; line-height: 1; }
+
+.lugar-marca { background: none; border: 0; }
+.lugar-icono {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 2px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #1565c0;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.cartel-linea { margin-top: 4px; }
+.cartel-linea.apto { color: #1b5e20; font-weight: 600; }
+.cartel-linea.no-apto { color: #b71c1c; font-weight: 600; }
+.leaflet-popup-content a.cartel-boton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  margin-top: 10px;
+  border-radius: 10px;
+  background: #1565c0;
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+}
 
 /* ===== Cartel al tocar una restricción ===== */
 .leaflet-popup-content { margin: 12px 14px; font-size: 0.95rem; line-height: 1.35; min-width: 200px; }

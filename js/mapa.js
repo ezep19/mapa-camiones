@@ -34,6 +34,20 @@ var COLORES = {
   sin_dato: '#f2b705',  // amarillo: no hay dato, verificar
   aviso: '#7b3fa0'      // violeta: calle sin salida
 };
+// Lugares útiles (los baja scripts/descargar_lugares.py). Se ven solo de cerca.
+var LUGARES = [
+  { id: 'gomeria',         nombre: 'Gomerías', uno: 'Gomería',                        icono: '🛞' },
+  { id: 'taller',          nombre: 'Talleres para camiones', uno: 'Taller para camiones',          icono: '🔧' },
+  { id: 'combustible',     nombre: 'Estaciones de servicio', uno: 'Estación de servicio',          icono: '⛽' },
+  { id: 'parador',         nombre: 'Paradores', uno: 'Parador',                       icono: '🍴' },
+  { id: 'estacionamiento', nombre: 'Estacionamiento para camiones', uno: 'Estacionamiento para camiones',   icono: '🅿️' },
+  { id: 'ducha',           nombre: 'Duchas', uno: 'Duchas',                          icono: '🚿' },
+  { id: 'balanza',         nombre: 'Balanzas', uno: 'Balanza',                        icono: '⚖️' }
+];
+var LUGAR_POR_ID = {};
+LUGARES.forEach(function (l) { LUGAR_POR_ID[l.id] = l; });
+var ZOOM_LUGARES = 13;   // más lejos que esto no se muestran (taparían todo)
+
 // Qué medida del camión se compara con cada capa
 var MEDIDA_DE_CAPA = { altura: 'altura', peso: 'peso', largo: 'largo' };
 // Rangos aceptados en el formulario (los mismos que usa el script de descarga)
@@ -47,11 +61,17 @@ var CENTRO_INICIAL = [-34.6118, -58.4173];   // Ciudad de Buenos Aires
 var ZOOM_INICIAL = 12;
 var CLAVE_CAPAS = 'mapa-camiones:capas-apagadas';
 var CLAVE_CAMION = 'mapa-camiones:camion';
+var CLAVE_VISTA = 'mapa-camiones:vista';   // dónde estaba mirando el mapa la última vez
+var CLAVE_LUGARES = 'mapa-camiones:lugares-prendidos';
 
 // ===== 2. Mapa base =====
+// Abre donde quedó la última vez; si es la primera vez, en Buenos Aires
+var vista = leerGuardado(CLAVE_VISTA);
+if (!vista || typeof vista.lat !== 'number' || typeof vista.lng !== 'number' ||
+    Math.abs(vista.lat) > 90 || Math.abs(vista.lng) > 180 || typeof vista.zoom !== 'number') vista = null;
 var mapa = L.map('mapa', {
-  center: CENTRO_INICIAL,
-  zoom: ZOOM_INICIAL,
+  center: vista ? [vista.lat, vista.lng] : CENTRO_INICIAL,
+  zoom: vista ? Math.min(Math.max(vista.zoom, 4), 19) : ZOOM_INICIAL,
   minZoom: 4,
   attributionControl: false   // el crédito de OpenStreetMap está siempre visible en el pie
 });
@@ -65,6 +85,9 @@ var grupos = {};           // id de capa -> capa de Leaflet
 var cantidades = {};       // id de capa -> cuántas restricciones tiene
 var zonasCargadas = [];
 var apagadas = leerGuardado(CLAVE_CAPAS) || {};
+var gruposLugares = {};    // tipo de lugar -> capa de Leaflet
+var cantidadesLugares = {};
+var lugaresPrendidos = leerGuardado(CLAVE_LUGARES) || {};   // arrancan apagados
 var camion = camionValido(leerGuardado(CLAVE_CAMION));
 
 // ===== 3. Medidas del camión =====
@@ -165,18 +188,31 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
   .then(function (r) { if (!r.ok) throw new Error('zonas.json ' + r.status); return r.json(); })
   .then(function (indice) {
     return Promise.all(indice.zonas.map(function (z) {
-      return fetch('datos/' + z.archivo, { cache: 'no-cache' })
-        .then(function (r) { if (!r.ok) throw new Error(z.archivo + ' ' + r.status); return r.json(); })
-        .then(function (datos) { return { zona: z, datos: datos }; });
+      // Las restricciones son obligatorias; si fallan los lugares, el mapa anda igual
+      var restricciones = !z.archivo ? Promise.resolve({ features: [] })
+        : fetch('datos/' + z.archivo, { cache: 'no-cache' })
+          .then(function (r) { if (!r.ok) throw new Error(z.archivo + ' ' + r.status); return r.json(); });
+      var lugares = !z.lugares ? Promise.resolve({ features: [] })
+        : fetch('datos/' + z.lugares, { cache: 'no-cache' })
+          .then(function (r) { if (!r.ok) throw new Error(z.lugares + ' ' + r.status); return r.json(); })
+          .catch(function (e) { console.error(e); return { features: [] }; });
+      return Promise.all([restricciones, lugares]).then(function (r) {
+        return { zona: z, datos: r[0], lugares: r[1] };
+      });
     }));
   })
   .then(function (zonas) {
     zonasCargadas = zonas;
     var porCapa = {};
     CAPAS.forEach(function (c) { porCapa[c.id] = []; });
+    var porLugar = {};
+    LUGARES.forEach(function (l) { porLugar[l.id] = []; });
     zonas.forEach(function (z) {
       z.datos.features.forEach(function (f) {
         if (porCapa[f.properties.capa]) porCapa[f.properties.capa].push(f);
+      });
+      z.lugares.features.forEach(function (f) {
+        if (porLugar[f.properties.tipo]) porLugar[f.properties.tipo].push(f);
       });
     });
     CAPAS.forEach(function (c) {
@@ -184,8 +220,14 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
       grupos[c.id] = crearCapa(porCapa[c.id]);
       if (!apagadas[c.id]) grupos[c.id].addTo(mapa);
     });
+    LUGARES.forEach(function (l) {
+      cantidadesLugares[l.id] = porLugar[l.id].length;
+      gruposLugares[l.id] = crearCapaLugares(porLugar[l.id]);
+    });
+    mostrarLugares();
     ponerRojosArriba();
     armarPanel();
+    armarPanelLugares();
     ocultarMensaje();
   })
   .catch(function (e) {
@@ -349,6 +391,116 @@ function sinDato(texto, que) {
   return 'Dato no claro ("' + texto + '")';
 }
 
+// ===== 7b. Lugares útiles (gomerías, talleres, estaciones de servicio...) =====
+function crearCapaLugares(features) {
+  return L.geoJSON({ type: 'FeatureCollection', features: features }, {
+    pointToLayer: function (f, latlng) {
+      var tipo = LUGAR_POR_ID[f.properties.tipo];
+      return L.marker(latlng, {
+        icon: L.divIcon({
+          className: 'lugar-marca',
+          html: '<span class="lugar-icono">' + tipo.icono + '</span>',
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
+          popupAnchor: [0, -16]
+        }),
+        title: tipo.nombre + (f.properties.nombre ? ': ' + f.properties.nombre : ''),
+        keyboard: false
+      });
+    },
+    onEachFeature: function (f, capaLeaflet) {
+      capaLeaflet.bindPopup(function () { return armarCartelLugar(f); }, { maxWidth: 290 });
+    }
+  });
+}
+
+// Muestra los tipos prendidos, pero solo de cerca
+function mostrarLugares() {
+  var cerca = mapa.getZoom() >= ZOOM_LUGARES;
+  LUGARES.forEach(function (l) {
+    var g = gruposLugares[l.id];
+    if (!g) return;
+    var ver = cerca && lugaresPrendidos[l.id];
+    if (ver && !mapa.hasLayer(g)) g.addTo(mapa);
+    if (!ver && mapa.hasLayer(g)) mapa.removeLayer(g);
+  });
+}
+mapa.on('zoomend', mostrarLugares);
+
+function armarCartelLugar(f) {
+  var p = f.properties;
+  var tipo = LUGAR_POR_ID[p.tipo];
+  var html = '<div class="cartel-tipo">' + tipo.icono + ' ' + esc(tipo.uno) + '</div>';
+  html += '<div class="cartel-valor">' + esc(p.nombre || 'Sin nombre en el mapa') + '</div>';
+  if (p.marca) html += '<div class="cartel-calle">' + esc(p.marca) + '</div>';
+  if (p.direccion) html += '<div class="cartel-calle">' + esc(p.direccion) + '</div>';
+
+  if (p.camiones === true) {
+    html += '<div class="cartel-linea apto">✔ Figura como apto para camiones</div>';
+  } else if (p.camiones === false) {
+    html += '<div class="cartel-linea no-apto">✘ Figura como NO apto para camiones</div>';
+  } else {
+    html += '<div class="cartel-linea">No figura si entra un camión: preguntá antes de ir.</div>';
+  }
+  if (p.extras && p.extras.length) html += '<div class="cartel-linea">Tiene: ' + esc(p.extras.join(', ')) + '</div>';
+  if (p.horario) html += '<div class="cartel-linea">Horario: ' + esc(horario(p.horario)) + '</div>';
+  if (p.telefono) {
+    var tel = String(p.telefono).split(/[;,]/)[0].trim();
+    html += '<div class="cartel-linea">Teléfono: <a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">' + esc(tel) + '</a></div>';
+  }
+
+  var c = f.geometry.coordinates;   // [longitud, latitud]
+  html += '<a class="cartel-boton" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&amp;destination=' +
+          c[1] + ',' + c[0] + '">Cómo llegar (Google Maps)</a>';
+  html += '<div class="cartel-fuente">Google Maps no conoce las restricciones para camiones: mirá este mapa antes de salir.</div>';
+  html += '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
+          '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
+  return html;
+}
+
+// "Mo-Fr 08:00-18:00; Sa 08:00-12:00" -> "Lun a Vie 08:00-18:00 · Sáb 08:00-12:00"
+function horario(texto) {
+  if (/^\s*24\/7\s*$/.test(texto)) return 'Abierto las 24 horas';
+  var dias = { Mo: 'Lun', Tu: 'Mar', We: 'Mié', Th: 'Jue', Fr: 'Vie', Sa: 'Sáb', Su: 'Dom', PH: 'Feriados' };
+  return String(texto)
+    .replace(/\b(Mo|Tu|We|Th|Fr|Sa|Su|PH)\b/g, function (d) { return dias[d]; })
+    .replace(/([A-Za-zé]{3})-([A-Za-zé]{3})/g, '$1 a $2')
+    .replace(/24\/7/g, 'las 24 horas')
+    .replace(/\boff\b/g, 'cerrado')
+    .replace(/\s*;\s*/g, ' · ');
+}
+
+function armarPanelLugares() {
+  var lista = document.getElementById('lista-lugares');
+  var titulo = document.getElementById('titulo-lugares');
+  if (!lista || !titulo) return;   // index.html viejo guardado en el celular
+  var total = LUGARES.reduce(function (s, l) { return s + (cantidadesLugares[l.id] || 0); }, 0);
+  lista.innerHTML = '';
+  titulo.hidden = lista.hidden = total === 0;
+  if (!total) return;
+  LUGARES.forEach(function (l) {
+    var n = cantidadesLugares[l.id] || 0;
+    var li = document.createElement('li');
+    li.innerHTML =
+      '<label' + (n ? '' : ' class="capa-vacia"') + '>' +
+        '<input type="checkbox"' + (lugaresPrendidos[l.id] ? ' checked' : '') + (n ? '' : ' disabled') + '>' +
+        '<span class="muestra-lugar">' + l.icono + '</span>' +
+        '<span class="capa-texto">' + esc(l.nombre) +
+          '<br><span class="capa-cantidad">' + (n ? n.toLocaleString('es-AR') + ' en el mapa' : 'Ninguno en esta zona') + '</span></span>' +
+      '</label>';
+    li.querySelector('input').addEventListener('change', function (ev) {
+      if (ev.target.checked) lugaresPrendidos[l.id] = true; else delete lugaresPrendidos[l.id];
+      guardar(CLAVE_LUGARES, lugaresPrendidos);
+      mostrarLugares();
+      if (ev.target.checked && mapa.getZoom() < ZOOM_LUGARES) {
+        mostrarMensaje('Acercá el mapa para ver los lugares.');
+        setTimeout(ocultarMensaje, 3000);
+      }
+    });
+    lista.appendChild(li);
+  });
+}
+
 // ===== 8. Panel para prender y apagar capas =====
 function armarPanel() {
   var lista = document.getElementById('lista-capas');
@@ -385,7 +537,39 @@ function armarPanel() {
   });
   var fechas = zonasCargadas.map(function (z) { return z.zona.titulo + ': ' + fecha(z.zona.actualizado); });
   document.getElementById('nota-datos').textContent = 'Datos actualizados — ' + fechas.join(' · ');
+  armarBotonesZonas();
 }
+
+// Botones "Ir a:" para saltar a cada zona (solo si hay más de una)
+function armarBotonesZonas() {
+  var caja = document.getElementById('ir-zonas');
+  if (!caja) return;   // index.html viejo guardado en el celular
+  caja.innerHTML = '';
+  var conLimites = zonasCargadas.filter(function (z) { return z.zona.limites; });
+  if (conLimites.length < 2) { caja.hidden = true; return; }
+  var titulo = document.createElement('span');
+  titulo.className = 'ir-zonas-titulo';
+  titulo.textContent = 'Ir a:';
+  caja.appendChild(titulo);
+  conLimites.forEach(function (z) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'boton-zona';
+    b.textContent = z.zona.titulo;
+    b.addEventListener('click', function () {
+      abrirPanel(false);
+      mapa.fitBounds(z.zona.limites);
+    });
+    caja.appendChild(b);
+  });
+  caja.hidden = false;
+}
+
+// Recordar dónde quedó mirando el mapa
+mapa.on('moveend', function () {
+  var c = mapa.getCenter();
+  guardar(CLAVE_VISTA, { lat: +c.lat.toFixed(5), lng: +c.lng.toFixed(5), zoom: mapa.getZoom() });
+});
 
 var botonCapas = document.getElementById('btn-capas');
 var panel = document.getElementById('panel-capas');

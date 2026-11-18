@@ -230,6 +230,7 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
     armarPanelLugares();
     ocultarMensaje();
     revisarAvisoZona();
+    cargarReportes();
   })
   .catch(function (e) {
     console.error(e);
@@ -246,7 +247,9 @@ function crearCapa(features) {
     style: estiloLinea,
     pointToLayer: function (f, latlng) { return L.circleMarker(latlng, estiloPunto(f)); },
     onEachFeature: function (f, capaLeaflet) {
-      capaLeaflet.bindPopup(function () { return armarCartel(f.properties); }, { maxWidth: 290 });
+      capaLeaflet.bindPopup(function (capa) {
+        return armarCartel(f.properties) + botonReportar(capa, describirRestriccion(f.properties));
+      }, { maxWidth: 290 });
     }
   });
 }
@@ -410,7 +413,10 @@ function crearCapaLugares(features) {
       });
     },
     onEachFeature: function (f, capaLeaflet) {
-      capaLeaflet.bindPopup(function () { return armarCartelLugar(f); }, { maxWidth: 290 });
+      capaLeaflet.bindPopup(function (capa) {
+        var p = f.properties, tipo = LUGAR_POR_ID[p.tipo];
+        return armarCartelLugar(f) + botonReportar(capa, tipo.uno + (p.nombre ? ' ' + p.nombre : '') + ' (' + p.osm + ')');
+      }, { maxWidth: 290 });
     }
   });
 }
@@ -502,6 +508,161 @@ function armarPanelLugares() {
   });
 }
 
+// ===== 7c. Reportes de choferes =====
+// Los choferes reportan con un formulario de Google (con la ubicación ya cargada).
+// El administrador escribe "sí" en la columna Aprobado de la planilla, y una hoja "Aprobados"
+// publicada como CSV se muestra acá. Configuración: datos/reportes_config.json
+//   { "formulario": "https://docs.google.com/forms/d/e/.../viewform",
+//     "campos": { "ubicacion": "entry.111", "lugar": "entry.222" },
+//     "aprobados_csv": "https://docs.google.com/spreadsheets/d/e/.../pub?...&output=csv" }
+// Si el archivo no está o le falta algo, no se muestra nada de reportes.
+var reportesConfig = null;
+var grupoReportes = null;
+
+function cargarReportes() {
+  fetch('datos/reportes_config.json', { cache: 'no-cache' })
+    .then(function (r) { if (!r.ok) throw new Error('sin reportes_config.json'); return r.json(); })
+    .then(function (c) {
+      if (c && /^https:\/\/docs\.google\.com\/forms\//.test(c.formulario || '') && c.campos &&
+          c.campos.ubicacion && c.campos.lugar) reportesConfig = c;
+      if (!c || !/^https:\/\/docs\.google\.com\//.test(c.aprobados_csv || '')) return null;
+      return fetch(c.aprobados_csv, { cache: 'no-cache' }).then(function (r) {
+        if (!r.ok) throw new Error('aprobados_csv ' + r.status);
+        return r.text();
+      });
+    })
+    .then(function (csv) { if (csv) mostrarReportes(leerCSV(csv)); })
+    .catch(function (e) { console.warn('Reportes:', e.message); })
+    .then(armarPanelReportes);
+}
+
+// Texto que identifica una restricción en el reporte (para saber de qué habla el chofer)
+function describirRestriccion(p) {
+  return textoValor(p) + (p.calle ? ' — ' + p.calle : '') + (p.osm ? ' (' + p.osm + ')' : '');
+}
+
+function linkFormulario(latlng, que) {
+  if (!reportesConfig) return null;
+  var c = reportesConfig.campos;
+  return reportesConfig.formulario + '?usp=pp_url' +
+    '&' + encodeURIComponent(c.ubicacion) + '=' + encodeURIComponent(latlng.lat.toFixed(5) + ', ' + latlng.lng.toFixed(5)) +
+    '&' + encodeURIComponent(c.lugar) + '=' + encodeURIComponent(que || 'Nada marcado en el mapa');
+}
+
+function botonReportar(capa, que) {
+  var popup = capa.getPopup && capa.getPopup();
+  var ll = (popup && popup.getLatLng()) || (capa.getLatLng && capa.getLatLng());
+  var url = ll && linkFormulario(ll, que);
+  if (!url) return '';
+  return '<a class="cartel-boton secundario" target="_blank" rel="noopener" href="' + esc(url) + '">' +
+         '📣 Reportar un problema acá</a>';
+}
+
+// Dedo apretado (o clic derecho en la PC) en cualquier lugar: reportar algo ahí
+mapa.on('contextmenu', function (e) {
+  var url = linkFormulario(e.latlng, null);
+  if (!url) return;
+  L.popup({ maxWidth: 260 })
+    .setLatLng(e.latlng)
+    .setContent('<div class="cartel-valor">¿Viste algo acá que no está en el mapa?</div>' +
+      '<div class="cartel-linea">Un puente bajo, una calle prohibida o cortada, una gomería...</div>' +
+      '<a class="cartel-boton secundario" target="_blank" rel="noopener" href="' + esc(url) + '">📣 Reportar algo en este lugar</a>')
+    .openOn(mapa);
+});
+
+// CSV simple (respeta comillas, comas y saltos de línea dentro de un comentario)
+function leerCSV(texto) {
+  var filas = [], fila = [], campo = '', entreComillas = false;
+  for (var i = 0; i < texto.length; i++) {
+    var ch = texto[i];
+    if (entreComillas) {
+      if (ch === '"' && texto[i + 1] === '"') { campo += '"'; i++; }
+      else if (ch === '"') entreComillas = false;
+      else campo += ch;
+    } else if (ch === '"') entreComillas = true;
+    else if (ch === ',') { fila.push(campo); campo = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && texto[i + 1] === '\n') i++;
+      fila.push(campo); filas.push(fila); fila = []; campo = '';
+    } else campo += ch;
+  }
+  if (campo || fila.length) { fila.push(campo); filas.push(fila); }
+  return filas;
+}
+
+// Columnas de la hoja "Aprobados": fecha, qué pasa, ubicación, qué decía el mapa, medida, comentario
+function mostrarReportes(filas) {
+  var features = [];
+  filas.forEach(function (f) {
+    var m = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec(f[2] || '');
+    if (!m) return;   // la fila de títulos o una ubicación que no se entiende
+    var lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
+    features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] },
+      properties: { fecha: (f[0] || '').split(' ')[0], tipo: f[1] || 'Reporte', lugar: f[3] || '',
+                    medida: f[4] || '', comentario: f[5] || '' } });
+  });
+  grupoReportes = L.geoJSON({ type: 'FeatureCollection', features: features }, {
+    pointToLayer: function (f, latlng) {
+      return L.marker(latlng, {
+        icon: L.divIcon({ className: 'lugar-marca', html: '<span class="lugar-icono reporte">📣</span>',
+                          iconSize: [36, 36], iconAnchor: [18, 18], popupAnchor: [0, -16] }),
+        title: 'Reporte: ' + f.properties.tipo, keyboard: false
+      });
+    },
+    onEachFeature: function (f, capa) {
+      capa.bindPopup(function () { return armarCartelReporte(f.properties); }, { maxWidth: 290 });
+    }
+  });
+  if (!apagadas.reportes) grupoReportes.addTo(mapa);
+}
+
+function armarCartelReporte(p) {
+  var html = '<div class="cartel-tipo">📣 Reporte de un chofer</div>';
+  html += '<div class="cartel-valor">' + esc(p.tipo) + '</div>';
+  if (p.medida) html += '<div class="cartel-linea"><b>Medida informada:</b> ' + esc(p.medida) + '</div>';
+  if (p.comentario) html += '<div class="cartel-linea">"' + esc(p.comentario) + '"</div>';
+  if (p.lugar && p.lugar !== 'Nada marcado en el mapa') {
+    html += '<div class="cartel-linea">En el mapa figuraba: ' + esc(p.lugar.replace(/\s*\((node|way)\/\d+\)$/, '')) + '</div>';
+  }
+  html += '<div class="veredicto sin_dato">Verificá en el lugar<small>Lo informó un chofer' +
+          (p.fecha ? ' el ' + esc(p.fecha) : '') + ' y fue revisado, pero puede haber cambiado.</small></div>';
+  return html;
+}
+
+function armarPanelReportes() {
+  var lista = document.getElementById('lista-reportes');
+  var titulo = document.getElementById('titulo-reportes');
+  if (!lista || !titulo) return;   // index.html viejo guardado en el celular
+  var n = 0;
+  if (grupoReportes) grupoReportes.eachLayer(function () { n++; });
+  var hay = reportesConfig || grupoReportes;
+  titulo.hidden = lista.hidden = !hay;
+  if (!hay) return;
+  lista.innerHTML = '';
+  var li = document.createElement('li');
+  li.innerHTML =
+    '<label' + (n ? '' : ' class="capa-vacia"') + '>' +
+      '<input type="checkbox"' + (apagadas.reportes ? '' : ' checked') + (n ? '' : ' disabled') + '>' +
+      '<span class="muestra-lugar">📣</span>' +
+      '<span class="capa-texto">Reportes aprobados<br><span class="capa-cantidad">' +
+        (n ? n.toLocaleString('es-AR') + ' en el mapa' : 'Todavía no hay') + '</span></span>' +
+    '</label>';
+  li.querySelector('input').addEventListener('change', function (ev) {
+    if (ev.target.checked) { if (grupoReportes) grupoReportes.addTo(mapa); delete apagadas.reportes; }
+    else { if (grupoReportes) mapa.removeLayer(grupoReportes); apagadas.reportes = true; }
+    guardar(CLAVE_CAPAS, apagadas);
+  });
+  lista.appendChild(li);
+  if (reportesConfig) {
+    var ayuda = document.createElement('li');
+    ayuda.className = 'reportes-ayuda';
+    ayuda.textContent = 'Para reportar algo: tocá una marca del mapa y usá "Reportar un problema acá", ' +
+                        'o dejá el dedo apretado sobre el lugar.';
+    lista.appendChild(ayuda);
+  }
+}
+
 // ===== 8. Panel para prender y apagar capas =====
 function armarPanel() {
   var lista = document.getElementById('lista-capas');
@@ -588,10 +749,14 @@ mapa.on('moveend', function () {
 var avisosMostrados = {};
 function revisarAvisoZona() {
   var c = mapa.getCenter();
+  var m = document.getElementById('mensaje');
   zonasCargadas.forEach(function (z) {
     var lim = z.zona.limites;
-    if (!z.zona.aviso || !lim || avisosMostrados[z.zona.id]) return;
-    if (c.lat < lim[0][0] || c.lat > lim[1][0] || c.lng < lim[0][1] || c.lng > lim[1][1]) return;
+    if (!z.zona.aviso || !lim) return;
+    var adentro = !(c.lat < lim[0][0] || c.lat > lim[1][0] || c.lng < lim[0][1] || c.lng > lim[1][1]);
+    // si me fui de la zona, el aviso de esa zona ya no corresponde
+    if (!adentro && !m.hidden && m.textContent.indexOf(z.zona.aviso) !== -1) ocultarMensaje();
+    if (!adentro || avisosMostrados[z.zona.id]) return;
     avisosMostrados[z.zona.id] = true;
     mostrarMensaje('⚠ ' + z.zona.aviso + ' (tocá para cerrar)');
     setTimeout(function () {

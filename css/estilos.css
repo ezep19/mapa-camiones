@@ -344,3 +344,12 @@ body {
     max-height: 65dvh;
   }
 }
+
+/* ===== Reportes de choferes ===== */
+.lugar-icono.reporte { border-color: #e65100; }
+.leaflet-popup-content a.cartel-boton.secundario {
+  background: #fff;
+  color: #e65100;
+  border: 2px solid #e65100;
+}
+.reportes-ayuda { padding: 6px 2px 2px; font-size: 0.85rem; color: var(--texto-suave); }

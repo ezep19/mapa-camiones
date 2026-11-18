@@ -1,5 +1,5 @@
 {
-  "formulario": "",
-  "campos": { "ubicacion": "", "lugar": "" },
-  "aprobados_csv": ""
+  "formulario": "https://docs.google.com/forms/d/e/1FAIpQLSfHE-eGOmZvTbXfEXL9t1XsALvhq-0DbAH0WJ2uPEIa9HkPpQ/viewform",
+  "campos": { "ubicacion": "entry.463534614", "lugar": "entry.409325363" },
+  "aprobados_csv": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkR8xIoodvVaHWbHTcoRdfJ3y9gVlZ0VQMjq-gvGG4-yLetk5ygdWmulb_nxKl8xpJkpew4mdd9nib/pub?gid=199912421&single=true&output=csv"
 }

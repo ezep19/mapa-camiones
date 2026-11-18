@@ -599,7 +599,7 @@ function mostrarReportes(filas) {
     var lat = parseFloat(m[1]), lng = parseFloat(m[2]);
     if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
     features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] },
-      properties: { fecha: (f[0] || '').split(' ')[0], tipo: f[1] || 'Reporte', lugar: f[3] || '',
+      properties: { fecha: fechaPlanilla(f[0]), tipo: f[1] || 'Reporte', lugar: f[3] || '',
                     medida: f[4] || '', comentario: f[5] || '' } });
   });
   grupoReportes = L.geoJSON({ type: 'FeatureCollection', features: features }, {
@@ -615,6 +615,18 @@ function mostrarReportes(filas) {
     }
   });
   if (!apagadas.reportes) grupoReportes.addTo(mapa);
+}
+
+// La planilla puede mandar la fecha como "18/11/2026 20:46:02" o como número de días
+// desde el 30/12/1899 (así guarda Google las fechas): "46344.86531" -> "18/11/2026"
+function fechaPlanilla(v) {
+  v = String(v || '').trim();
+  if (/^\d+([.,]\d+)?$/.test(v)) {
+    var d = new Date(Date.UTC(1899, 11, 30) + Math.floor(parseFloat(v.replace(',', '.'))) * 86400000);
+    if (isNaN(d)) return '';
+    return ('0' + d.getUTCDate()).slice(-2) + '/' + ('0' + (d.getUTCMonth() + 1)).slice(-2) + '/' + d.getUTCFullYear();
+  }
+  return v.split(' ')[0];
 }
 
 function armarCartelReporte(p) {

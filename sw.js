@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v1';
+var VERSION = 'v2';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;
@@ -37,17 +37,30 @@ self.addEventListener('activate', function (ev) {
   }).then(function () { return self.clients.claim(); }));
 });
 
+// Lo guardado para este pedido (primero exacto; si no, sin mirar el "?v=")
+function guardado(pedido) {
+  return caches.match(pedido).then(function (r) {
+    return r || caches.match(pedido, { ignoreSearch: true });
+  }).then(function (r) {
+    return r || (pedido.mode === 'navigate' ? caches.match('./index.html') : undefined);
+  });
+}
+
+// Primero internet; si no hay señal, o si tarda más de 6 s y hay algo guardado, lo guardado
 function primeroInternet(pedido) {
-  return fetch(pedido).then(function (resp) {
-    if (resp && resp.ok) {
-      var copia = resp.clone();
-      caches.open(CACHE_APP).then(function (c) { c.put(pedido, copia); });
-    }
-    return resp;
-  }).catch(function () {
-    return caches.match(pedido, { ignoreSearch: true }).then(function (r) {
-      return r || (pedido.mode === 'navigate' ? caches.match('./index.html') : undefined) || Response.error();
+  return new Promise(function (resolver) {
+    var listo = false;
+    function dar(r) { if (!listo && r) { listo = true; resolver(r); } }
+    var red = fetch(pedido).then(function (resp) {
+      if (resp && resp.ok) {
+        var copia = resp.clone();
+        caches.open(CACHE_APP).then(function (c) { c.put(pedido, copia); });
+      }
+      dar(resp);
+    }).catch(function () {
+      guardado(pedido).then(function (r) { dar(r || Response.error()); });
     });
+    setTimeout(function () { guardado(pedido).then(dar); }, 6000);
   });
 }
 

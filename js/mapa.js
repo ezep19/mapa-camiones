@@ -155,8 +155,10 @@ formCamion.addEventListener('submit', function (ev) {
     nuevo[k] = n;
   });
   if (primerError) { primerError.focus(); return; }
+  var cambio = !camion || ['altura', 'peso', 'largo'].some(function (k) { return camion[k] !== nuevo[k]; });
   camion = nuevo;
   guardar(CLAVE_CAMION, camion);
+  if (cambio && typeof anularRutaCalculada === 'function') anularRutaCalculada();
   mostrarResumenCamion();
   cerrarVentanaCamion();
   repintar();
@@ -194,6 +196,11 @@ var zonasIndice = [];         // lo que dice datos/zonas.json (todas las zonas d
 var zonasPedidas = {};        // id de zona -> promesa de su carga
 var ZOOM_MINIMO_DATOS = 9;    // más lejos que esto no se baja nada (sería el país entero)
 var zonasCargando = 0;
+var zonasOk = {};             // zonas que se cargaron bien
+// Zonas que tocan este rectángulo y NO se pudieron cargar: una ruta por ahí no está revisada
+function zonasSinCargarEn(limites) {
+  return zonasEn(limites).filter(function (z) { return !zonasOk[z.id]; }).map(function (z) { return z.titulo; });
+}
 
 CAPAS.forEach(function (c) {
   cantidades[c.id] = 0;
@@ -219,12 +226,14 @@ function cargarZona(z) {
   // Las restricciones son obligatorias; si fallan los lugares o la red, el mapa anda igual
   zonasPedidas[z.id] = Promise.all([bajarJSON(z.archivo, true), bajarJSON(z.lugares), bajarJSON(z.red), bajarJSON(z.normas)])
     .then(function (r) {
-      // las normas locales (ordenanzas) se suman a las restricciones de OpenStreetMap
       zonasCargando--;
-      agregarZona({ zona: z, datos: { features: r[0].features.concat(r[3].features) }, lugares: r[1], red: r[2] });
+      // las normas locales (ordenanzas) se suman a las restricciones de OpenStreetMap
+      try {
+        agregarZona({ zona: z, datos: { features: r[0].features.concat(r[3].features) }, lugares: r[1], red: r[2] });
+        zonasOk[z.id] = true;
+      } catch (e) { console.error(e); }
       if (!zonasCargando && /^Cargando /.test(document.getElementById('mensaje').textContent)) ocultarMensaje();
-    })
-    .catch(function (e) {
+    }, function (e) {
       zonasCargando--;
       console.error(e);
       delete zonasPedidas[z.id];   // se puede volver a intentar
@@ -1048,6 +1057,7 @@ function usarMiUbicacion() {
   ruta.esperandoUbicacion = true;
   tocarUbicacion();
 }
+mapa.on('locationerror', function () { ruta.esperandoUbicacion = false; });
 mapa.on('locationfound', function (e) {
   if (!ruta.esperandoUbicacion) return;
   ruta.esperandoUbicacion = false;
@@ -1132,7 +1142,14 @@ function calcularRuta() {
     return;
   }
   salida.hidden = false;
+  if (!zonasIndice.length) {
+    salida.innerHTML = '<div class="ruta-peligro"><b>No pude cargar los datos del mapa</b>, así que no puedo revisar ' +
+      'ninguna ruta. Revisá la conexión y recargá la página.</div>';
+    if (ruta.alTerminarCalculo) { var f0 = ruta.alTerminarCalculo; ruta.alTerminarCalculo = null; f0(false); }
+    return;
+  }
   salida.innerHTML = '<p class="ruta-cargando">Buscando caminos para tu camión...</p>';
+  var numero = ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;
   var desde = ruta.desde.latlng, hasta = ruta.hasta.latlng;
   var largo = desde.distanceTo(hasta) / 1000 > VIAJE_LARGO_KM;
 
@@ -1142,11 +1159,13 @@ function calcularRuta() {
       return calcularViajeLargo(desde, hasta, salida);
     })
     .then(function (caminos) {
+      if (numero !== ruta.numeroCalculo) return;   // hay un cálculo más nuevo: este ya no sirve
       ruta.opciones = elegirOpciones(caminos);
       mostrarRuta(0, !!ruta.alTerminarCalculo);
       terminoCalculo(true);
     })
     .catch(function (e) {
+      if (numero !== ruta.numeroCalculo) return;
       console.error(e);
       salida.innerHTML = '<p class="ruta-aviso">' + esc(e.mensaje || 'No pude calcular la ruta. Revisá la conexión y probá de nuevo en un rato.') + '</p>';
       terminoCalculo(false);
@@ -1194,18 +1213,27 @@ function calcularTramo(a, b, salida, conAlternativas) {
       caminos.forEach(function (c) { todo.extend(L.latLngBounds(c.puntos)); });
       return cargarZonasEn(todo).then(function () { return caminos; });
     }).then(function (caminos) {
-      var esquivados = Object.keys(claves).filter(function (k) { return k.indexOf('zona#') !== 0; }).length;
       caminos.forEach(function (c) {
         c.avisos = revisarRuta(c.puntos, c.pasos);
-        c.rojos = c.avisos.filter(function (x) { return x.color === COLORES.no; }).length;
-        c.esquivados = esquivados;
+        c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
+        // lugares que se pidió esquivar y por los que este camino ya no pasa
+        c.esquivados = Object.keys(lugares).filter(function (k) {
+          return !c.avisos.some(function (x) { return x.clave === k && x.rojo; });
+        }).length;
+        c.sinRevisar = zonasSinCargarEn(L.latLngBounds(c.puntos));
       });
       var limpios = caminos.filter(function (c) { return !c.avisos.some(function (x) { return x.zonas && x.zonas.length; }); });
       if (limpios.length || n >= MAX_VUELTAS) return caminos;
       var nuevas = 0;
       caminos.forEach(function (c) {
         c.avisos.forEach(function (x) {
-          if (x.zonas && x.zonas.length && !claves[x.clave]) { claves[x.clave] = true; evitar = evitar.concat(x.zonas); nuevas++; }
+          if (!x.zonas) return;
+          x.zonas.forEach(function (z, k) {
+            var cl = x.zonasClaves[k];
+            if (claves[cl]) return;
+            claves[cl] = true; evitar = evitar.concat([z]); nuevas++;
+            if (cl.indexOf('zona#') !== 0) lugares[x.clave] = true;
+          });
         });
       });
       if (!nuevas) return caminos;
@@ -1217,6 +1245,7 @@ function calcularTramo(a, b, salida, conAlternativas) {
       throw e;
     });
   }
+  var lugares = {};   // lugares (no zonas de ordenanza) que se pidió esquivar
   return vuelta(1, inicio.zonas, inicio.claves, null);
 }
 
@@ -1265,8 +1294,9 @@ function calcularViajeLargo(desde, hasta, salida) {
         largo: true
       };
       c.avisos = revisarRuta(c.puntos, c.pasos);
-      c.rojos = c.avisos.filter(function (x) { return x.color === COLORES.no; }).length;
+      c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
       c.esquivados = salidaMejor.esquivados + llegadaMejor.esquivados;
+      c.sinRevisar = zonasSinCargarEn(L.latLngBounds(c.puntos));
       return [c];
     });
   });
@@ -1459,6 +1489,18 @@ function quitarLineasRuta() {
   ruta.linea = null;
 }
 
+// Al cambiar las medidas, la ruta calculada (y su revisión) ya no vale: hay que calcularla de nuevo
+function anularRutaCalculada() {
+  if (nav.activo) terminarNavegacion('Cambiaste las medidas del camión: calculá la ruta de nuevo.');
+  if (!ruta.opciones) return;
+  ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;   // descarta cálculos en curso
+  quitarLineasRuta();
+  ruta.opciones = null;
+  var salida = document.getElementById('ruta-resultado');
+  salida.hidden = false;
+  salida.innerHTML = '<p class="ruta-aviso">Cambiaste las medidas del camión. Tocá "Calcular ruta para mi camión" de nuevo.</p>';
+}
+
 function borrarRuta() {
   quitarLineasRuta();
   ruta.opciones = null;
@@ -1508,6 +1550,11 @@ function mostrarRuta(indice, sinMoverMapa) {
     html += '<p class="ruta-ok">Esquivé ' + r.esquivados + (r.esquivados === 1 ? ' lugar' : ' lugares') +
             ' donde tu camión no pasa (pasos bajos o reportes que el servicio de rutas no conocía).</p>';
   }
+  if (r.sinRevisar && r.sinRevisar.length) {
+    html += '<div class="ruta-peligro"><b>NO PUDE REVISAR esta ruta</b> en ' + esc(r.sinRevisar.join(', ')) +
+            ': no se cargaron los datos (¿mala señal?). Puede pasar por lugares donde tu camión no pasa. ' +
+            'Revisá la conexión y volvé a calcular.</div>';
+  }
   if (r.rojos) {
     html += '<div class="ruta-peligro"><b>CUIDADO: no encontré una ruta que evite todo.</b> Esta ruta pasa por ' + r.rojos +
             (r.rojos === 1 ? ' lugar' : ' lugares') + ' donde según el mapa NO PASÁS. No la uses tal cual: ' +
@@ -1520,7 +1567,7 @@ function mostrarRuta(indice, sinMoverMapa) {
       html += '<li><button type="button" data-aviso="' + i + '"><i style="background:' + a.color + '"></i>' + esc(a.texto) + '</button></li>';
     });
     html += '</ul>';
-  } else {
+  } else if (!(r.sinRevisar && r.sinRevisar.length)) {
     html += '<p class="ruta-ok">No encontré pasos bajos ni reportes sobre esta ruta. Igual respetá la señalización.</p>';
   }
   if (r.pasos.length) {
@@ -1629,20 +1676,38 @@ function revisarRuta(puntosRuta, pasos) {
   var lat0 = puntosRuta[0][0] * Math.PI / 180;
   var kx = Math.cos(lat0) * 111320, ky = 110540;
   function xy(ll) { return [ll[1] * kx, ll[0] * ky]; }
-  var segs = [];
-  for (var i = 1; i < puntosRuta.length; i++) segs.push([xy(puntosRuta[i - 1]), xy(puntosRuta[i])]);
-  var caja = L.latLngBounds(puntosRuta).pad(0.02);
-  function distRuta(p) {
-    var mejor = Infinity;
-    for (var j = 0; j < segs.length; j++) {
-      var a = segs[j][0], b = segs[j][1], dx = b[0] - a[0], dy = b[1] - a[1];
-      var t = dx || dy ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy))) : 0;
-      var ex = a[0] + t * dx - p[0], ey = a[1] + t * dy - p[1];
-      var d = ex * ex + ey * ey;
-      if (d < mejor) mejor = d;
+  // Grilla de 50 m con los tramos de la ruta: buscar el tramo más cercano mira solo 9 casilleros
+  // (antes se recorría la ruta entera por cada muestra y en rutas largas podía trabar el celular)
+  var C = 50, grilla = {};
+  for (var i = 1; i < puntosRuta.length; i++) {
+    var a0 = xy(puntosRuta[i - 1]), b0 = xy(puntosRuta[i]);
+    for (var gx = Math.floor(Math.min(a0[0], b0[0]) / C); gx <= Math.floor(Math.max(a0[0], b0[0]) / C); gx++) {
+      for (var gy = Math.floor(Math.min(a0[1], b0[1]) / C); gy <= Math.floor(Math.max(a0[1], b0[1]) / C); gy++) {
+        (grilla[gx + ',' + gy] = grilla[gx + ',' + gy] || []).push(i - 1);
+      }
     }
-    return Math.sqrt(mejor);
   }
+  // tramo más cercano de la ruta (hasta ~50 m): { d: metros, i: índice del tramo }
+  function distRuta(p) {
+    var mejor = { d: Infinity, i: -1 }, gx = Math.floor(p[0] / C), gy = Math.floor(p[1] / C);
+    for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+      var lista = grilla[(gx + dx) + ',' + (gy + dy)];
+      if (!lista) continue;
+      for (var k = 0; k < lista.length; k++) {
+        var j = lista[k], a = xy(puntosRuta[j]), b = xy(puntosRuta[j + 1]);
+        var vx = b[0] - a[0], vy = b[1] - a[1], L2 = vx * vx + vy * vy;
+        var t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / L2)) : 0;
+        var d = Math.hypot(a[0] + t * vx - p[0], a[1] + t * vy - p[1]);
+        if (d < mejor.d) mejor = { d: d, i: j };
+      }
+    }
+    return mejor;
+  }
+  // rectángulo de la ruta agrandado 40 m (antes era un 2%: en una ruta recta quedaba de pocos metros)
+  var caja0 = L.latLngBounds(puntosRuta);
+  var caja = L.latLngBounds([caja0.getSouth() - 40 / ky, caja0.getWest() - 40 / kx], [caja0.getNorth() + 40 / ky, caja0.getEast() + 40 / kx]);
+  function claveCuadrado(ll) { return 'q' + ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5); }
+
   var avisos = [];
   function revisarCapa(grupo, esReporte) {
     if (!grupo) return;
@@ -1650,6 +1715,9 @@ function revisarRuta(puntosRuta, pasos) {
       var p = l.feature.properties;
       var estado = esReporte ? 'reporte' : evaluar(p).estado;
       if (estado !== 'no' && estado !== 'sin_dato' && estado !== 'reporte') return;
+      // reportes aprobados que cierran el paso: cuentan como rojos (se esquivan y castigan la ruta)
+      var bloquea = esReporte && /prohibid|peso|cortad|obra|puente|paso bajo/i.test(p.tipo || '');
+      var rojo = estado === 'no' || bloquea;
       var color = estado === 'no' ? COLORES.no : estado === 'reporte' ? '#e65100' : COLORES.sin_dato;
       var texto = esReporte ? 'Reporte de un chofer: ' + p.tipo
         : (estado === 'no' ? 'NO PASÁS: ' : 'Verificar: ') + (p.norma ? p.titulo : textoValor(p) + (p.calle ? ' — ' + p.calle : ''));
@@ -1657,57 +1725,82 @@ function revisarRuta(puntosRuta, pasos) {
       var voz = esReporte ? 'reporte de un chofer: ' + p.tipo
         : (p.titulo || textoValor(p)).replace(/^./, function (c) { return c.toLowerCase(); }) +
           (p.calle && !p.norma ? ' en ' + p.calle : '') + (estado === 'no' ? '. Tu camión no pasa' : '. Verificá en el lugar');
-      // se esquiva lo rojo y los reportes aprobados que cierran el paso
-      var esquivar = estado === 'no' || (esReporte && /prohibid|peso|cortad|obra|puente|paso bajo/i.test(p.tipo || ''));
+      var esquivar = rojo;
+      function agregar(extra) {
+        avisos.push(Object.assign({ voz: voz, texto: texto, color: color, rojo: rojo, capa: l, zonas: null, zonasClaves: null }, extra));
+      }
+
       if (l.feature.geometry.type === 'Polygon') {   // zona entera
         if (!caja.intersects(l.getBounds())) return;
         var anillo = l.feature.geometry.coordinates[0];
-        var dentro = puntosRuta.filter(function (q) { return dentroDeAnillo([q[1], q[0]], anillo); });
-        if (!dentro.length) return;
+        var primero = -1;
+        for (var q = 0; q < puntosRuta.length; q++) {
+          if (dentroDeAnillo([puntosRuta[q][1], puntosRuta[q][0]], anillo)) { primero = q; break; }
+        }
+        if (primero < 0) return;
         var extremoAdentro = [desde, hasta].some(function (x) { return x && dentroDeAnillo([x.lng, x.lat], anillo); });
-        avisos.push({ voz: voz, texto: texto + (extremoAdentro ? ' (tu salida o llegada está adentro: necesitás permiso municipal)' : ''),
-                      color: color, latlng: L.latLng(dentro[Math.floor(dentro.length / 2)]), capa: l,
-                      clave: 'zona#' + L.stamp(l), zonas: esquivar && !extremoAdentro ? [anillo] : null });
+        var clave = 'zona#' + L.stamp(l);
+        agregar({ texto: texto + (extremoAdentro ? ' (tu salida o llegada está adentro: necesitás permiso municipal)' : ''),
+                  latlng: L.latLng(puntosRuta[primero]), orden: primero,   // donde la ruta ENTRA a la zona
+                  clave: clave, zonas: esquivar && !extremoAdentro ? [anillo] : null, zonasClaves: [clave] });
         return;
       }
+
       if (l.getLatLng) {   // punto
         var ll = l.getLatLng();
-        if (!caja.contains(ll) || distRuta(xy([ll.lat, ll.lng])) > 20) return;
-        // paso bajo: si la ruta no usa la calle de abajo, va por el puente de arriba y no importa
+        if (!caja.contains(ll)) return;
+        var cerca = distRuta(xy([ll.lat, ll.lng]));
+        if (cerca.d > 20) return;
+        var claveP = (p.osm || '') + '@' + ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5);
+        // Paso bajo: si en las indicaciones no aparece la calle de abajo, lo más probable es que la ruta vaya
+        // por el puente de arriba. Si es amarillo no se avisa (si no, cada autopista avisaría decenas);
+        // si es ROJO se avisa igual como "posible", pero no se esquiva (esquivarlo cerraría el puente).
         if (!esReporte && p.calle && /debajo/i.test(p.detalle || '') && textoPasos &&
-            textoPasos.indexOf(normalizarCalle(p.calle)) === -1) return;
-        avisos.push({ voz: voz, texto: texto, color: color, latlng: ll, capa: l,
-                      clave: (p.osm || '') + '@' + ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5),
-                      zonas: esquivar && !cercaDeLosExtremos(ll) ? [cuadrado(ll, 12)] : null });
-      } else {             // línea: medir cuánto de la línea va por la ruta
-        if (!caja.intersects(l.getBounds())) return;
-        var partes = l.getLatLngs();
-        if (partes.length && !Array.isArray(partes[0])) partes = [partes];
-        // muestras cada 5 m a lo largo de la línea; cada una cerca de la ruta suma 5 m "por encima".
-        // Cruzarla en una esquina da ~20 m; ir por ella, mucho más.
-        var encima = 0, donde = null, zonas = [];
-        partes.forEach(function (linea) {
-          for (var k = 1; k < linea.length; k++) {
-            var a = xy([linea[k - 1].lat, linea[k - 1].lng]), b = xy([linea[k].lat, linea[k].lng]);
-            var largo = Math.hypot(b[0] - a[0], b[1] - a[1]);
-            var n = Math.max(1, Math.round(largo / 5));
-            for (var m = 0; m < n; m++) {
-              var q = [a[0] + (b[0] - a[0]) * (m + 0.5) / n, a[1] + (b[1] - a[1]) * (m + 0.5) / n];
-              if (distRuta(q) <= 10) {
-                encima += largo / n;
-                var llq = L.latLng(q[1] / ky, q[0] / kx);
-                if (!donde) donde = llq;
-                // un cuadradito cada ~20 m de la parte que la ruta usa
-                if (esquivar && (!zonas.ultimo || zonas.ultimo.distanceTo(llq) >= 20) && !cercaDeLosExtremos(llq)) {
-                  zonas.push(cuadrado(llq, 12)); zonas.ultimo = llq;
-                }
-              }
+            textoPasos.indexOf(normalizarCalle(p.calle)) === -1) {
+          if (!rojo) return;
+          // no cuenta como rojo (no dispara el "CUIDADO" ni descarta la ruta): es un aviso para mirar
+          agregar({ texto: 'Posible: ' + texto + ' (si la ruta pasa por abajo)', rojo: false, posible: true,
+                    voz: 'posible paso bajo de ' + textoValor(p).replace(/^Altura máxima( \(paso bajo\))? /i, '') +
+                         ' en ' + p.calle + ', si pasás por abajo', latlng: ll, orden: cerca.i, clave: claveP });
+          return;
+        }
+        var cl = claveCuadrado(ll);
+        agregar({ latlng: ll, orden: cerca.i, clave: claveP,
+                  zonas: esquivar && !cercaDeLosExtremos(ll) ? [cuadrado(ll, 12)] : null, zonasClaves: [cl] });
+        return;
+      }
+
+      // línea: medir cuánto de la línea va POR la ruta (no solo cruzarla)
+      if (!caja.intersects(l.getBounds())) return;
+      var partes = l.getLatLngs();
+      if (partes.length && !Array.isArray(partes[0])) partes = [partes];
+      // muestras cada 5 m a lo largo de la línea; cada una cerca de la ruta suma 5 m "por encima".
+      // Cruzarla en una esquina da ~20 m; ir por ella, mucho más.
+      var encima = 0, largoTotal = 0, ordenMin = Infinity, zonas = [], claves = [], ultimo = null;
+      partes.forEach(function (linea) {
+        for (var k = 1; k < linea.length; k++) {
+          var a = xy([linea[k - 1].lat, linea[k - 1].lng]), b = xy([linea[k].lat, linea[k].lng]);
+          var largo = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          largoTotal += largo;
+          var n = Math.max(1, Math.round(largo / 5));
+          for (var m = 0; m < n; m++) {
+            var mq = [a[0] + (b[0] - a[0]) * (m + 0.5) / n, a[1] + (b[1] - a[1]) * (m + 0.5) / n];
+            var dq = distRuta(mq);
+            if (dq.d > 10) continue;
+            encima += largo / n;
+            if (dq.i < ordenMin) ordenMin = dq.i;
+            var llq = L.latLng(mq[1] / ky, mq[0] / kx);
+            // un cuadradito cada ~20 m de la parte que la ruta usa
+            if (esquivar && (!ultimo || ultimo.distanceTo(llq) >= 20) && !cercaDeLosExtremos(llq)) {
+              zonas.push(cuadrado(llq, 12)); claves.push(claveCuadrado(llq)); ultimo = llq;
             }
           }
-        });
-        if (encima >= 40) avisos.push({ voz: voz, texto: texto, color: color, latlng: donde, capa: l,
-                                        clave: (p.osm || '') + '#' + L.stamp(l), zonas: esquivar ? zonas.slice() : null });
-      }
+        }
+      });
+      // tramos cortos (por ejemplo, el pedacito de calle bajo un puente): alcanza con el 80% de su largo
+      if (encima < Math.min(40, Math.max(8, 0.8 * largoTotal))) return;
+      agregar({ latlng: L.latLng(puntosRuta[ordenMin]), orden: ordenMin,   // donde la ruta EMPIEZA a usarla
+                clave: (p.osm || '') + '#' + L.stamp(l), zonas: esquivar ? zonas : null, zonasClaves: esquivar ? claves : null });
     });
   }
   CAPAS.forEach(function (c) {
@@ -1715,8 +1808,8 @@ function revisarRuta(puntosRuta, pasos) {
     revisarCapa(grupos[c.id], false);
   });
   revisarCapa(grupoReportes, true);
-  // primero lo que no pasás
-  avisos.sort(function (a, b) { return (a.color === COLORES.no ? 0 : 1) - (b.color === COLORES.no ? 0 : 1); });
+  // primero lo que no pasás; después en el orden en que aparecen sobre la ruta
+  avisos.sort(function (a, b) { return (a.rojo ? 0 : 1) - (b.rojo ? 0 : 1) || a.orden - b.orden; });
   return avisos;
 }
 
@@ -1732,7 +1825,8 @@ function dentroDeAnillo(pt, anillo) {
 
 function normalizarCalle(s) {
   return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/\b(avenida|av\.?|calle|pasaje|boulevard|bv\.?)\s+/g, '').replace(/\s+/g, ' ').trim();
+    .replace(/\b(avenida|av\.?|calle|pasaje|boulevard|bv\.?|autopista|intendente|int\.?|coronel|cnel\.?|general|gral\.?|doctor|dr\.?|presidente|pres\.?|ingeniero|ing\.?|teniente|tte\.?|almirante|alte\.?)\s+/g, '')
+    .replace(/\s+/g, ' ').trim();
 }
 
 // ===== 10. Utilidades =====
@@ -1832,14 +1926,18 @@ function empezarNavegacion(rutaElegida) {
              idx: idx, dist: idx == null ? null : nav.acum[idx] };
   }).filter(function (m) { return m.dist != null && m.n > 0; });   // la primera es "salí hacia..."
   nav.avisos = (r.avisos || []).map(function (a, n) {
-    var mejor = 0, dmin = Infinity;
-    for (var k = 0; k < r.puntos.length; k++) {
-      var d = a.latlng.distanceTo(r.puntos[k]);
-      if (d < dmin) { dmin = d; mejor = k; }
+    // "orden" = tramo de la ruta donde empieza el lugar (lo calcula revisarRuta)
+    var mejor = a.orden != null ? Math.min(a.orden, r.puntos.length - 1) : 0;
+    if (a.orden == null) {
+      var dmin = Infinity;
+      for (var k = 0; k < r.puntos.length; k++) {
+        var d = a.latlng.distanceTo(r.puntos[k]);
+        if (d < dmin) { dmin = d; mejor = k; }
+      }
     }
-    return { n: n, texto: a.texto, voz: a.voz, rojo: a.color === COLORES.no, dist: nav.acum[mejor] };
+    return { n: n, texto: a.texto, voz: a.voz, rojo: !!a.rojo, dist: nav.acum[mejor] };
   });
-  nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.activo = true; nav.recalculando = false;
+  nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.activo = true; nav.recalculando = false; nav.primera = true;
   abrirPanelRuta(false);
   abrirPanel(false);
   document.getElementById('nav-cartel').hidden = false;
@@ -1855,6 +1953,8 @@ function empezarNavegacion(rutaElegida) {
 
 function terminarNavegacion(mensaje) {
   nav.activo = false;
+  nav.recalculando = false;
+  ruta.alTerminarCalculo = null;   // si estaba recalculando, al terminar no vuelve a arrancar sola
   document.getElementById('nav-cartel').hidden = true;
   document.body.classList.remove('navegando');
   if (nav.wake) { try { nav.wake.release(); } catch (e) { /* nada */ } nav.wake = null; }
@@ -1883,7 +1983,10 @@ function mostrarCartelNav(distancia, texto, peligro) {
 // Dónde estoy sobre la ruta: tramo más cercano (buscando cerca del último) y metros recorridos
 function ubicarEnRuta(pos) {
   var pts = nav.r.puntos, desde = Math.max(0, nav.idx - 10), hasta = Math.min(pts.length - 1, nav.idx + 400);
-  if (nav.idx === 0) hasta = pts.length - 1;
+  if (nav.primera) {
+    hasta = pts.length - 1;
+    for (var h = 1; h < pts.length; h++) { if (nav.acum[h] > 3000) { hasta = h; break; } }
+  }
   var kx = 111320 * Math.cos(pos.lat * Math.PI / 180), ky = 110540;
   var px = pos.lng * kx, py = pos.lat * ky, mejor = { d: Infinity, i: nav.idx, t: 0 };
   for (var i = desde; i < hasta; i++) {
@@ -1910,10 +2013,11 @@ function seguirNavegacion(pos) {
   }
   nav.fuera = 0;
   nav.idx = u.idx;
+  nav.primera = false;
   var total = nav.acum[nav.acum.length - 1];
   var falta = total - u.recorrido;
   // ¿Llegaste?
-  if (falta < NAV.LLEGADA_M || pos.distanceTo(nav.r.puntos[nav.r.puntos.length - 1]) < NAV.LLEGADA_M) {
+  if (falta < NAV.LLEGADA_M) {
     hablar('Llegaste a destino.', true);
     terminarNavegacion('Llegaste a destino.');
     return;
@@ -1921,6 +2025,7 @@ function seguirNavegacion(pos) {
   // Próxima indicación
   var prox = nav.maniobras.filter(function (m) { return m.dist > u.recorrido + 5; })[0];
   var peligro = '';
+  var decir = [];   // todo lo que hay que decir en esta posición, en una sola frase
   // Pasos bajos, prohibidos o reportes que vienen adelante
   nav.avisos.forEach(function (a) {
     var hasta = a.dist - u.recorrido;
@@ -1928,12 +2033,12 @@ function seguirNavegacion(pos) {
     if (!peligro) peligro = (a.rojo ? '⛔ ' : '⚠ ') + 'En ' + textoDistancia(Math.max(0, hasta)) + ': ' + a.texto;
     if (!nav.dichos['a' + a.n]) {
       nav.dichos['a' + a.n] = true;
-      hablar((a.rojo ? 'Cuidado. ' : 'Atención. ') + 'En ' + vozDistancia(Math.max(50, hasta)) + ', ' +
-             (a.voz || a.texto) + '.', a.rojo);
+      decir.push((a.rojo ? 'Cuidado. ' : 'Atención. ') + 'En ' + vozDistancia(Math.max(50, hasta)) + ', ' + (a.voz || a.texto) + '.');
     }
   });
   if (!prox) {
     mostrarCartelNav(textoDistancia(falta), 'Seguí hasta el destino', peligro);
+    if (decir.length) hablar(decir.join(' '));
     return;
   }
   var dist = prox.dist - u.recorrido;
@@ -1942,18 +2047,20 @@ function seguirNavegacion(pos) {
     // del destino se avisa una sola vez; al llegar se dice "Llegaste"
     if (dist <= NAV.PRIMER_AVISO_M && !nav.dichos['b' + prox.n]) {
       nav.dichos['b' + prox.n] = true;
-      hablar('En ' + vozDistancia(dist) + ', llegás a destino' + prox.texto.replace('Llegás a destino', '') + '.');
+      decir.push('En ' + vozDistancia(dist) + ', llegás a destino' + prox.texto.replace('Llegás a destino', '') + '.');
     }
   } else if (dist <= NAV.ULTIMO_AVISO_M && !nav.dichos['c' + prox.n]) {
     nav.dichos['c' + prox.n] = nav.dichos['b' + prox.n] = true;
-    hablar('Ahora, ' + frase(prox.texto) + '.', true);
+    decir.push('Ahora, ' + frase(prox.texto) + '.');
   } else if (dist <= NAV.PRIMER_AVISO_M && !nav.dichos['b' + prox.n]) {
     nav.dichos['b' + prox.n] = true;
-    hablar('En ' + vozDistancia(dist) + ', ' + frase(prox.texto) + '.');
+    decir.push('En ' + vozDistancia(dist) + ', ' + frase(prox.texto) + '.');
   } else if (dist > 2000 && !nav.dichos['s' + prox.n]) {
     nav.dichos['s' + prox.n] = true;
-    hablar('Seguí por ' + vozDistancia(dist) + '.');
+    decir.push('Seguí por ' + vozDistancia(dist) + '.');
   }
+  // los peligros van primero; no se corta lo que se estaba diciendo
+  if (decir.length) hablar(decir.join(' '));
   mapa.panTo(pos, { animate: true, duration: 0.5 });
 }
 
@@ -1966,6 +2073,7 @@ function recalcularDesde(pos) {
   ponerPunto('desde', pos, 'Mi ubicación');
   ruta.alTerminarCalculo = function (ok) {
     nav.recalculando = false;
+    if (!nav.activo) return;   // el chofer terminó la navegación mientras recalculaba
     if (ok && ruta.opciones) { ruta.esRecalculo = true; empezarNavegacion(ruta.opciones[0]); }
     else mostrarCartelNav('Sin ruta nueva', 'No pude recalcular (¿sin señal?). Lo vuelvo a intentar en unos segundos.');
   };
@@ -1995,6 +2103,25 @@ if (document.getElementById('nav-cartel')) {
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('Sin modo sin señal:', e.message); });
+    // En la primera visita la página se bajó antes de que el service worker existiera: se guarda ahora
+    // lo que hace falta para abrir sin señal (código, estilos, índice de zonas y las zonas ya vistas)
+    navigator.serviceWorker.ready.then(function () {
+      if (!window.caches) return;
+      var archivos = ['./', 'index.html', 'datos/zonas.json'];
+      document.querySelectorAll('script[src*="js/mapa.js"], link[href*="css/estilos.css"]').forEach(function (e) {
+        archivos.push(e.getAttribute('src') || e.getAttribute('href'));
+      });
+      zonasCargadas.forEach(function (z) {
+        ['archivo', 'lugares', 'red', 'normas'].forEach(function (k) { if (z.zona[k]) archivos.push('datos/' + z.zona[k]); });
+      });
+      caches.keys().then(function (nombres) {
+        var nombre = nombres.filter(function (n) { return n.indexOf('mapa-camiones-app-') === 0; }).sort().pop();
+        if (!nombre) return;
+        caches.open(nombre).then(function (c) {
+          archivos.forEach(function (u) { c.match(u).then(function (r) { if (!r) c.add(u).catch(function () {}); }); });
+        });
+      });
+    });
   });
 }
 window.addEventListener('offline', function () {

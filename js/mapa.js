@@ -187,64 +187,106 @@ function evaluar(p) {
 mostrarResumenCamion();
 if (!camion) abrirVentanaCamion();
 
+// Cada zona se baja recién cuando se la mira (o cuando una ruta pasa por ella):
+// así el celular no tiene que bajar todas las zonas al abrir la página.
+var zonasIndice = [];         // lo que dice datos/zonas.json (todas las zonas disponibles)
+var zonasPedidas = {};        // id de zona -> promesa de su carga
+var ZOOM_MINIMO_DATOS = 9;    // más lejos que esto no se baja nada (sería el país entero)
+var zonasCargando = 0;
+
+CAPAS.forEach(function (c) {
+  cantidades[c.id] = 0;
+  grupos[c.id] = crearCapa([]);
+  if (!apagadas[c.id]) grupos[c.id].addTo(mapa);
+});
+LUGARES.forEach(function (l) {
+  cantidadesLugares[l.id] = 0;
+  gruposLugares[l.id] = crearCapaLugares([]);
+});
+
+function bajarJSON(archivo, obligatorio) {
+  if (!archivo) return Promise.resolve({ features: [] });
+  var pedido = fetch('datos/' + archivo, { cache: 'no-cache' })
+    .then(function (r) { if (!r.ok) throw new Error(archivo + ' ' + r.status); return r.json(); });
+  return obligatorio ? pedido : pedido.catch(function (e) { console.error(e); return { features: [] }; });
+}
+
+function cargarZona(z) {
+  if (zonasPedidas[z.id]) return zonasPedidas[z.id];
+  zonasCargando++;
+  mostrarMensaje('Cargando ' + z.titulo + '...');
+  // Las restricciones son obligatorias; si fallan los lugares o la red, el mapa anda igual
+  zonasPedidas[z.id] = Promise.all([bajarJSON(z.archivo, true), bajarJSON(z.lugares), bajarJSON(z.red), bajarJSON(z.normas)])
+    .then(function (r) {
+      // las normas locales (ordenanzas) se suman a las restricciones de OpenStreetMap
+      zonasCargando--;
+      agregarZona({ zona: z, datos: { features: r[0].features.concat(r[3].features) }, lugares: r[1], red: r[2] });
+      if (!zonasCargando && /^Cargando /.test(document.getElementById('mensaje').textContent)) ocultarMensaje();
+    })
+    .catch(function (e) {
+      zonasCargando--;
+      console.error(e);
+      delete zonasPedidas[z.id];   // se puede volver a intentar
+      mostrarMensaje('No pude cargar ' + z.titulo + '. Revisá la conexión y mové el mapa para reintentar.', true);
+    });
+  return zonasPedidas[z.id];
+}
+
+function agregarZona(r) {
+  zonasCargadas.push(r);
+  r.datos.features.forEach(function (f) {
+    var g = grupos[f.properties.capa];
+    if (!g) return;
+    g.addData(f);
+    cantidades[f.properties.capa]++;
+  });
+  r.lugares.features.forEach(function (f) {
+    var g = gruposLugares[f.properties.tipo];
+    if (!g) return;
+    g.addData(f);
+    cantidadesLugares[f.properties.tipo]++;
+  });
+  agregarRedPesada(r);
+  mostrarLugares();
+  ponerRojosArriba();
+  armarPanel();
+  armarPanelLugares();
+  revisarAvisoZona();
+}
+
+// Zonas que tocan un rectángulo (con un margen)
+function zonasEn(limites) {
+  return zonasIndice.filter(function (z) { return z.limites && L.latLngBounds(z.limites).pad(0.05).intersects(limites); });
+}
+function cargarZonasEn(limites) {
+  return Promise.all(zonasEn(limites).map(cargarZona));
+}
+function cargarZonasVisibles() {
+  if (!zonasIndice.length) return;
+  var m = document.getElementById('mensaje');
+  if (mapa.getZoom() < ZOOM_MINIMO_DATOS) {
+    if (!zonasCargadas.length) mostrarMensaje('Acercá el mapa a una ciudad para ver las restricciones.');
+    return;
+  }
+  if (/^Acercá el mapa|^Todavía no hay datos/.test(m.textContent)) ocultarMensaje();
+  var visibles = zonasEn(mapa.getBounds().pad(0.2));
+  if (!visibles.length && !zonasCargando) {
+    mostrarMensaje('Todavía no hay datos de esta zona. Las zonas con datos están en Capas → "Ir a".');
+    setTimeout(function () { if (/^Todavía no hay datos/.test(m.textContent)) ocultarMensaje(); }, 6000);
+    return;
+  }
+  visibles.forEach(cargarZona);
+}
+mapa.on('moveend', cargarZonasVisibles);
+
 mostrarMensaje('Cargando restricciones...');
 fetch('datos/zonas.json', { cache: 'no-cache' })
   .then(function (r) { if (!r.ok) throw new Error('zonas.json ' + r.status); return r.json(); })
   .then(function (indice) {
-    return Promise.all(indice.zonas.map(function (z) {
-      // Las restricciones son obligatorias; si fallan los lugares, el mapa anda igual
-      var restricciones = !z.archivo ? Promise.resolve({ features: [] })
-        : fetch('datos/' + z.archivo, { cache: 'no-cache' })
-          .then(function (r) { if (!r.ok) throw new Error(z.archivo + ' ' + r.status); return r.json(); });
-      var lugares = !z.lugares ? Promise.resolve({ features: [] })
-        : fetch('datos/' + z.lugares, { cache: 'no-cache' })
-          .then(function (r) { if (!r.ok) throw new Error(z.lugares + ' ' + r.status); return r.json(); })
-          .catch(function (e) { console.error(e); return { features: [] }; });
-      var red = !z.red ? Promise.resolve({ features: [] })
-        : fetch('datos/' + z.red, { cache: 'no-cache' })
-          .then(function (r) { if (!r.ok) throw new Error(z.red + ' ' + r.status); return r.json(); })
-          .catch(function (e) { console.error(e); return { features: [] }; });
-      var normas = !z.normas ? Promise.resolve({ features: [] })
-        : fetch('datos/' + z.normas, { cache: 'no-cache' })
-          .then(function (r) { if (!r.ok) throw new Error(z.normas + ' ' + r.status); return r.json(); })
-          .catch(function (e) { console.error(e); return { features: [] }; });
-      return Promise.all([restricciones, lugares, red, normas]).then(function (r) {
-        // las normas locales (ordenanzas) se suman a las restricciones de OpenStreetMap
-        r[0].features = r[0].features.concat(r[3].features);
-        return { zona: z, datos: r[0], lugares: r[1], red: r[2] };
-      });
-    }));
-  })
-  .then(function (zonas) {
-    zonasCargadas = zonas;
-    var porCapa = {};
-    CAPAS.forEach(function (c) { porCapa[c.id] = []; });
-    var porLugar = {};
-    LUGARES.forEach(function (l) { porLugar[l.id] = []; });
-    zonas.forEach(function (z) {
-      z.datos.features.forEach(function (f) {
-        if (porCapa[f.properties.capa]) porCapa[f.properties.capa].push(f);
-      });
-      z.lugares.features.forEach(function (f) {
-        if (porLugar[f.properties.tipo]) porLugar[f.properties.tipo].push(f);
-      });
-    });
-    CAPAS.forEach(function (c) {
-      cantidades[c.id] = porCapa[c.id].length;
-      grupos[c.id] = crearCapa(porCapa[c.id]);
-      if (!apagadas[c.id]) grupos[c.id].addTo(mapa);
-    });
-    LUGARES.forEach(function (l) {
-      cantidadesLugares[l.id] = porLugar[l.id].length;
-      gruposLugares[l.id] = crearCapaLugares(porLugar[l.id]);
-    });
-    mostrarLugares();
-    cargarRedPesada(zonas);
-    ponerRojosArriba();
-    armarPanel();
-    armarPanelLugares();
+    zonasIndice = indice.zonas.filter(function (z) { return z.limites; });
     ocultarMensaje();
-    revisarAvisoZona();
+    armarPanel();
+    cargarZonasVisibles();
     cargarReportes();
   })
   .catch(function (e) {
@@ -319,7 +361,7 @@ function repintar() {
     });
   });
   ponerRojosArriba();
-  if (zonasCargadas.length) armarPanel();
+  if (zonasIndice.length) armarPanel();
 }
 mapa.on('zoomend', repintar);
 
@@ -784,7 +826,7 @@ function armarBotonesZonas() {
   var caja = document.getElementById('ir-zonas');
   if (!caja) return;   // index.html viejo guardado en el celular
   caja.innerHTML = '';
-  var conLimites = zonasCargadas.filter(function (z) { return z.zona.limites; });
+  var conLimites = zonasIndice.map(function (z) { return { zona: z }; });
   if (conLimites.length < 2) { caja.hidden = true; return; }
   var titulo = document.createElement('span');
   titulo.className = 'ir-zonas-titulo';
@@ -819,7 +861,8 @@ var avisosMostrados = {};
 function revisarAvisoZona() {
   var c = mapa.getCenter();
   var m = document.getElementById('mensaje');
-  zonasCargadas.forEach(function (z) {
+  zonasIndice.forEach(function (zi) {
+    var z = { zona: zi };
     var lim = z.zona.limites;
     if (!z.zona.aviso || !lim) return;
     var adentro = !(c.lat < lim[0][0] || c.lat > lim[1][0] || c.lng < lim[0][1] || c.lng > lim[1][1]);
@@ -1073,6 +1116,12 @@ if (panelRuta) {
 }
 
 // --- Calcular ---
+// OpenRouteService no deja esquivar zonas en viajes de más de 150 km. En un viaje largo se pide el
+// recorrido entero sin esquivar y después se recalculan la salida y la llegada (los primeros y los
+// últimos ~40 km, donde están las ciudades y sus prohibiciones) esquivando lo que haga falta.
+var VIAJE_LARGO_KM = 110;      // distancia en línea recta a partir de la cual se arma por partes
+var TRAMO_CIUDAD_KM = 40;
+
 function calcularRuta() {
   var salida = document.getElementById('ruta-resultado');
   if (!camion) { abrirVentanaCamion(); return; }
@@ -1083,37 +1132,76 @@ function calcularRuta() {
   }
   salida.hidden = false;
   salida.innerHTML = '<p class="ruta-cargando">Buscando caminos para tu camión...</p>';
+  var desde = ruta.desde.latlng, hasta = ruta.hasta.latlng;
+  var largo = desde.distanceTo(hasta) / 1000 > VIAJE_LARGO_KM;
+
+  cargarZonasEn(L.latLngBounds([desde, hasta]).pad(largo ? 0 : 0.1))
+    .then(function () {
+      if (!largo) return calcularTramo(desde, hasta, salida, true);
+      return calcularViajeLargo(desde, hasta, salida);
+    })
+    .then(function (caminos) {
+      ruta.opciones = elegirOpciones(caminos);
+      mostrarRuta(0);
+    })
+    .catch(function (e) {
+      console.error(e);
+      salida.innerHTML = '<p class="ruta-aviso">' + esc(e.mensaje || 'No pude calcular la ruta. Revisá la conexión y probá de nuevo en un rato.') + '</p>';
+    });
+}
+
+// Pide el camino entre a y b (hasta 3 opciones)
+function pedirCaminos(a, b, evitar, conAlternativas) {
   var clave = ruta.config && ruta.config.ors_clave;
+  return clave
+    ? rutaORS(clave, evitar, !conAlternativas, a, b).catch(function (e) {
+        console.warn('OpenRouteService falló:', e.message);
+        return rutaValhalla(evitar, a, b);
+      })
+    : rutaValhalla(evitar, a, b);
+}
 
-  // Cada pedido devuelve hasta 3 caminos distintos
-  function pedir(evitar) {
-    return clave
-      ? rutaORS(clave, evitar).catch(function (e) { console.warn('OpenRouteService falló:', e.message); return rutaValhalla(evitar); })
-      : rutaValhalla(evitar);
-  }
+// Zonas prohibidas (ordenanzas) para este camión, salvo las que tienen adentro la salida o la llegada
+function zonasProhibidasEntre(a, b) {
+  var zonas = [], claves = {};
+  if (grupos.prohibido) grupos.prohibido.eachLayer(function (l) {
+    if (l.feature.geometry.type !== 'Polygon' || evaluar(l.feature.properties).estado !== 'no') return;
+    var anillo = l.feature.geometry.coordinates[0];
+    if (dentroDeAnillo([a.lng, a.lat], anillo) || dentroDeAnillo([b.lng, b.lat], anillo)) return;
+    zonas.push(anillo);
+    claves['zona#' + L.stamp(l)] = true;
+  });
+  return { zonas: zonas, claves: claves };
+}
 
-  // Los servicios de rutas solo esquivan lo que está cargado en OpenStreetMap. Si TODOS los caminos pasan
-  // por algo que en NUESTRO mapa es rojo para este camión (pasos bajos calculados, reportes aprobados),
-  // se vuelve a pedir esquivando esos lugares. Hasta 4 vueltas.
+// Los servicios de rutas solo esquivan lo que está cargado en OpenStreetMap. Si TODOS los caminos pasan
+// por algo que en NUESTRO mapa es rojo para este camión (pasos bajos calculados, reportes aprobados,
+// zonas de ordenanzas), se vuelve a pedir esquivando esos lugares. Hasta 4 vueltas.
+function calcularTramo(a, b, salida, conAlternativas) {
   var MAX_VUELTAS = 4;
+  var inicio = zonasProhibidasEntre(a, b);
   function vuelta(n, evitar, claves, anteriores) {
-    return pedir(evitar).then(function (caminos) {
+    return pedirCaminos(a, b, evitar, conAlternativas).then(function (caminos) {
+      var todo = L.latLngBounds([]);
+      caminos.forEach(function (c) { todo.extend(L.latLngBounds(c.puntos)); });
+      return cargarZonasEn(todo).then(function () { return caminos; });
+    }).then(function (caminos) {
       var esquivados = Object.keys(claves).filter(function (k) { return k.indexOf('zona#') !== 0; }).length;
       caminos.forEach(function (c) {
         c.avisos = revisarRuta(c.puntos, c.pasos);
-        c.rojos = c.avisos.filter(function (a) { return a.color === COLORES.no; }).length;
+        c.rojos = c.avisos.filter(function (x) { return x.color === COLORES.no; }).length;
         c.esquivados = esquivados;
       });
-      var limpios = caminos.filter(function (c) { return !c.avisos.some(function (a) { return a.zonas && a.zonas.length; }); });
+      var limpios = caminos.filter(function (c) { return !c.avisos.some(function (x) { return x.zonas && x.zonas.length; }); });
       if (limpios.length || n >= MAX_VUELTAS) return caminos;
       var nuevas = 0;
       caminos.forEach(function (c) {
-        c.avisos.forEach(function (a) {
-          if (a.zonas && a.zonas.length && !claves[a.clave]) { claves[a.clave] = true; evitar = evitar.concat(a.zonas); nuevas++; }
+        c.avisos.forEach(function (x) {
+          if (x.zonas && x.zonas.length && !claves[x.clave]) { claves[x.clave] = true; evitar = evitar.concat(x.zonas); nuevas++; }
         });
       });
       if (!nuevas) return caminos;
-      salida.innerHTML = '<p class="ruta-cargando">Los caminos pasaban por ' + nuevas +
+      if (salida) salida.innerHTML = '<p class="ruta-cargando">Los caminos pasaban por ' + nuevas +
         (nuevas === 1 ? ' lugar' : ' lugares') + ' donde no pasás. Buscando otros que los esquiven...</p>';
       return vuelta(n + 1, evitar, claves, caminos);
     }, function (e) {
@@ -1121,25 +1209,53 @@ function calcularRuta() {
       throw e;
     });
   }
+  return vuelta(1, inicio.zonas, inicio.claves, null);
+}
 
-  // Las zonas prohibidas para este camión (ordenanzas) se esquivan desde el primer pedido,
-  // salvo que la salida o la llegada estén adentro
-  var evitarDesdeElInicio = [], clavesIniciales = {};
-  if (grupos.prohibido) grupos.prohibido.eachLayer(function (l) {
-    if (l.feature.geometry.type !== 'Polygon' || evaluar(l.feature.properties).estado !== 'no') return;
-    var anillo = l.feature.geometry.coordinates[0];
-    if (dentroDeAnillo([ruta.desde.latlng.lng, ruta.desde.latlng.lat], anillo) ||
-        dentroDeAnillo([ruta.hasta.latlng.lng, ruta.hasta.latlng.lat], anillo)) return;
-    evitarDesdeElInicio.push(anillo);
-    clavesIniciales['zona#' + L.stamp(l)] = true;
-  });
-
-  vuelta(1, evitarDesdeElInicio, clavesIniciales, null).then(function (caminos) {
-    ruta.opciones = elegirOpciones(caminos);
-    mostrarRuta(0);
-  }).catch(function (e) {
-    console.error(e);
-    salida.innerHTML = '<p class="ruta-aviso">' + esc(e.mensaje || 'No pude calcular la ruta. Revisá la conexión y probá de nuevo en un rato.') + '</p>';
+function calcularViajeLargo(desde, hasta, salida) {
+  salida.innerHTML = '<p class="ruta-cargando">Viaje largo: buscando el recorrido...</p>';
+  return pedirCaminos(desde, hasta, [], false).then(function (caminos) {
+    var base = caminos[0];
+    // distancia acumulada a lo largo del recorrido
+    var acum = [0];
+    for (var i = 1; i < base.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(base.puntos[i - 1]).distanceTo(base.puntos[i]) / 1000);
+    var total = acum[acum.length - 1];
+    var corte = Math.min(TRAMO_CIUDAD_KM, total / 3);
+    var i1 = acum.findIndex(function (d) { return d >= corte; });
+    var i2 = acum.findIndex(function (d) { return d >= total - corte; });
+    var p1 = L.latLng(base.puntos[i1]), p2 = L.latLng(base.puntos[i2]);
+    salida.innerHTML = '<p class="ruta-cargando">Viaje largo: revisando la salida y la llegada para tu camión...</p>';
+    // cargar las zonas de todo el recorrido (para revisar el tramo del medio)
+    return cargarZonasEn(L.latLngBounds(base.puntos)).then(function () {
+      return Promise.all([calcularTramo(desde, p1, null, true), calcularTramo(p2, hasta, null, true)]);
+    }).then(function (r) {
+      var salidaMejor = elegirOpciones(r[0])[0], llegadaMejor = elegirOpciones(r[1])[0];
+      var medio = {
+        puntos: base.puntos.slice(i1, i2 + 1),
+        km: acum[i2] - acum[i1],
+        pasos: base.pasos.filter(function (p) { return p.ini == null || (p.ini >= i1 && p.ini < i2); }),
+        vueltas: 0
+      };
+      medio.pasos.forEach(function (p) { if (p.vuelta) medio.vueltas++; });
+      medio.segundos = base.segundos * medio.km / total;
+      medio.kmChicas = base.kmChicas == null ? null : 0;   // el medio es ruta
+      var c = {
+        servicio: salidaMejor.servicio === llegadaMejor.servicio ? salidaMejor.servicio
+          : salidaMejor.servicio + ' y ' + llegadaMejor.servicio,
+        puntos: salidaMejor.puntos.concat(medio.puntos, llegadaMejor.puntos),
+        km: salidaMejor.km + medio.km + llegadaMejor.km,
+        segundos: salidaMejor.segundos + medio.segundos + llegadaMejor.segundos,
+        // sin el "llegaste" de la salida ni el "salí hacia..." de la llegada (son puntos de corte, no paradas)
+        pasos: salidaMejor.pasos.slice(0, -1).concat(medio.pasos, llegadaMejor.pasos.slice(1)),
+        vueltas: salidaMejor.vueltas + medio.vueltas + llegadaMejor.vueltas,
+        kmChicas: salidaMejor.kmChicas == null || llegadaMejor.kmChicas == null ? null : salidaMejor.kmChicas + llegadaMejor.kmChicas,
+        largo: true
+      };
+      c.avisos = revisarRuta(c.puntos, c.pasos);
+      c.rojos = c.avisos.filter(function (x) { return x.color === COLORES.no; }).length;
+      c.esquivados = salidaMejor.esquivados + llegadaMejor.esquivados;
+      return [c];
+    });
   });
 }
 
@@ -1203,9 +1319,10 @@ function conTiempoLimite(url, opciones, segundos) {
   return fetch(url, opciones);
 }
 
-function rutaORS(clave, evitar, sinAlternativas) {
+function rutaORS(clave, evitar, sinAlternativas, a, b) {
+  a = a || ruta.desde.latlng; b = b || ruta.hasta.latlng;
   var cuerpo = {
-    coordinates: [[ruta.desde.latlng.lng, ruta.desde.latlng.lat], [ruta.hasta.latlng.lng, ruta.hasta.latlng.lat]],
+    coordinates: [[a.lng, a.lat], [b.lng, b.lat]],
     language: 'es', units: 'km', instructions: true, extra_info: ['waytype'],
     options: { vehicle_type: 'hgv', profile_params: { restrictions: {
       height: camion.altura, weight: camion.peso, length: camion.largo, width: CAMION_ANCHO } } }
@@ -1220,7 +1337,7 @@ function rutaORS(clave, evitar, sinAlternativas) {
     body: JSON.stringify(cuerpo)
   }, 30).then(function (r) {
     // los caminos alternativos tienen límites (por ejemplo, rutas muy largas): se pide uno solo
-    if (!r.ok && !sinAlternativas && r.status !== 401 && r.status !== 403 && r.status !== 429) return rutaORS(clave, evitar, true);
+    if (!r.ok && !sinAlternativas && r.status !== 401 && r.status !== 403 && r.status !== 429) return rutaORS(clave, evitar, true, a, b);
     if (!r.ok) throw new Error('OpenRouteService ' + r.status);
     return r.json().then(function (d) {
       return d.features.map(function (f) {
@@ -1228,8 +1345,10 @@ function rutaORS(clave, evitar, sinAlternativas) {
         (f.properties.segments || []).forEach(function (s) {
           (s.steps || []).forEach(function (p) {
             // OpenRouteService a veces dice "Camina hacia..." aunque sea en camión
-            pasos.push({ texto: String(p.instruction).replace(/^Camin[ae] /, 'Salí '), km: p.distance });
-            if (p.type >= 0 && p.type <= 3) vueltas++;   // izquierda, derecha, cerrada a la izq./der.
+            var esVuelta = p.type >= 0 && p.type <= 3;   // izquierda, derecha, cerrada a la izq./der.
+            pasos.push({ texto: String(p.instruction).replace(/^Camin[ae] /, 'Salí '), km: p.distance,
+                         ini: p.way_points ? p.way_points[0] : null, vuelta: esVuelta });
+            if (esVuelta) vueltas++;
           });
         });
         var c = f.geometry.coordinates, kmChicas = 0;
@@ -1249,9 +1368,10 @@ function rutaORS(clave, evitar, sinAlternativas) {
   });
 }
 
-function rutaValhalla(evitar) {
+function rutaValhalla(evitar, a, b) {
+  a = a || ruta.desde.latlng; b = b || ruta.hasta.latlng;
   var cuerpo = {
-    locations: [{ lat: ruta.desde.latlng.lat, lon: ruta.desde.latlng.lng }, { lat: ruta.hasta.latlng.lat, lon: ruta.hasta.latlng.lng }],
+    locations: [{ lat: a.lat, lon: a.lng }, { lat: b.lat, lon: b.lng }],
     costing: 'truck',
     costing_options: { truck: { height: camion.altura, weight: camion.peso, length: camion.largo, width: CAMION_ANCHO,
                                 use_living_streets: 0, use_highways: 1 } },
@@ -1290,10 +1410,12 @@ function rutaValhalla(evitar) {
     return viajes.map(function (trip) {
       var pasos = [], puntos = [], vueltas = 0;
       trip.legs.forEach(function (leg) {
+        var base = puntos.length;
         puntos = puntos.concat(decodificarPolilinea(leg.shape, 6));
         leg.maneuvers.forEach(function (m) {
-          pasos.push({ texto: m.instruction, km: m.length });
-          if ([10, 11, 14, 15].indexOf(m.type) !== -1) vueltas++;   // derecha, cerrada der., cerrada izq., izquierda
+          var esVuelta = [10, 11, 14, 15].indexOf(m.type) !== -1;   // derecha, cerrada der., cerrada izq., izquierda
+          pasos.push({ texto: m.instruction, km: m.length, ini: base + (m.begin_shape_index || 0), vuelta: esVuelta });
+          if (esVuelta) vueltas++;
         });
       });
       return { servicio: 'Valhalla (servicio de respaldo, menos confiable)', puntos: puntos,
@@ -1433,50 +1555,49 @@ var redPesada = { grupo: null, grilla: null, zonas: [], km: 0 };
 mapa.createPane('redPesada');
 mapa.getPane('redPesada').style.zIndex = 380;   // debajo de la ruta y de las restricciones
 
-function cargarRedPesada(zonas) {
-  var features = [];
-  zonas.forEach(function (z) {
-    if (z.red && z.red.features.length) {
-      features = features.concat(z.red.features);
-      if (z.zona.limites) redPesada.zonas.push(L.latLngBounds(z.zona.limites));
-      redPesada.km += z.zona.red_km || 0;
-    }
-  });
-  if (!features.length) return;
-  redPesada.grupo = L.geoJSON({ type: 'FeatureCollection', features: features }, {
-    pane: 'redPesada', interactive: false,
-    style: function () { return { color: '#2e7d32', weight: grosorRed(), opacity: 0.5 }; }
-  });
-  if (!apagadas.red_pesada) redPesada.grupo.addTo(mapa);
+function agregarRedPesada(r) {
+  if (!r.red || !r.red.features.length) return;
+  var features = r.red.features;
+  if (r.zona.limites) redPesada.zonas.push(L.latLngBounds(r.zona.limites));
+  redPesada.km += r.zona.red_km || 0;
+  if (!redPesada.grupo) {
+    redPesada.grupo = L.geoJSON(null, {
+      pane: 'redPesada', interactive: false,
+      style: function () { return { color: '#2e7d32', weight: grosorRed(), opacity: 0.5 }; }
+    });
+    if (!apagadas.red_pesada) redPesada.grupo.addTo(mapa);
+    mapa.on('zoomend', function () { redPesada.grupo.setStyle({ weight: grosorRed() }); });
+    redPesada.grilla = {};
+    redPesada.cerca = function (ll, metrosMax) {   // ll = [lat, lng]
+      var p = [ll[1] * RED_KX, ll[0] * RED_KY], gx = Math.floor(p[0] / RED_C), gy = Math.floor(p[1] / RED_C);
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+        var s = redPesada.grilla[(gx + dx) + ',' + (gy + dy)];
+        if (!s) continue;
+        for (var k = 0; k < s.length; k++) {
+          var a = s[k][0], b = s[k][1], vx = b[0] - a[0], vy = b[1] - a[1];
+          var t = Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / (vx * vx + vy * vy || 1)));
+          if (Math.hypot(a[0] + t * vx - p[0], a[1] + t * vy - p[1]) < metrosMax) return true;
+        }
+      }
+      return false;
+    };
+  }
+  redPesada.grupo.addData({ type: 'FeatureCollection', features: features });
   // grilla de 50 m para buscar rápido si un punto está sobre la red
-  var C = 50, kx = 111320 * Math.cos(-34.6 * Math.PI / 180), ky = 110540, grilla = {};
+  var grilla = redPesada.grilla;
   features.forEach(function (f) {
     var c = f.geometry.coordinates;
     for (var i = 1; i < c.length; i++) {
-      var a = [c[i - 1][0] * kx, c[i - 1][1] * ky], b = [c[i][0] * kx, c[i][1] * ky];
-      for (var gx = Math.floor(Math.min(a[0], b[0]) / C); gx <= Math.floor(Math.max(a[0], b[0]) / C); gx++) {
-        for (var gy = Math.floor(Math.min(a[1], b[1]) / C); gy <= Math.floor(Math.max(a[1], b[1]) / C); gy++) {
+      var a = [c[i - 1][0] * RED_KX, c[i - 1][1] * RED_KY], b = [c[i][0] * RED_KX, c[i][1] * RED_KY];
+      for (var gx = Math.floor(Math.min(a[0], b[0]) / RED_C); gx <= Math.floor(Math.max(a[0], b[0]) / RED_C); gx++) {
+        for (var gy = Math.floor(Math.min(a[1], b[1]) / RED_C); gy <= Math.floor(Math.max(a[1], b[1]) / RED_C); gy++) {
           (grilla[gx + ',' + gy] = grilla[gx + ',' + gy] || []).push([a, b]);
         }
       }
     }
   });
-  redPesada.grilla = grilla;
-  redPesada.cerca = function (ll, metrosMax) {   // ll = [lat, lng]
-    var p = [ll[1] * kx, ll[0] * ky], gx = Math.floor(p[0] / C), gy = Math.floor(p[1] / C);
-    for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
-      var s = grilla[(gx + dx) + ',' + (gy + dy)];
-      if (!s) continue;
-      for (var k = 0; k < s.length; k++) {
-        var a = s[k][0], b = s[k][1], vx = b[0] - a[0], vy = b[1] - a[1];
-        var t = Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / (vx * vx + vy * vy || 1)));
-        if (Math.hypot(a[0] + t * vx - p[0], a[1] + t * vy - p[1]) < metrosMax) return true;
-      }
-    }
-    return false;
-  };
-  mapa.on('zoomend', function () { redPesada.grupo.setStyle({ weight: grosorRed() }); });
 }
+var RED_C = 50, RED_KX = 111320 * Math.cos(-35 * Math.PI / 180), RED_KY = 110540;
 function grosorRed() { var z = mapa.getZoom(); return z <= 12 ? 2 : z <= 14 ? 4 : 7; }
 
 // --- Revisar la ruta contra nuestros datos ---

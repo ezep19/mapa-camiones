@@ -75,7 +75,8 @@ var mapa = L.map('mapa', {
   minZoom: 4,
   attributionControl: false   // el crédito de OpenStreetMap está siempre visible en el pie
 });
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(mapa);
+// crossOrigin: así el navegador puede guardar los pedazos del mapa para usarlos sin señal (ver sw.js)
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, crossOrigin: '' }).addTo(mapa);
 
 // Dibujar en "canvas" es más rápido con miles de elementos, y "tolerance"
 // agranda la zona sensible al toque para poder tocar líneas finas con el dedo.
@@ -1751,3 +1752,17 @@ function leerGuardado(clave) {
 function guardar(clave, valor) {
   try { localStorage.setItem(clave, JSON.stringify(valor)); } catch (e) { /* sin guardar */ }
 }
+
+// ===== 11. App instalable y uso sin señal =====
+// sw.js guarda la página, los datos y los pedazos del mapa que ya se miraron.
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('Sin modo sin señal:', e.message); });
+  });
+}
+window.addEventListener('offline', function () {
+  mostrarMensaje('Sin señal: ves lo que ya estaba guardado. Las rutas y la búsqueda de direcciones necesitan internet.');
+});
+window.addEventListener('online', function () {
+  if (/^Sin señal/.test(document.getElementById('mensaje').textContent)) ocultarMensaje();
+});

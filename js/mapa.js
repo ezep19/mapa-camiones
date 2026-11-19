@@ -81,8 +81,8 @@ var mapa = L.map('mapa', {
   minZoom: 4,
   attributionControl: false,  // el crédito de OpenStreetMap está siempre visible en la esquina
   zoomControl: false,         // en el celular se usan los dedos; en la PC va abajo a la derecha (más abajo)
-  // Girar el mapa (agregado leaflet-rotate): con dos dedos en el celular, Shift + rueda en la PC
-  rotate: true, touchRotate: true, shiftKeyRotate: true, rotateControl: false, bearing: 0
+  // (el agregado para girar el mapa se sacó el 19/11/2026: giraba sin querer al mover o acercar con dos dedos y
+  // hacía más lento el mapa; el código de giro queda, pero no se usa porque PUEDE_GIRAR da false)
 });
 var PUEDE_GIRAR = typeof mapa.setBearing === 'function';
 if (!L.Browser.mobile) L.control.zoom({ position: 'bottomright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(mapa);   // si el agregado no cargó, el mapa anda igual sin girar
@@ -155,16 +155,16 @@ var ControlBrujula = L.Control.extend({
   }
 });
 // crossOrigin: así el navegador puede guardar los pedazos del mapa para usarlos sin señal (ver sw.js)
-// updateWhenIdle false + keepBuffer: va bajando el mapa mientras lo arrastrás y guarda más alrededor
-// (antes en el celular quedaban cuadros grises hasta soltar el dedo)
+// En el celular el mapa de fondo se baja al soltar el dedo (lo que Leaflet trae por defecto): bajarlo mientras
+// arrastrás trababa los celulares con señal floja. keepBuffer: guarda un poco más de lo ya bajado alrededor.
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19, crossOrigin: '', updateWhenIdle: false, keepBuffer: 4
+  maxZoom: 19, crossOrigin: '', keepBuffer: 3
 }).addTo(mapa);
 
 // Dibujar en "canvas" es más rápido con miles de elementos, y "tolerance"
 // agranda la zona sensible al toque para poder tocar líneas finas con el dedo.
 // padding 0.3: dibuja un 30% más alrededor de la pantalla, así al arrastrar no aparecen bordes vacíos
-var dibujo = L.canvas({ tolerance: 10, padding: 0.3 });
+var dibujo = L.canvas({ tolerance: 10, padding: 0.15 });
 
 var grupos = {};           // id de capa -> capa de Leaflet
 var cantidades = {};       // id de capa -> cuántas restricciones tiene
@@ -356,8 +356,8 @@ function agregarZona(r) {
   });
   agregarRedPesada(r);
   mostrarLugares();
-  ponerRojosArriba();
-  armarPanel();
+  // (los bordes de lo rojo nuevo se agregan solos: ver anotarNuevo)
+  if (!panel.hidden) armarPanel();
   armarPanelLugares();
   revisarAvisoZona();
 }
@@ -448,7 +448,7 @@ function cargarCeldaPais(c) {
     });
     pais.cargadas++;
     clearTimeout(pais.timer);   // si llegan varios cuadrados juntos, se redibuja una vez
-    pais.timer = setTimeout(function () { ponerRojosArriba(); if (zonasIndice.length) armarPanel(); }, 250);
+    pais.timer = setTimeout(function () { if (zonasIndice.length && !panel.hidden) armarPanel(); }, 250);
   }, function (e) {
     console.error(e);
     delete pais.pedidas[c.archivo];   // se puede volver a intentar
@@ -604,23 +604,52 @@ mostrarSinSalida();
 // Borde blanco abajo de las líneas rojas: así se distinguen de las avenidas (que en el mapa de fondo son
 // rosadas/naranjas) y se ven mejor. Va en su propio "canvas", arriba de la ruta y abajo de las restricciones.
 crearPane('bordeRojo').style.zIndex = 395;
-var dibujoBorde = L.canvas({ pane: 'bordeRojo', padding: 0.3 });
+var dibujoBorde = L.canvas({ pane: 'bordeRojo', padding: 0.15 });
 var bordesRojos = L.layerGroup().addTo(mapa);
+function bordeRojo(l, grosor) {
+  if (l.setRadius || !l.getLatLngs || l.feature.geometry.type === 'Polygon') return null;
+  if (evaluar(l.feature.properties).estado !== 'no') return null;
+  l._borde = L.polyline(l.getLatLngs(), {
+    renderer: dibujoBorde, pane: 'bordeRojo', color: '#ffffff', weight: grosor, opacity: 0.95,
+    lineCap: 'round', lineJoin: 'round', smoothFactor: 1.5, interactive: false
+  });
+  bordesRojos.addLayer(l._borde);
+  return l._borde;
+}
 function armarBordesRojos() {
   bordesRojos.clearLayers();
   var grosor = grosorSegunZoom('no') + 4;
   Object.keys(grupos).forEach(function (id) {
     if (!mapa.hasLayer(grupos[id])) return;
-    grupos[id].eachLayer(function (l) {
-      if (l.setRadius || !l.getLatLngs || l.feature.geometry.type === 'Polygon') return;
-      if (evaluar(l.feature.properties).estado !== 'no') return;
-      bordesRojos.addLayer(L.polyline(l.getLatLngs(), {
-        renderer: dibujoBorde, pane: 'bordeRojo', color: '#ffffff', weight: grosor, opacity: 0.95,
-        lineCap: 'round', lineJoin: 'round', smoothFactor: 1.5, interactive: false
-      }));
-    });
+    grupos[id].eachLayer(function (l) { l._borde = null; bordeRojo(l, grosor); });
   });
 }
+// Lo nuevo (una zona, un cuadradito de cortes en vivo) se agrega SOLO: antes se rearmaban todos los bordes
+// (miles) cada vez que llegaba algo, y en el celular eso trababa el mapa al moverlo.
+var rojosNuevos = [], rojosTimer = null;
+function anotarNuevo(e) {
+  rojosNuevos.push(e.layer);
+  if (!rojosTimer) rojosTimer = setTimeout(procesarNuevos, 0);
+}
+function procesarNuevos() {
+  rojosTimer = null;
+  var lista = rojosNuevos; rojosNuevos = [];
+  var grosor = grosorSegunZoom('no') + 4;
+  lista.forEach(function (l) {
+    if (!l._map || l._borde) return;   // la capa está apagada (se arma al prenderla) o ya tiene borde
+    if (evaluar(l.feature.properties).estado !== 'no') return;
+    bordeRojo(l, grosor);
+    l.bringToFront();
+  });
+}
+function sacarBorde(e) {
+  if (e.layer._borde) { bordesRojos.removeLayer(e.layer._borde); e.layer._borde = null; }
+}
+
+Object.keys(grupos).forEach(function (id) {
+  grupos[id].on('layeradd', anotarNuevo);
+  grupos[id].on('layerremove', sacarBorde);
+});
 
 function ponerRojosArriba() {
   armarBordesRojos();
@@ -1297,7 +1326,7 @@ function ponerCortes(clave, lista) {
   }
   // si llegan varios cuadraditos juntos, se redibuja una sola vez
   clearTimeout(cortes.timer);
-  cortes.timer = setTimeout(function () { ponerRojosArriba(); if (zonasIndice.length) armarPanel(); }, 250);
+  cortes.timer = setTimeout(function () { if (zonasIndice.length && !panel.hidden) armarPanel(); }, 250);
 }
 
 // Al tocar un corte: entre qué calles es (un pedido de detalle por corte tocado, y queda guardado)
@@ -2549,7 +2578,7 @@ function agregarRedPesada(r) {
   if (!redPesada.grupo) {
     redPesada.grupo = L.geoJSON(null, {
       // en canvas y no en SVG: con miles de tramos el SVG trababa el mapa al moverlo
-      pane: 'redPesada', interactive: false, renderer: L.canvas({ pane: 'redPesada', padding: 0.3 }), smoothFactor: 3,
+      pane: 'redPesada', interactive: false, renderer: L.canvas({ pane: 'redPesada', padding: 0.15 }), smoothFactor: 3,
       style: function () { return { color: '#2e7d32', weight: grosorRed(), opacity: 0.5 }; }
     });
     if (!apagadas.red_pesada) redPesada.grupo.addTo(mapa);

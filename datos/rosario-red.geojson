@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","zona":"Rosario","actualizado":"2026-11-19","features":[{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-60.714241,-32.87766],[-60.714124,-32.878103],[-60.713823,-32.878665],[-60.713459,-32.879259],[-60.713386,-32.879344],[-60.713262,-32.87949]]},"properties":{"capa":"red_pesada","calle":null,"osm":"way/301181083"}}]}

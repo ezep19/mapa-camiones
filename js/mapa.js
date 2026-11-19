@@ -293,7 +293,8 @@ mostrarMensaje('Cargando restricciones...');
 fetch('datos/zonas.json', { cache: 'no-cache' })
   .then(function (r) { if (!r.ok) throw new Error('zonas.json ' + r.status); return r.json(); })
   .then(function (indice) {
-    zonasIndice = indice.zonas.filter(function (z) { return z.limites; });
+    // solo zonas con restricciones descargadas (una zona a medio bajar no se ofrece ni cuenta como revisada)
+    zonasIndice = indice.zonas.filter(function (z) { return z.limites && z.archivo; });
     ocultarMensaje();
     armarPanel();
     cargarZonasVisibles();

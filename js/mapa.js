@@ -339,6 +339,12 @@ function agregarZona(r) {
   r.datos.features.forEach(function (f) {
     var g = grupos[f.properties.capa];
     if (!g) return;
+    // si la misma restricción ya vino con el resto del país, queda la de la zona
+    var k = clavePais(f.properties);
+    if (k) {
+      enZonas[k] = true;
+      if (pais.capas[k]) { g.removeLayer(pais.capas[k]); cantidades[f.properties.capa]--; delete pais.capas[k]; }
+    }
     g.addData(f);
     cantidades[f.properties.capa]++;
   });
@@ -370,9 +376,19 @@ function cargarZonasVisibles() {
     if (!zonasCargadas.length) mostrarMensaje('Acercá el mapa a una ciudad para ver las restricciones.');
     return;
   }
-  if (/^Acercá el mapa|^Todavía no hay datos/.test(m.textContent)) ocultarMensaje();
+  if (/^Acercá el mapa|^Todavía no hay datos|^Acá solo hay/.test(m.textContent)) ocultarMensaje();
+  cargarPaisEn(mapa.getBounds().pad(0.2));
   var visibles = zonasEn(mapa.getBounds().pad(0.2));
   if (!visibles.length && !zonasCargando) {
+    // fuera de las ciudades descargadas: se avisa una vez qué hay y qué no
+    if (pais.celdas.length) {
+      if (pais.avisado) return;
+      pais.avisado = true;
+      mostrarMensaje('Acá solo hay restricciones cargadas en rutas y calles (alturas, pesos, prohibidos). ' +
+                     'Las calles sin salida y los pasos bajos calculados están solo en las ciudades de Capas → "Ir a".');
+      setTimeout(function () { if (/^Acá solo hay/.test(m.textContent)) ocultarMensaje(); }, 9000);
+      return;
+    }
     mostrarMensaje('Todavía no hay datos de esta zona. Las zonas con datos están en Capas → "Ir a".');
     setTimeout(function () { if (/^Todavía no hay datos/.test(m.textContent)) ocultarMensaje(); }, 6000);
     return;
@@ -380,6 +396,64 @@ function cargarZonasVisibles() {
   visibles.forEach(cargarZona);
 }
 mapa.on('moveend', cargarZonasVisibles);
+
+// --- Resto del país: restricciones cargadas en OSM fuera de las zonas (rutas, pueblos) ---
+// Las baja scripts/descargar_pais.py en cuadrados de 2° (datos/pais/*.geojson, índice datos/pais.json).
+// Se bajan los cuadrados que se miran (zoom >= 9) y los de por donde pasa una ruta.
+var pais = { celdas: [], pedidas: {}, cargadas: 0, actualizado: null, timer: null, avisado: false, capas: {} };
+var enZonas = {};   // restricciones ya cargadas por alguna zona (para no ponerlas dos veces)
+function clavePais(p) { return p.osm && /^(altura|peso|largo|prohibido)$/.test(p.capa) ? p.osm + '|' + p.capa : null; }
+fetch('datos/pais.json', { cache: 'no-cache' })
+  .then(function (r) { return r.ok ? r.json() : null; })
+  .then(function (d) {
+    if (!d || !d.celdas) return;
+    pais.celdas = d.celdas;
+    pais.actualizado = d.actualizado;
+    if (mapa.getZoom() >= ZOOM_MINIMO_DATOS) cargarPaisEn(mapa.getBounds().pad(0.2));
+  })
+  .catch(function (e) { console.warn('Sin datos del resto del país:', e); });
+
+function cargarCeldaPais(c) {
+  if (pais.pedidas[c.archivo]) return pais.pedidas[c.archivo];
+  pais.pedidas[c.archivo] = bajarJSON(c.archivo, true).then(function (d) {
+    d.features.forEach(function (f) {
+      var g = grupos[f.properties.capa], k = clavePais(f.properties);
+      if (!g || (k && (enZonas[k] || pais.capas[k]))) return;
+      g.addData(f);
+      cantidades[f.properties.capa]++;
+      if (k) { var capas = g.getLayers(); pais.capas[k] = capas[capas.length - 1]; }
+    });
+    pais.cargadas++;
+    clearTimeout(pais.timer);   // si llegan varios cuadrados juntos, se redibuja una vez
+    pais.timer = setTimeout(function () { ponerRojosArriba(); if (zonasIndice.length) armarPanel(); }, 250);
+  }, function (e) {
+    console.error(e);
+    delete pais.pedidas[c.archivo];   // se puede volver a intentar
+  });
+  return pais.pedidas[c.archivo];
+}
+function cargarPaisEn(limites) {
+  return Promise.all(pais.celdas.filter(function (c) { return L.latLngBounds(c.limites).intersects(limites); })
+    .map(cargarCeldaPais));
+}
+// Los cuadrados por donde pasan uno o varios recorridos (no el rectángulo entero: en un viaje en diagonal serían muchos)
+function cargarPaisEnRutas(listas) {
+  if (!pais.celdas.length) return Promise.resolve();
+  var pedir = {};
+  listas.forEach(function (puntos) {
+    for (var i = 0; i < puntos.length; i++) {
+      var a = puntos[i], b = puntos[i + 1] || a;
+      var n = Math.max(1, Math.ceil(L.latLng(a).distanceTo(b) / 20000));   // un punto cada 20 km como mínimo
+      for (var k = 0; k < n; k++) {
+        var lat = a[0] + (b[0] - a[0]) * k / n, lng = a[1] + (b[1] - a[1]) * k / n;
+        pais.celdas.forEach(function (c) {
+          if (lat >= c.limites[0][0] && lat <= c.limites[1][0] && lng >= c.limites[0][1] && lng <= c.limites[1][1]) pedir[c.archivo] = c;
+        });
+      }
+    }
+  });
+  return Promise.all(Object.keys(pedir).map(function (k) { return cargarCeldaPais(pedir[k]); }));
+}
 
 mostrarMensaje('Cargando restricciones...');
 fetch('datos/zonas.json', { cache: 'no-cache' })
@@ -1365,6 +1439,7 @@ function armarPanel() {
     lista.appendChild(liCon);
   }
   var fechas = zonasCargadas.map(function (z) { return z.zona.titulo + ': ' + fecha(z.zona.actualizado); });
+  if (pais.cargadas && pais.actualizado) fechas.push('Rutas y resto del país: ' + fecha(pais.actualizado));
   var nota = document.getElementById('nota-datos');
   nota.textContent = 'Datos actualizados — ' + fechas.join(' · ');
   zonasCargadas.forEach(function (z) {
@@ -1897,7 +1972,8 @@ function calcularTramo(a, b, salida, conAlternativas) {
     return pedirCaminos(a, b, evitar, conAlternativas).then(function (caminos) {
       var todo = L.latLngBounds([]);
       caminos.forEach(function (c) { todo.extend(L.latLngBounds(c.puntos)); });
-      return Promise.all([cargarZonasEn(todo), cargarCortesEn(caminos.map(function (c) { return c.puntos; }))])
+      var listas = caminos.map(function (c) { return c.puntos; });
+      return Promise.all([cargarZonasEn(todo), cargarCortesEn(listas), cargarPaisEnRutas(listas)])
         .then(function () { return caminos; });
     }).then(function (caminos) {
       caminos.forEach(function (c) {
@@ -1950,7 +2026,7 @@ function calcularViajeLargo(desde, hasta, salida) {
     var p1 = L.latLng(base.puntos[i1]), p2 = L.latLng(base.puntos[i2]);
     salida.innerHTML = '<p class="ruta-cargando">Viaje largo: revisando la salida y la llegada para tu camión...</p>';
     // cargar las zonas de todo el recorrido (para revisar el tramo del medio)
-    return Promise.all([cargarZonasEn(L.latLngBounds(base.puntos)), cargarCortesEn([base.puntos])]).then(function () {
+    return Promise.all([cargarZonasEn(L.latLngBounds(base.puntos)), cargarCortesEn([base.puntos]), cargarPaisEnRutas([base.puntos])]).then(function () {
       return Promise.all([calcularTramo(desde, p1, null, true), calcularTramo(p2, hasta, null, true)]);
     }).then(function (r) {
       var salidaMejor = elegirOpciones(r[0])[0], llegadaMejor = elegirOpciones(r[1])[0];

@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=27">
+  <link rel="stylesheet" href="css/estilos.css?v=29">
 </head>
 <body>
   <header class="barra">
@@ -100,14 +100,21 @@
       <h3>Capas</h3>
       <p>En <b>Capas</b> prendés y apagás cada tipo de restricción, los <b>lugares útiles</b> (gomerías, estaciones
         de servicio, paradores, estacionamientos para camiones, duchas, balanzas: se ven al acercar el mapa) y los
-        <b>reportes de choferes</b>. Arriba están los botones <b>Ir a</b> para saltar a cada ciudad.</p>
+        <b>reportes de choferes</b> y los <b>👮 controles policiales fijos</b> de todo el país (Policía, Caminera,
+        Gendarmería, controles fitosanitarios). Las calles sin salida se ven al acercar el mapa.
+        Arriba están los botones <b>Ir a</b> para saltar a cada ciudad.</p>
+      <h3>Girar el mapa</h3>
+      <p>Girá dos dedos sobre el mapa para rotarlo. Cuando está girado aparece la <b>brújula</b> (abajo a la
+        derecha): tocala y el norte vuelve arriba.</p>
       <h3>Ruta para tu camión</h3>
       <p>Tocá <b>🧭 Ruta</b>, elegí desde dónde salís (tu ubicación, una dirección o tocando el mapa) y adónde vas.
         La ruta se calcula con tus medidas, esquiva lo que en el mapa sale rojo para tu camión y prefiere avenidas
         y la red de tránsito pesado. También podés dejar el dedo apretado en el mapa: <b>Salir desde acá / Ir hasta acá</b>.</p>
       <h3>Manejar con voz</h3>
       <p>Con la ruta calculada, tocá <b>▶ Manejar con voz</b>: te dice cada giro, te avisa los pasos bajos y
-        restricciones que vienen y recalcula si te salís. Con 🔊 apagás o prendés la voz y con ✕ terminás.</p>
+        restricciones que vienen, los controles policiales, y recalcula si te salís. El mapa gira para que lo que
+        tenés adelante quede arriba; con 🧭 lo cambiás a norte arriba (y al revés). Con 🔊 apagás o prendés la voz
+        y con ✕ terminás.</p>
       <h3>Reportar un problema</h3>
       <p>¿Viste un puente más bajo, una calle prohibida o cortada? Tocá la marca y usá <b>📣 Reportar un problema
         acá</b>, o dejá el dedo apretado en el lugar. El reporte se revisa antes de aparecer en el mapa.</p>
@@ -154,6 +161,7 @@
         <div id="nav-distancia" class="nav-distancia"></div>
         <div id="nav-texto" class="nav-texto"></div>
       </div>
+      <button id="nav-rumbo" class="nav-boton" type="button" aria-label="El mapa gira hacia donde vas">🧭</button>
       <button id="nav-voz" class="nav-boton" type="button" aria-label="Apagar la voz">🔊</button>
       <button id="nav-terminar" class="nav-boton" type="button" aria-label="Terminar la navegación">✕</button>
     </div>
@@ -167,6 +175,9 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="js/mapa.js?v=27"></script>
+  <!-- para girar el mapa (con dos dedos); si no carga, el mapa anda igual sin girar -->
+  <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"
+          integrity="sha384-MtIdllebpZyms2pw9K3YJl8BEqrKNQCdSFAySjeglab6z2PkeFdF4Lb9cDsnxQuG" crossorigin=""></script>
+  <script src="js/mapa.js?v=29"></script>
 </body>
 </html>

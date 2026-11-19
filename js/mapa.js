@@ -73,14 +73,93 @@ var mapa = L.map('mapa', {
   center: vista ? [vista.lat, vista.lng] : CENTRO_INICIAL,
   zoom: vista ? Math.min(Math.max(vista.zoom, 4), 19) : ZOOM_INICIAL,
   minZoom: 4,
-  attributionControl: false   // el crédito de OpenStreetMap está siempre visible en el pie
+  attributionControl: false,  // el crédito de OpenStreetMap está siempre visible en el pie
+  // Girar el mapa (agregado leaflet-rotate): con dos dedos en el celular, Shift + rueda en la PC
+  rotate: true, touchRotate: true, shiftKeyRotate: true, rotateControl: false, bearing: 0
+});
+var PUEDE_GIRAR = typeof mapa.setBearing === 'function';   // si el agregado no cargó, el mapa anda igual sin girar
+
+// Capas propias que tienen que girar junto con el mapa (si no, quedan derechas y desfasadas)
+function crearPane(nombre) {
+  return mapa.createPane(nombre, (PUEDE_GIRAR && mapa.getPane('rotatePane')) || undefined);
+}
+
+// Para que no gire sin querer al hacer zoom con dos dedos: recién empieza a girar si los dedos giran más de 20°
+var UMBRAL_GIRO = 20;
+if (PUEDE_GIRAR && L.Map.TouchGestures) {
+  var gestoInicio = L.Map.TouchGestures.prototype._onTouchStart;
+  var gestoMover = L.Map.TouchGestures.prototype._onTouchMove;
+  L.Map.TouchGestures.prototype._onTouchStart = function (e) {
+    this._giroLibre = false;
+    this._angInicio = null;
+    return gestoInicio.call(this, e);
+  };
+  L.Map.TouchGestures.prototype._onTouchMove = function (e) {
+    if (this._rotating && !this._giroLibre && e.touches && e.touches.length === 2) {
+      var m = this._map;
+      var v = m.mouseEventToContainerPoint(e.touches[0]).subtract(m.mouseEventToContainerPoint(e.touches[1]));
+      var ang = Math.atan2(v.y, v.x) * 180 / Math.PI;
+      if (this._angInicio == null) this._angInicio = ang;
+      var dif = Math.abs((((ang - this._angInicio) % 360) + 540) % 360 - 180);
+      if (dif < UMBRAL_GIRO) {   // todavía no: solo zoom y movimiento
+        this._rotating = false;
+        try { gestoMover.call(this, e); } finally { this._rotating = true; }
+        return;
+      }
+      // pasó el umbral: empieza a girar desde acá (sin salto)
+      this._giroLibre = true;
+      this._startTheta = Math.atan(v.x / v.y);
+      this._startBearing = m.getBearing() + (v.y < 0 ? 180 : 0);
+    }
+    return gestoMover.call(this, e);
+  };
+}
+
+// Girar el mapa de a poco hasta un ángulo (0 = norte arriba)
+var giroAnim = null;
+function girarA(destino) {
+  if (!PUEDE_GIRAR) return;
+  if (giroAnim) cancelAnimationFrame(giroAnim);
+  var ini = mapa.getBearing(), d = ((((destino - ini) % 360) + 540) % 360) - 180, t0 = performance.now();
+  if (Math.abs(d) < 0.5) { mapa.setBearing(destino); return; }
+  (function paso() {
+    var k = Math.min(1, (performance.now() - t0) / 350);
+    mapa.setBearing(ini + d * (1 - Math.pow(1 - k, 3)));
+    giroAnim = k < 1 ? requestAnimationFrame(paso) : null;
+  })();
+}
+
+// Brújula: aparece cuando el mapa está girado; la aguja roja apunta al norte. Tocarla = norte arriba.
+var ControlBrujula = L.Control.extend({
+  options: { position: 'bottomright' },
+  onAdd: function () {
+    var b = L.DomUtil.create('button', 'boton-brujula');
+    b.type = 'button';
+    b.title = 'Poner el norte arriba';
+    b.setAttribute('aria-label', 'Poner el norte arriba');
+    b.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">' +
+      '<path d="M12 2.5l4.5 9.5h-9z" fill="#d50000"/><path d="M12 21.5l-4.5-9.5h9z" fill="#8a8f98"/>' +
+      '<text x="12" y="10.6" text-anchor="middle" font-size="5.5" font-weight="700" fill="#fff" font-family="sans-serif">N</text></svg>';
+    L.DomEvent.disableClickPropagation(b);
+    L.DomEvent.on(b, 'click', function () {
+      if (typeof nav !== 'undefined' && nav.activo && nav.rumbo) cambiarRumbo(false);
+      else girarA(0);
+    });
+    this.boton = b;
+    return b;
+  }
 });
 // crossOrigin: así el navegador puede guardar los pedazos del mapa para usarlos sin señal (ver sw.js)
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, crossOrigin: '' }).addTo(mapa);
+// updateWhenIdle false + keepBuffer: va bajando el mapa mientras lo arrastrás y guarda más alrededor
+// (antes en el celular quedaban cuadros grises hasta soltar el dedo)
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, crossOrigin: '', updateWhenIdle: false, keepBuffer: 4
+}).addTo(mapa);
 
 // Dibujar en "canvas" es más rápido con miles de elementos, y "tolerance"
 // agranda la zona sensible al toque para poder tocar líneas finas con el dedo.
-var dibujo = L.canvas({ tolerance: 10 });
+// padding 0.3: dibuja un 30% más alrededor de la pantalla, así al arrastrar no aparecen bordes vacíos
+var dibujo = L.canvas({ tolerance: 10, padding: 0.3 });
 
 var grupos = {};           // id de capa -> capa de Leaflet
 var cantidades = {};       // id de capa -> cuántas restricciones tiene
@@ -162,6 +241,7 @@ formCamion.addEventListener('submit', function (ev) {
   mostrarResumenCamion();
   cerrarVentanaCamion();
   repintar();
+  if (zonasIndice.length) armarPanel();   // "no pasás en N" cambia con las medidas
 });
 botonCancelar.addEventListener('click', cerrarVentanaCamion);
 document.getElementById('btn-camion').addEventListener('click', abrirVentanaCamion);
@@ -205,7 +285,7 @@ function zonasSinCargarEn(limites) {
 CAPAS.forEach(function (c) {
   cantidades[c.id] = 0;
   grupos[c.id] = crearCapa([]);
-  if (!apagadas[c.id]) grupos[c.id].addTo(mapa);
+  if (!apagadas[c.id] && c.id !== 'sin_salida') grupos[c.id].addTo(mapa);
 });
 LUGARES.forEach(function (l) {
   cantidadesLugares[l.id] = 0;
@@ -295,6 +375,15 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
   .then(function (indice) {
     // solo zonas con restricciones descargadas (una zona a medio bajar no se ofrece ni cuenta como revisada)
     zonasIndice = indice.zonas.filter(function (z) { return z.limites && z.archivo; });
+    // Zonas con muy pocas restricciones cargadas en OpenStreetMap: avisar (como Mar del Plata)
+    zonasIndice.forEach(function (z) {
+      var c = z.conteo || {};
+      var cargadas = (c.prohibido || 0) + (c.peso || 0) + (c.altura || 0) + (c.largo || 0);
+      if (!z.aviso && z.conteo && cargadas < 25) {
+        z.aviso = 'En ' + z.titulo + ' casi no hay restricciones cargadas en el mapa (' + cargadas +
+                  '). Puede haber calles prohibidas o puentes bajos que no figuran: respetá la señalización.';
+      }
+    });
     ocultarMensaje();
     armarPanel();
     cargarZonasVisibles();
@@ -312,6 +401,7 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
 function crearCapa(features) {
   return L.geoJSON({ type: 'FeatureCollection', features: features }, {
     renderer: dibujo,
+    smoothFactor: 1.5,   // simplifica un poco las líneas al dibujar (no se nota y es más rápido)
     style: estiloLinea,
     pointToLayer: function (f, latlng) { return L.circleMarker(latlng, estiloPunto(f)); },
     onEachFeature: function (f, capaLeaflet) {
@@ -364,7 +454,9 @@ function estiloPunto(f) {
   };
 }
 
-// Volver a pintar todo (cuando cambian las medidas o el zoom)
+// Volver a pintar todo (cuando cambian las medidas, o el zoom cambia lo suficiente para cambiar el grosor)
+var tramoPintado = null;
+function tramoZoom() { return Math.max(11, Math.min(15, Math.ceil(mapa.getZoom()))); }
 function repintar() {
   Object.keys(grupos).forEach(function (id) {
     grupos[id].eachLayer(function (l) {
@@ -372,9 +464,24 @@ function repintar() {
     });
   });
   ponerRojosArriba();
-  if (zonasIndice.length) armarPanel();
+  tramoPintado = tramoZoom();
 }
-mapa.on('zoomend', repintar);
+// Antes se repintaba todo (miles de elementos) en cada zoom: en el celular trababa el mapa al soltar los dedos
+mapa.on('zoomend', function () {
+  if (tramoZoom() !== tramoPintado) repintar();
+  mostrarSinSalida();
+});
+
+// Las calles sin salida (miles de puntos violetas) se ven solo de cerca: de lejos tapan todo y hacen lento el mapa
+var ZOOM_SIN_SALIDA = 13;
+function mostrarSinSalida() {
+  var g = grupos.sin_salida;
+  if (!g) return;
+  var ver = !apagadas.sin_salida && mapa.getZoom() >= ZOOM_SIN_SALIDA;
+  if (ver && !mapa.hasLayer(g)) g.addTo(mapa);
+  if (!ver && mapa.hasLayer(g)) mapa.removeLayer(g);
+}
+mostrarSinSalida();
 
 // Lo que no pasás se dibuja encima de todo lo demás, para que no quede tapado
 function ponerRojosArriba() {
@@ -770,6 +877,106 @@ function armarPanelReportes() {
   }
 }
 
+// ===== 7d. Controles policiales fijos (toda Argentina) =====
+// Los baja scripts/descargar_controles.py en datos/controles.geojson. Son pocos y casi todos están en las
+// rutas, por eso no dependen de las zonas. Solo se ponen en el mapa los que caen en la vista (más fluido).
+var CONTROLES = {
+  policial:      { nombre: 'Control policial',        icono: '👮' },
+  vial:          { nombre: 'Policía Caminera / Vial', icono: '🚓' },
+  gendarmeria:   { nombre: 'Gendarmería',             icono: '🛂' },
+  fitosanitario: { nombre: 'Control fitosanitario',   icono: '🌾' }
+};
+var ZOOM_CONTROLES = 9;
+var controles = { lista: [], grupo: L.layerGroup(), actualizado: null };
+
+fetch('datos/controles.geojson', { cache: 'no-cache' })
+  .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+  .then(function (d) {
+    controles.actualizado = d.actualizado;
+    controles.lista = (d.features || []).map(function (f) {
+      var c = f.geometry.coordinates;
+      return { f: f, latlng: L.latLng(c[1], c[0]), marca: null };
+    });
+    if (!apagadas.controles) controles.grupo.addTo(mapa);
+    mostrarControles();
+    if (zonasIndice.length) armarPanel();
+  })
+  .catch(function (e) { console.warn('Sin controles policiales:', e); });
+
+function marcaControl(item) {
+  var p = item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
+  var m = L.marker(item.latlng, {
+    icon: L.divIcon({ className: 'lugar-marca', html: '<span class="lugar-icono control">' + tipo.icono + '</span>',
+                      iconSize: [36, 36], iconAnchor: [18, 18], popupAnchor: [0, -16] }),
+    title: tipo.nombre + (p.nombre ? ': ' + p.nombre : ''),
+    keyboard: false
+  });
+  m.feature = item.f;
+  m.bindPopup(function (capa) {
+    return armarCartelControl(p) + botonReportar(capa, tipo.nombre + (p.nombre ? ' ' + p.nombre : '') + ' (' + p.osm + ')');
+  }, { maxWidth: 290 });
+  return m;
+}
+
+// Pone en el mapa solo los controles que están en la vista (con un margen), y solo de no tan lejos
+function mostrarControles() {
+  if (!controles.lista.length) return;
+  var ver = mapa.getZoom() >= ZOOM_CONTROLES && mapa.hasLayer(controles.grupo);
+  var caja = mapa.getBounds().pad(0.5);
+  controles.lista.forEach(function (it) {
+    var adentro = ver && caja.contains(it.latlng);
+    if (adentro && !it.marca) { it.marca = marcaControl(it); controles.grupo.addLayer(it.marca); }
+    else if (!adentro && it.marca && !it.marca.isPopupOpen()) { controles.grupo.removeLayer(it.marca); it.marca = null; }
+  });
+}
+mapa.on('moveend', mostrarControles);
+
+function armarCartelControl(p) {
+  var tipo = CONTROLES[p.tipo] || CONTROLES.policial;
+  var html = '<div class="cartel-tipo">' + tipo.icono + ' ' + esc(tipo.nombre) + '</div>';
+  html += '<div class="cartel-valor">' + esc(p.nombre || tipo.nombre) + '</div>';
+  if (p.operador) html += '<div class="cartel-calle">' + esc(p.operador) + '</div>';
+  if (p.ruta) html += '<div class="cartel-calle">' + esc(p.ruta) + '</div>';
+  if (p.tipo === 'fitosanitario') {
+    html += '<div class="cartel-linea">Revisan la carga (frutas, verduras, animales). Tené a mano la documentación.</div>';
+  } else {
+    html += '<div class="cartel-linea">Tené a mano los papeles del camión y de la carga.</div>';
+  }
+  if (p.horario) html += '<div class="cartel-linea">Horario: ' + esc(horario(p.horario)) + '</div>';
+  if (p.telefono) {
+    var tel = String(p.telefono).split(/[;,]/)[0].trim();
+    html += '<div class="cartel-linea">Teléfono: <a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">' + esc(tel) + '</a></div>';
+  }
+  html += '<div class="cartel-fuente">Figura en OpenStreetMap como control fijo: puede no estar funcionando siempre, ' +
+          'y puede haber controles que no figuran.</div>';
+  html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (controles.actualizado ? ' (' + fecha(controles.actualizado) + ')' : '') +
+          ' · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) + '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
+  return html;
+}
+
+// Controles cerca de una ruta (para la lista del resultado y para la voz al manejar)
+function controlesEnRuta(puntosRuta) {
+  if (!controles.lista.length || !puntosRuta.length) return [];
+  var lat0 = puntosRuta[0][0] * Math.PI / 180, kx = Math.cos(lat0) * 111320, ky = 110540;
+  // rectángulo de la ruta agrandado 80 m (una ruta recta tiene un rectángulo finito)
+  var c0 = L.latLngBounds(puntosRuta);
+  var caja = L.latLngBounds([c0.getSouth() - 80 / ky, c0.getWest() - 80 / kx], [c0.getNorth() + 80 / ky, c0.getEast() + 80 / kx]);
+  var res = [];
+  controles.lista.forEach(function (it) {
+    if (!caja.contains(it.latlng)) return;
+    var px = it.latlng.lng * kx, py = it.latlng.lat * ky, mejor = Infinity, idx = 0, tMejor = 0;
+    for (var i = 1; i < puntosRuta.length; i++) {
+      var ax = puntosRuta[i - 1][1] * kx, ay = puntosRuta[i - 1][0] * ky, bx = puntosRuta[i][1] * kx, by = puntosRuta[i][0] * ky;
+      var vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
+      var t = L2 ? Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / L2)) : 0;
+      var d = Math.hypot(ax + t * vx - px, ay + t * vy - py);
+      if (d < mejor) { mejor = d; idx = i - 1; tMejor = t; }
+    }
+    if (mejor <= 60) res.push({ item: it, orden: idx, t: tMejor });
+  });
+  return res.sort(function (a, b) { return a.orden - b.orden; });
+}
+
 // ===== 8. Panel para prender y apagar capas =====
 function armarPanel() {
   var lista = document.getElementById('lista-capas');
@@ -788,7 +995,8 @@ function armarPanel() {
     var muestra = c.id === 'sin_salida' ? COLORES.aviso : '#3d4652';
     var cuenta = vacia ? 'Sin datos en esta zona'
       : cantidades[c.id].toLocaleString('es-AR') + ' en el mapa' +
-        (MEDIDA_DE_CAPA[c.id] && camion ? ' · no pasás en ' + noPasa.toLocaleString('es-AR') : '');
+        (MEDIDA_DE_CAPA[c.id] && camion ? ' · no pasás en ' + noPasa.toLocaleString('es-AR') : '') +
+        (c.id === 'sin_salida' ? ' · se ven al acercar el mapa' : '');
     var li = document.createElement('li');
     li.innerHTML =
       '<label' + (vacia ? ' class="capa-vacia"' : '') + '>' +
@@ -801,6 +1009,10 @@ function armarPanel() {
       if (ev.target.checked) { grupos[c.id].addTo(mapa); delete apagadas[c.id]; ponerRojosArriba(); }
       else { mapa.removeLayer(grupos[c.id]); apagadas[c.id] = true; }
       guardar(CLAVE_CAPAS, apagadas);
+      if (c.id === 'sin_salida') {
+        mostrarSinSalida();
+        if (ev.target.checked && mapa.getZoom() < ZOOM_SIN_SALIDA) { mostrarMensaje('Acercá el mapa para ver las calles sin salida.'); setTimeout(ocultarMensaje, 3000); }
+      }
     });
     lista.appendChild(li);
   });
@@ -818,6 +1030,20 @@ function armarPanel() {
       guardar(CLAVE_CAPAS, apagadas);
     });
     lista.appendChild(liRed);
+  }
+  if (controles.lista.length) {
+    var liCon = document.createElement('li');
+    liCon.innerHTML =
+      '<label><input type="checkbox"' + (apagadas.controles ? '' : ' checked') + '>' +
+        '<span class="muestra-lugar">👮</span>' +
+        '<span class="capa-texto">Controles policiales fijos<br><span class="capa-cantidad">' +
+        controles.lista.length.toLocaleString('es-AR') + ' en todo el país · se ven al acercar el mapa</span></span></label>';
+    liCon.querySelector('input').addEventListener('change', function (ev) {
+      if (ev.target.checked) { controles.grupo.addTo(mapa); delete apagadas.controles; mostrarControles(); }
+      else { mapa.removeLayer(controles.grupo); apagadas.controles = true; }
+      guardar(CLAVE_CAPAS, apagadas);
+    });
+    lista.appendChild(liCon);
   }
   var fechas = zonasCargadas.map(function (z) { return z.zona.titulo + ': ' + fecha(z.zona.actualizado); });
   var nota = document.getElementById('nota-datos');
@@ -904,7 +1130,7 @@ mapa.on('click', function () { abrirPanel(false); });
 // ===== 9. Mi ubicación (punto azul) =====
 // El primer toque busca la ubicación y centra el mapa; después el punto se va moviendo solo.
 // Los toques siguientes vuelven a centrar el mapa en donde estás.
-mapa.createPane('ubicacion');
+crearPane('ubicacion');
 mapa.getPane('ubicacion').style.zIndex = 450;   // arriba de las restricciones
 var ubicacion = { punto: null, precision: null, ultima: null, buscando: false };
 
@@ -927,6 +1153,16 @@ var ControlUbicacion = L.Control.extend({
   }
 });
 var controlUbicacion = new ControlUbicacion().addTo(mapa);
+// la brújula va arriba del botón de ubicación, y solo se ve con el mapa girado (o manejando)
+var controlBrujula = PUEDE_GIRAR ? new ControlBrujula().addTo(mapa) : null;
+function ponerBrujula() {
+  if (!controlBrujula) return;
+  var g = mapa.getBearing();
+  var girado = Math.abs(((g % 360) + 360) % 360) > 0.5 && Math.abs(((g % 360) + 360) % 360 - 360) > 0.5;
+  controlBrujula.boton.hidden = !girado && !(typeof nav !== 'undefined' && nav.activo);
+  controlBrujula.boton.firstChild.style.transform = 'rotate(' + g + 'deg)';
+}
+if (controlBrujula) { mapa.on('rotate', ponerBrujula); ponerBrujula(); }
 
 function tocarUbicacion() {
   if (ubicacion.ultima) {
@@ -1003,7 +1239,7 @@ var ruta = {
 };
 var CAMION_ANCHO = 2.6;   // ancho legal; el formulario no lo pide
 
-mapa.createPane('ruta');
+crearPane('ruta');
 mapa.getPane('ruta').style.zIndex = 390;   // debajo de las restricciones: lo rojo se sigue viendo
 
 fetch('datos/ruta_config.json', { cache: 'no-cache' })
@@ -1571,6 +1807,16 @@ function mostrarRuta(indice, sinMoverMapa) {
   } else if (!(r.sinRevisar && r.sinRevisar.length)) {
     html += '<p class="ruta-ok">No encontré pasos bajos ni reportes sobre esta ruta. Igual respetá la señalización.</p>';
   }
+  r.controles = controlesEnRuta(r.puntos);
+  if (r.controles.length) {
+    html += '<details class="ruta-pasos"><summary>👮 Controles policiales en el camino (' + r.controles.length + ')</summary><ul class="ruta-lista">';
+    r.controles.forEach(function (c, i) {
+      var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
+      html += '<li><button type="button" data-control="' + i + '"><span class="ruta-lista-icono">' + tipo.icono + '</span>' +
+              esc(tipo.nombre + (p.nombre && p.nombre !== tipo.nombre ? ': ' + p.nombre : '')) + '</button></li>';
+    });
+    html += '</ul></details>';
+  }
   if (r.pasos.length) {
     html += '<details class="ruta-pasos"><summary>Ver indicaciones (' + r.pasos.length + ')</summary><ol>';
     r.pasos.forEach(function (p) {
@@ -1590,6 +1836,15 @@ function mostrarRuta(indice, sinMoverMapa) {
       abrirPanelRuta(false);
       mapa.setView(a.latlng, Math.max(mapa.getZoom(), 17));
       if (a.capa) a.capa.openPopup(a.latlng);
+    });
+  });
+  salida.querySelectorAll('[data-control]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var it = r.controles[+b.getAttribute('data-control')].item;
+      abrirPanelRuta(false);
+      mapa.setView(it.latlng, Math.max(mapa.getZoom(), 15));
+      if (!it.marca) { it.marca = marcaControl(it); controles.grupo.addLayer(it.marca); }
+      if (mapa.hasLayer(controles.grupo)) it.marca.openPopup();
     });
   });
   if (sinMoverMapa) return;
@@ -1616,7 +1871,7 @@ function duracion(seg) {
 // --- Red de tránsito pesado (calles marcadas para camiones) ---
 // Se dibuja en verde y se usa para elegir el camino más fácil.
 var redPesada = { grupo: null, grilla: null, zonas: [], km: 0 };
-mapa.createPane('redPesada');
+crearPane('redPesada');
 mapa.getPane('redPesada').style.zIndex = 380;   // debajo de la ruta y de las restricciones
 
 function agregarRedPesada(r) {
@@ -1626,11 +1881,15 @@ function agregarRedPesada(r) {
   redPesada.km += r.zona.red_km || 0;
   if (!redPesada.grupo) {
     redPesada.grupo = L.geoJSON(null, {
-      pane: 'redPesada', interactive: false,
+      // en canvas y no en SVG: con miles de tramos el SVG trababa el mapa al moverlo
+      pane: 'redPesada', interactive: false, renderer: L.canvas({ pane: 'redPesada', padding: 0.3 }), smoothFactor: 3,
       style: function () { return { color: '#2e7d32', weight: grosorRed(), opacity: 0.5 }; }
     });
     if (!apagadas.red_pesada) redPesada.grupo.addTo(mapa);
-    mapa.on('zoomend', function () { redPesada.grupo.setStyle({ weight: grosorRed() }); });
+    var grosorPintado = grosorRed();
+    mapa.on('zoomend', function () {
+      if (grosorRed() !== grosorPintado) { grosorPintado = grosorRed(); redPesada.grupo.setStyle({ weight: grosorPintado }); }
+    });
     redPesada.grilla = {};
     redPesada.cerca = function (ll, metrosMax) {   // ll = [lat, lng]
       var p = [ll[1] * RED_KX, ll[0] * RED_KY], gx = Math.floor(p[0] / RED_C), gy = Math.floor(p[1] / RED_C);
@@ -1646,7 +1905,15 @@ function agregarRedPesada(r) {
       return false;
     };
   }
-  redPesada.grupo.addData({ type: 'FeatureCollection', features: features });
+  // Todos los tramos de la zona como UNA sola línea de muchas partes: con miles de líneas sueltas
+  // el mapa tardaba bastante más en redibujarse en cada zoom (la red no se toca, así que da igual)
+  var partes = [];
+  features.forEach(function (f) {
+    var g = f.geometry;
+    if (g.type === 'LineString') partes.push(g.coordinates);
+    else if (g.type === 'MultiLineString') partes = partes.concat(g.coordinates);
+  });
+  redPesada.grupo.addData({ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: partes } });
   // grilla de 50 m para buscar rápido si un punto está sobre la red
   var grilla = redPesada.grilla;
   features.forEach(function (f) {
@@ -1882,6 +2149,33 @@ var NAV = {
 };
 
 try { nav.voz = leerGuardado('mapa-camiones:voz') !== false; } catch (e) { /* sin guardar */ }
+// "Rumbo arriba": al manejar, el mapa gira para que lo de adelante quede arriba (como los GPS)
+nav.rumbo = PUEDE_GIRAR && leerGuardado('mapa-camiones:rumbo') !== false;
+
+// Hacia dónde va la ruta en este punto (grados desde el norte), mirando ~40 m hacia adelante
+function rumboEnRuta(u) {
+  var pts = nav.r.puntos, a = L.latLng(pts[u.idx]), j = u.idx + 1;
+  while (j < pts.length - 1 && a.distanceTo(pts[j]) < 40) j++;
+  var b = L.latLng(pts[Math.min(j, pts.length - 1)]);
+  return Math.atan2((b.lng - a.lng) * Math.cos(a.lat * Math.PI / 180), b.lat - a.lat) * 180 / Math.PI;
+}
+function cambiarRumbo(prender) {
+  nav.rumbo = PUEDE_GIRAR && prender;
+  guardar('mapa-camiones:rumbo', nav.rumbo);
+  ponerRumboBoton();
+  if (!nav.rumbo) girarA(0);
+  else if (nav.activo && nav.ultimaPos) { nav.ultimoRumbo = null; seguirNavegacion(nav.ultimaPos); }
+  mostrarMensaje(nav.rumbo ? 'El mapa gira hacia donde vas.' : 'Norte arriba: el mapa queda fijo.');
+  setTimeout(ocultarMensaje, 2500);
+}
+function ponerRumboBoton() {
+  var b = document.getElementById('nav-rumbo');
+  if (!b) return;
+  b.hidden = !PUEDE_GIRAR;
+  b.classList.toggle('apagado', !nav.rumbo);
+  b.setAttribute('aria-label', nav.rumbo ? 'Poner el norte arriba' : 'Que el mapa gire hacia donde vas');
+  b.title = nav.rumbo ? 'El mapa gira hacia donde vas (tocá para norte arriba)' : 'Norte arriba (tocá para que gire hacia donde vas)';
+}
 
 function hablar(texto, urgente) {
   if (!nav.voz || !window.speechSynthesis || !texto) return;
@@ -1938,12 +2232,25 @@ function empezarNavegacion(rutaElegida) {
     }
     return { n: n, texto: a.texto, voz: a.voz, rojo: !!a.rojo, dist: nav.acum[mejor] };
   });
+  // controles policiales: se avisan como un peligro, pero sin alarma
+  var VOZ_CONTROL = { policial: 'control policial', vial: 'control de la policía caminera',
+                      gendarmeria: 'control de Gendarmería', fitosanitario: 'control fitosanitario' };
+  (r.controles || controlesEnRuta(r.puntos)).forEach(function (c, k) {
+    var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
+    nav.avisos.push({ n: 'ctl' + k, texto: tipo.nombre, voz: VOZ_CONTROL[p.tipo] || 'control policial',
+                      icono: tipo.icono + ' ', rojo: false,
+                      dist: nav.acum[Math.min(c.orden, nav.acum.length - 1)] +
+                            (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
+  });
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.activo = true; nav.recalculando = false; nav.primera = true;
   abrirPanelRuta(false);
   abrirPanel(false);
   document.getElementById('nav-cartel').hidden = false;
   document.body.classList.add('navegando');
   ponerVozBoton();
+  ponerRumboBoton();
+  nav.ultimoRumbo = null;
+  ponerBrujula();
   mostrarCartelNav('Buscando tu ubicación...', '');
   if (!ruta.esRecalculo) hablar('Vamos. Seguí la ruta azul.', true);
   ruta.esRecalculo = false;
@@ -1954,6 +2261,8 @@ function empezarNavegacion(rutaElegida) {
 
 function terminarNavegacion(mensaje) {
   nav.activo = false;
+  girarA(0);   // al terminar, el norte vuelve arriba
+  ponerBrujula();
   nav.recalculando = false;
   ruta.alTerminarCalculo = null;   // si estaba recalculando, al terminar no vuelve a arrancar sola
   document.getElementById('nav-cartel').hidden = true;
@@ -2014,6 +2323,14 @@ function seguirNavegacion(pos) {
   }
   nav.fuera = 0;
   nav.idx = u.idx;
+  if (nav.rumbo) {
+    var rumbo = rumboEnRuta(u);
+    // solo si cambió algo (si no, el mapa tiembla con cada lectura del GPS)
+    if (nav.ultimoRumbo == null || Math.abs((((rumbo - nav.ultimoRumbo) % 360) + 540) % 360 - 180) > 4) {
+      nav.ultimoRumbo = rumbo;
+      girarA(-rumbo);
+    }
+  }
   nav.primera = false;
   var total = nav.acum[nav.acum.length - 1];
   var falta = total - u.recorrido;
@@ -2031,7 +2348,7 @@ function seguirNavegacion(pos) {
   nav.avisos.forEach(function (a) {
     var hasta = a.dist - u.recorrido;
     if (hasta < -20 || hasta > NAV.AVISO_PELIGRO_M) return;
-    if (!peligro) peligro = (a.rojo ? '⛔ ' : '⚠ ') + 'En ' + textoDistancia(Math.max(0, hasta)) + ': ' + a.texto;
+    if (!peligro) peligro = (a.icono || (a.rojo ? '⛔ ' : '⚠ ')) + 'En ' + textoDistancia(Math.max(0, hasta)) + ': ' + a.texto;
     if (!nav.dichos['a' + a.n]) {
       nav.dichos['a' + a.n] = true;
       decir.push((a.rojo ? 'Cuidado. ' : 'Atención. ') + 'En ' + vozDistancia(Math.max(50, hasta)) + ', ' + (a.voz || a.texto) + '.');
@@ -2090,6 +2407,9 @@ function ponerVozBoton() {
 }
 if (document.getElementById('nav-cartel')) {
   document.getElementById('nav-terminar').addEventListener('click', function () { terminarNavegacion('Navegación terminada.'); });
+  if (document.getElementById('nav-rumbo')) {
+    document.getElementById('nav-rumbo').addEventListener('click', function () { cambiarRumbo(!nav.rumbo); });
+  }
   document.getElementById('nav-voz').addEventListener('click', function () {
     nav.voz = !nav.voz;
     guardar('mapa-camiones:voz', nav.voz);

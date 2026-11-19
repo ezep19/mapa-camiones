@@ -556,3 +556,24 @@ body.navegando .boton-ruta { display: none; }
 .ayuda-colores li { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0; }
 .ayuda-colores i { flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%; }
 .ayuda-aviso { margin-top: 12px !important; padding: 8px 10px; border-radius: 8px; background: #fff3c4; color: #5c4300; }
+
+/* ===== Controles policiales ===== */
+.lugar-icono.control { border-color: #263238; background: #eceff1; }
+.ruta-lista-icono { flex: none; font-size: 18px; width: 22px; text-align: center; }
+
+/* ===== Brújula (mapa girado) ===== */
+.boton-brujula {
+  width: 46px;
+  height: 46px;
+  margin: 0 15px 10px 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+.boton-brujula[hidden] { display: none; }
+.nav-boton.apagado { opacity: 0.55; }

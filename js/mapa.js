@@ -25,6 +25,7 @@ var CAPAS = [
   { id: 'ancho',               nombre: 'Ancho máximo o calle angosta',             forma: 'linea' },
   { id: 'barrera',             nombre: 'Pilotes, bloques o portones en la calle',  forma: 'punto' },
   { id: 'obra',                nombre: 'Calle en obra (verificar)',                forma: 'punteada' },
+  { id: 'corte',               nombre: 'Cortes y obras EN VIVO',                    forma: 'linea' },
   { id: 'sin_salida',          nombre: 'Calle sin salida',                         forma: 'punto' }
 ];
 var CAPA_POR_ID = {};
@@ -263,6 +264,7 @@ function evaluar(p) {
   // pilotes y bloques cortan el paso; un portón puede estar abierto o cerrado
   if (p.capa === 'barrera') return { estado: p.bloquea ? 'no' : 'sin_dato' };
   if (p.capa === 'obra') return { estado: 'sin_dato' };
+  if (p.capa === 'corte') return { estado: p.cortada ? 'no' : 'sin_dato' };   // en vivo (TomTom)
   var medida = MEDIDA_DE_CAPA[p.capa];
   if (!medida || p.limite == null || !camion) return { estado: 'sin_dato', medida: medida };
   var valor = medidaCamion(medida);
@@ -438,7 +440,7 @@ function estiloLinea(f) {
     weight: grosorSegunZoom(estado),
     opacity: estado === 'no' ? 1 : estado === 'si' ? 0.5 : lejos ? 0.75 : 0.95,
     lineCap: 'round',
-    dashArray: CAPA_POR_ID[f.properties.capa].forma === 'punteada' ? '8 6' : null,
+    dashArray: CAPA_POR_ID[f.properties.capa].forma === 'punteada' || (f.properties.capa === 'corte' && estado !== 'no') ? '8 6' : null,
     fill: f.geometry.type === 'Polygon',
     fillColor: COLORES[estado],
     fillOpacity: estado === 'si' ? 0.04 : 0.12
@@ -559,6 +561,10 @@ function veredicto(p) {
   } else if (p.capa === 'obra') {
     titulo = 'OJO: calle en obra según el mapa';
     nota = 'Puede estar cortada, o la obra ya puede haber terminado. Verificá en el lugar.';
+  } else if (p.capa === 'corte') {
+    titulo = e.estado === 'no' ? 'NO PASÁS: calle cortada AHORA' : 'OJO: ' + String(p.titulo).toLowerCase() + ' ahora';
+    nota = e.estado === 'no' ? 'Según TomTom (en vivo) la calle está cortada. La ruta la esquiva.'
+                             : 'Según TomTom (en vivo). Puede haber demoras o un carril menos: verificá en el lugar.';
   } else if (e.calzada) {
     titulo = e.estado === 'no' ? 'NO PASÁS: calle demasiado angosta' : 'CALLE ANGOSTA: verificá';
     nota = 'La calle mide ' + metros(e.limite) + ' de ancho y tu camión ' + metros(e.valor) +
@@ -616,6 +622,8 @@ function textoValor(p) {
       return p.bloquea ? 'Cortan la calle' : 'Puede estar cerrado';
     case 'obra':
       return 'Puede estar cortada';
+    case 'corte':
+      return p.hasta ? 'Hasta el ' + fechaHora(p.hasta) : 'En este momento';
   }
   return '';
 }
@@ -1028,6 +1036,144 @@ function controlesEnRuta(puntosRuta) {
   return res.sort(function (a, b) { return a.orden - b.orden; });
 }
 
+// ===== 7e. Cortes de calle y obras EN VIVO (TomTom) =====
+// TomTom junta cortes, obras y accidentes de muchas fuentes (municipios, policía, autos con GPS).
+// Se piden por "celdas" de 0,25° (unos 25 km) a medida que se mira el mapa de cerca o pasa una ruta, y quedan
+// solo en la memoria de la página por 10 minutos. La clave está en datos/ruta_config.json ("tomtom_clave").
+// El plan gratis da unos 2.500 pedidos por día para todos los usuarios juntos: por eso no se pide de lejos.
+var CORTES = { celda: 0.25, vigencia: 10 * 60 * 1000, zoom: 12, maxCeldasVista: 6, maxCeldasRuta: 30 };
+var TIPO_CORTE = { 1: 'Accidente', 3: 'Peligro en la calle', 7: 'Carril cerrado', 8: 'Calle cortada',
+                   9: 'Obra en la calle', 11: 'Calle inundada', 14: 'Vehículo detenido' };
+var cortes = { celdas: {}, porId: {}, atribucion: false };
+
+function claveTomTom() { return ruta && ruta.config && ruta.config.tomtom_clave; }   // ruta se define más abajo
+
+function bajarCeldaCortes(clave) {
+  var clv = claveTomTom();
+  if (!clv) return Promise.resolve();
+  var c = cortes.celdas[clave];
+  if (c && c.pedido) return c.pedido;
+  if (c && Date.now() - c.hora < CORTES.vigencia) return Promise.resolve();
+  var celda = cortes.celdas[clave] = { hora: c ? c.hora : 0, ids: c ? c.ids : [], pedido: null };
+  var p = clave.split(','), s = p[0] * CORTES.celda, o = p[1] * CORTES.celda;
+  var url = 'https://api.tomtom.com/traffic/services/5/incidentDetails?key=' + encodeURIComponent(clv) +
+    '&bbox=' + [o, s, o + CORTES.celda, s + CORTES.celda].map(function (n) { return n.toFixed(4); }).join(',') +
+    '&fields=' + encodeURIComponent('{incidents{type,geometry{type,coordinates},properties{id,iconCategory,' +
+      'events{description,code},startTime,endTime,from,to,roadNumbers,probabilityOfOccurrence}}}') +
+    '&language=es-ES&categoryFilter=1,3,7,8,9,11,14&timeValidityFilter=present';
+  celda.pedido = conTiempoLimite(url, {}, 15)
+    .then(function (r) { if (!r.ok) throw new Error('TomTom ' + r.status); return r.json(); })
+    .then(function (d) { ponerCortes(clave, d.incidents || []); celda.hora = Date.now(); })
+    .catch(function (e) {
+      console.warn('Sin cortes en vivo:', e.message);
+      celda.hora = Date.now() - CORTES.vigencia + 60 * 1000;   // reintenta en un minuto
+    })
+    .then(function () { celda.pedido = null; });
+  return celda.pedido;
+}
+
+function sinCalle(s) {
+  return String(s || '').replace(/^(Calle|Avenida) /, '').replace(/ \/ (Calle|Avenida) /g, ' / ').replace(/ exit \[[^\]]*\]/g, '');
+}
+
+// Convierte un incidente de TomTom en una restricción más (capa 'corte') con el mismo formato que las de OSM
+function featureCorte(inc) {
+  var q = inc.properties || {};
+  var eventos = (q.events || []).map(function (e) { return e.description; }).filter(Boolean);
+  var probable = !q.probabilityOfOccurrence || /certain|probable/.test(q.probabilityOfOccurrence);
+  var cortada = probable && (q.iconCategory === 8 || eventos.some(function (t) { return /^cerrad|cortad/i.test(t); }));
+  var titulo = cortada ? 'Calle cortada' : TIPO_CORTE[q.iconCategory] || 'Problema en la calle';
+  var calle = (q.roadNumbers && q.roadNumbers.length ? q.roadNumbers.join(' / ') + ' — ' : '') +
+              (q.from && q.to && q.from !== q.to ? 'Entre ' + sinCalle(q.from) + ' y ' + sinCalle(q.to) : sinCalle(q.from || q.to));
+  var detalle = (eventos.length ? eventos.join('. ') + '. ' : '') +
+    (q.endTime ? 'Hasta: ' + fechaHora(q.endTime) + '. ' : '') +
+    'Dato en vivo de TomTom: puede ser solo en una mano o ya haberse levantado.';
+  return {
+    type: 'Feature', geometry: inc.geometry,
+    properties: { capa: 'corte', titulo: titulo, cortada: cortada, calle: calle || null, detalle: detalle,
+                  desde_hora: q.startTime || null, hasta: q.endTime || null, fuente: 'TomTom (en vivo)', id_tomtom: q.id }
+  };
+}
+
+function ponerCortes(clave, incidentes) {
+  var celda = cortes.celdas[clave], nuevos = {}, cambio = false;
+  incidentes.forEach(function (inc) {
+    var id = inc.properties && inc.properties.id;
+    if (!id || !inc.geometry || nuevos[id]) return;
+    nuevos[id] = true;
+    var ya = cortes.porId[id];
+    if (ya) { ya.celdas[clave] = true; return; }
+    grupos.corte.addData(featureCorte(inc));
+    var capas = grupos.corte.getLayers();
+    cortes.porId[id] = { capa: capas[capas.length - 1], celdas: {} };
+    cortes.porId[id].celdas[clave] = true;
+    cambio = true;
+  });
+  // los que esta celda tenía y ya no figuran: se levantaron (salvo que otra celda todavía los tenga)
+  celda.ids.forEach(function (id) {
+    var ya = cortes.porId[id];
+    if (!ya || nuevos[id]) return;
+    delete ya.celdas[clave];
+    if (Object.keys(ya.celdas).length) return;
+    if (ya.capa.isPopupOpen && ya.capa.isPopupOpen()) mapa.closePopup();
+    grupos.corte.removeLayer(ya.capa);
+    delete cortes.porId[id];
+    cambio = true;
+  });
+  celda.ids = Object.keys(nuevos);
+  cantidades.corte = Object.keys(cortes.porId).length;
+  if (!cortes.atribucion && cantidades.corte) {
+    var pie = document.getElementById('pie-tomtom');   // el crédito va en el pie, junto al de OpenStreetMap
+    if (pie) pie.hidden = false;
+    cortes.atribucion = true;
+  }
+  if (cambio) {
+    ponerRojosArriba();
+    if (zonasIndice.length) armarPanel();
+  }
+}
+
+function celdasEn(limites) {
+  var c = CORTES.celda, res = [];
+  for (var i = Math.floor(limites.getSouth() / c); i <= Math.floor(limites.getNorth() / c); i++) {
+    for (var j = Math.floor(limites.getWest() / c); j <= Math.floor(limites.getEast() / c); j++) res.push(i + ',' + j);
+  }
+  return res;
+}
+
+// Los de lo que se ve (solo de cerca: de lejos serían muchos pedidos)
+function mostrarCortes() {
+  if (!claveTomTom() || apagadas.corte || mapa.getZoom() < CORTES.zoom) return;
+  celdasEn(mapa.getBounds()).slice(0, CORTES.maxCeldasVista).forEach(bajarCeldaCortes);
+}
+mapa.on('moveend', mostrarCortes);
+// Al volver a la página (o cada 10 minutos con el mapa abierto, por ejemplo navegando) se actualizan
+setInterval(function () { if (!document.hidden) mostrarCortes(); }, 60 * 1000);
+
+// Los de las celdas por donde pasan uno o varios recorridos (para revisar la ruta). Nunca falla.
+function cargarCortesEn(listas) {
+  if (!claveTomTom()) return Promise.resolve();
+  var c = CORTES.celda, vistas = {}, orden = [];
+  listas.forEach(function (puntos) {
+    puntos.forEach(function (pt) {
+      var k = Math.floor(pt[0] / c) + ',' + Math.floor(pt[1] / c);
+      if (!vistas[k]) { vistas[k] = true; orden.push(k); }
+    });
+  });
+  // en un viaje muy largo: las de la salida y la llegada primero (ahí están las calles chicas)
+  if (orden.length > CORTES.maxCeldasRuta) {
+    var mitad = CORTES.maxCeldasRuta / 2;
+    orden = orden.slice(0, mitad).concat(orden.slice(-mitad));
+  }
+  return Promise.all(orden.map(bajarCeldaCortes));
+}
+
+function fechaHora(iso) {
+  var d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleString('es-AR', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 // ===== 8. Panel para prender y apagar capas =====
 function armarPanel() {
   var lista = document.getElementById('lista-capas');
@@ -1042,12 +1188,17 @@ function armarPanel() {
   CAPAS.forEach(function (c) {
     var noPasa = 0;
     if (grupos[c.id]) grupos[c.id].eachLayer(function (l) { if (evaluar(l.feature.properties).estado === 'no') noPasa++; });
-    var vacia = cantidades[c.id] === 0;
+    var vacia = cantidades[c.id] === 0 && c.id !== 'corte';
     var muestra = c.id === 'sin_salida' ? COLORES.aviso : '#3d4652';
     var cuenta = vacia ? 'Sin datos en esta zona'
       : cantidades[c.id].toLocaleString('es-AR') + ' en el mapa' +
         (MEDIDA_DE_CAPA[c.id] && camion ? ' · no pasás en ' + noPasa.toLocaleString('es-AR') : '') +
         (c.id === 'sin_salida' ? ' · se ven al acercar el mapa' : '');
+    if (c.id === 'corte') {
+      if (!claveTomTom()) return;
+      cuenta = (cantidades.corte ? cantidades.corte.toLocaleString('es-AR') + ' cerca de lo que miraste · ' : 'Se ven al acercar el mapa · ') +
+               'datos de TomTom, se actualizan cada 10 minutos';
+    }
     var li = document.createElement('li');
     li.innerHTML =
       '<label' + (vacia ? ' class="capa-vacia"' : '') + '>' +
@@ -1057,7 +1208,7 @@ function armarPanel() {
           '<br><span class="capa-cantidad">' + cuenta + '</span></span>' +
       '</label>';
     li.querySelector('input').addEventListener('change', function (ev) {
-      if (ev.target.checked) { grupos[c.id].addTo(mapa); delete apagadas[c.id]; ponerRojosArriba(); }
+      if (ev.target.checked) { grupos[c.id].addTo(mapa); delete apagadas[c.id]; ponerRojosArriba(); if (c.id === 'corte') mostrarCortes(); }
       else { mapa.removeLayer(grupos[c.id]); apagadas[c.id] = true; armarBordesRojos(); }
       guardar(CLAVE_CAPAS, apagadas);
       if (c.id === 'sin_salida') {
@@ -1295,7 +1446,7 @@ mapa.getPane('ruta').style.zIndex = 390;   // debajo de las restricciones: lo ro
 
 fetch('datos/ruta_config.json', { cache: 'no-cache' })
   .then(function (r) { return r.ok ? r.json() : null; })
-  .then(function (c) { ruta.config = c; })
+  .then(function (c) { ruta.config = c; mostrarCortes(); if (zonasIndice.length) armarPanel(); })
   .catch(function () { /* sin config: se usa Valhalla */ });
 
 var panelRuta = document.getElementById('panel-ruta');
@@ -1629,7 +1780,8 @@ function calcularTramo(a, b, salida, conAlternativas) {
     return pedirCaminos(a, b, evitar, conAlternativas).then(function (caminos) {
       var todo = L.latLngBounds([]);
       caminos.forEach(function (c) { todo.extend(L.latLngBounds(c.puntos)); });
-      return cargarZonasEn(todo).then(function () { return caminos; });
+      return Promise.all([cargarZonasEn(todo), cargarCortesEn(caminos.map(function (c) { return c.puntos; }))])
+        .then(function () { return caminos; });
     }).then(function (caminos) {
       caminos.forEach(function (c) {
         c.avisos = revisarRuta(c.puntos, c.pasos);
@@ -1681,7 +1833,7 @@ function calcularViajeLargo(desde, hasta, salida) {
     var p1 = L.latLng(base.puntos[i1]), p2 = L.latLng(base.puntos[i2]);
     salida.innerHTML = '<p class="ruta-cargando">Viaje largo: revisando la salida y la llegada para tu camión...</p>';
     // cargar las zonas de todo el recorrido (para revisar el tramo del medio)
-    return cargarZonasEn(L.latLngBounds(base.puntos)).then(function () {
+    return Promise.all([cargarZonasEn(L.latLngBounds(base.puntos)), cargarCortesEn([base.puntos])]).then(function () {
       return Promise.all([calcularTramo(desde, p1, null, true), calcularTramo(p2, hasta, null, true)]);
     }).then(function (r) {
       var salidaMejor = elegirOpciones(r[0])[0], llegadaMejor = elegirOpciones(r[1])[0];
@@ -2169,11 +2321,11 @@ function revisarRuta(puntosRuta, pasos) {
       var rojo = estado === 'no' || bloquea;
       var color = estado === 'no' ? COLORES.no : estado === 'reporte' ? '#e65100' : COLORES.sin_dato;
       var texto = esReporte ? 'Reporte de un chofer: ' + p.tipo
-        : (estado === 'no' ? 'NO PASÁS: ' : 'Verificar: ') + (p.norma ? p.titulo : (p.capa === 'barrera' || p.capa === 'obra' ? p.titulo : textoValor(p)) + (p.calle ? ' — ' + p.calle : ''));
+        : (estado === 'no' ? 'NO PASÁS: ' : 'Verificar: ') + (p.norma ? p.titulo : (p.capa === 'barrera' || p.capa === 'obra' || p.capa === 'corte' ? p.titulo + (p.capa === 'corte' ? ' (en vivo)' : '') : textoValor(p)) + (p.calle ? ' — ' + p.calle : ''));
       // lo que dice la voz durante la navegación
       var voz = esReporte ? 'reporte de un chofer: ' + p.tipo
         : (p.titulo || textoValor(p)).replace(/^./, function (c) { return c.toLowerCase(); }) +
-          (p.calle && !p.norma ? ' en ' + p.calle : '') + (estado === 'no' ? '. Tu camión no pasa' : '. Verificá en el lugar');
+          (p.calle && !p.norma ? (p.capa === 'corte' ? ', ' : ' en ') + p.calle : '') + (estado === 'no' ? '. Tu camión no pasa' : '. Verificá en el lugar');
       var esquivar = rojo;
       function agregar(extra) {
         avisos.push(Object.assign({ voz: voz, texto: texto, color: color, rojo: rojo, capa: l, zonas: null, zonasClaves: null }, extra));

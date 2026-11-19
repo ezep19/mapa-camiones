@@ -1077,7 +1077,10 @@ function rutaORS(clave) {
     var f = d.features[0];
     var pasos = [];
     (f.properties.segments || []).forEach(function (s) {
-      (s.steps || []).forEach(function (p) { pasos.push({ texto: p.instruction, km: p.distance }); });
+      (s.steps || []).forEach(function (p) {
+        // OpenRouteService a veces dice "Camina hacia..." aunque sea en camión
+        pasos.push({ texto: String(p.instruction).replace(/^Camin[ae] /, 'Salí '), km: p.distance });
+      });
     });
     return {
       servicio: 'OpenRouteService',

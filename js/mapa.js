@@ -2059,9 +2059,79 @@ function calcularViajeLargo(desde, hasta, salida) {
       c.avisos = revisarRuta(c.puntos, c.pasos);
       c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
       c.esquivados = salidaMejor.esquivados + llegadaMejor.esquivados;
-      c.sinRevisar = zonasSinCargarEn(L.latLngBounds(c.puntos));
-      return [c];
+      var m0 = salidaMejor.puntos.length, m1 = m0 + medio.puntos.length;
+      return arreglarMedio(c, m0, m1, salida).then(function (c2) {
+        c2.sinRevisar = zonasSinCargarEn(L.latLngBounds(c2.puntos));
+        return [c2];
+      });
     });
+  });
+}
+
+// En un viaje largo el tramo del medio se pide sin esquivar nada (OpenRouteService no lo permite en más de
+// 150 km). Si en el medio hay algo ROJO para el camión, se vuelve a pedir solo ese pedazo (30 km antes y
+// 30 km después) esquivándolo, y se empalma. Hasta 3 pedazos.
+function arreglarMedio(c, m0, m1, salida) {
+  var rojos = c.avisos.filter(function (x) { return x.rojo && x.zonas && x.zonas.length && x.orden >= m0 && x.orden < m1; });
+  if (!rojos.length) return Promise.resolve(c);
+  var acum = [0];
+  for (var i = 1; i < c.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(c.puntos[i - 1]).distanceTo(c.puntos[i]) / 1000);
+  // juntar los rojos que están a menos de 60 km uno del otro
+  rojos.sort(function (a, b) { return a.orden - b.orden; });
+  var grupos2 = [];
+  rojos.forEach(function (x) {
+    var g = grupos2[grupos2.length - 1];
+    if (g && acum[x.orden] - acum[g.fin] < 60) g.fin = x.orden; else grupos2.push({ ini: x.orden, fin: x.orden });
+  });
+  grupos2 = grupos2.slice(0, 3);
+  function indiceEn(km) { var j = acum.findIndex(function (d) { return d >= km; }); return j < 0 ? acum.length - 1 : j; }
+  // del último al primero: así los índices de los anteriores no cambian al empalmar
+  var cadena = Promise.resolve(c);
+  grupos2.reverse().forEach(function (g) {
+    cadena = cadena.then(function (actual) {
+      var iA = indiceEn(Math.max(acum[m0], acum[g.ini] - 30)), iB = indiceEn(Math.min(acum[m1 - 1], acum[g.fin] + 30));
+      if (iB - iA < 2 || acum[iB] - acum[iA] > 140) return actual;
+      if (salida) salida.innerHTML = '<p class="ruta-cargando">Viaje largo: en el camino hay lugares donde no pasás. ' +
+        'Buscando cómo esquivarlos...</p>';
+      return calcularTramo(L.latLng(actual.puntos[iA]), L.latLng(actual.puntos[iB]), null, false).then(function (caminos) {
+        var nuevo = elegirOpciones(caminos)[0];
+        var antes = actual.avisos.filter(function (x) { return x.rojo && x.orden >= iA && x.orden <= iB; }).length;
+        if (!nuevo || nuevo.rojos >= antes) return actual;   // no mejoró: queda como estaba (con el aviso)
+        return empalmar(actual, iA, iB, nuevo, acum[iB] - acum[iA]);
+      }, function () { return actual; });
+    });
+  });
+  return cadena.then(function (final) {
+    if (final !== c) {
+      final.avisos = revisarRuta(final.puntos, final.pasos);
+      final.rojos = final.avisos.filter(function (x) { return x.rojo; }).length;
+    }
+    return final;
+  });
+}
+
+// Reemplaza los puntos iA..iB del recorrido por otro camino (con sus indicaciones)
+function empalmar(c, iA, iB, nuevo, kmViejo) {
+  var delta = nuevo.puntos.length - (iB - iA + 1);
+  var pasosViejos = c.pasos.filter(function (p) { return p.ini != null && p.ini >= iA && p.ini < iB; });
+  var vueltasViejas = pasosViejos.filter(function (p) { return p.vuelta; }).length;
+  // el "Salí hacia..." del pedazo nuevo no es una salida: es seguir viaje
+  var pasos = c.pasos.filter(function (p) { return p.ini != null && p.ini < iA; })
+    .concat(nuevo.pasos.slice(0, -1).map(function (p, k) {
+      return Object.assign({}, p, { ini: p.ini == null ? null : p.ini + iA,
+                                    texto: k === 0 ? String(p.texto).replace(/^Sal[ií] /, 'Seguí ') : p.texto });
+    }))
+    .concat(c.pasos.filter(function (p) { return p.ini == null || p.ini >= iB; })
+      .map(function (p) { return p.ini == null ? p : Object.assign({}, p, { ini: p.ini + delta }); }));
+  return Object.assign({}, c, {
+    puntos: c.puntos.slice(0, iA).concat(nuevo.puntos, c.puntos.slice(iB + 1)),
+    pasos: pasos,
+    km: c.km - kmViejo + nuevo.km,
+    segundos: c.segundos - c.segundos * kmViejo / c.km + nuevo.segundos,
+    vueltas: c.vueltas - vueltasViejas + nuevo.vueltas,
+    kmChicas: c.kmChicas == null || nuevo.kmChicas == null ? c.kmChicas : c.kmChicas + nuevo.kmChicas,
+    esquivados: (c.esquivados || 0) + (nuevo.esquivados || 0),
+    servicio: c.servicio.indexOf(nuevo.servicio) === -1 ? c.servicio + ' y ' + nuevo.servicio : c.servicio
   });
 }
 
@@ -2552,13 +2622,19 @@ function revisarRuta(puntosRuta, pasos) {
         // Paso bajo: si en las indicaciones no aparece la calle de abajo, lo más probable es que la ruta vaya
         // por el puente de arriba. Si es amarillo no se avisa (si no, cada autopista avisaría decenas);
         // si es ROJO se avisa igual como "posible", pero no se esquiva (esquivarlo cerraría el puente).
-        if (!esReporte && p.calle && /debajo/i.test(p.detalle || '') && textoPasos &&
+        // Lo mismo con un punto de altura / peso cargado en una calle que la ruta cruza por arriba o por al lado.
+        if (!esReporte && p.calle && !esBarrera && p.capa !== 'corte' && textoPasos &&
+            (/debajo/i.test(p.detalle || '') || /^(altura|peso|largo|prohibido|verificar|verificar_autopista)$/.test(p.capa)) &&
             textoPasos.indexOf(normalizarCalle(p.calle)) === -1) {
           if (!rojo) return;
           // no cuenta como rojo (no dispara el "CUIDADO" ni descarta la ruta): es un aviso para mirar
-          agregar({ texto: 'Posible: ' + texto + ' (si la ruta pasa por abajo)', rojo: false, posible: true,
-                    voz: 'posible paso bajo de ' + textoValor(p).replace(/^Altura máxima( \(paso bajo\))? /i, '') +
-                         ' en ' + p.calle + ', si pasás por abajo', latlng: ll, orden: cerca.i, clave: claveP });
+          var deAltura = p.capa === 'altura' || /debajo/i.test(p.detalle || '');
+          agregar({ texto: 'Posible: ' + texto + (deAltura ? ' (si la ruta pasa por abajo)' : ' (si vas por esa calle)'),
+                    rojo: false, posible: true,
+                    voz: deAltura ? 'posible paso bajo de ' + textoValor(p).replace(/^Altura máxima( \(paso bajo\))? /i, '') +
+                                    ' en ' + p.calle + ', si pasás por abajo'
+                                  : voz.replace(/\. Tu camión no pasa$/, '') + ', si vas por esa calle',
+                    latlng: ll, orden: cerca.i, clave: claveP });
           return;
         }
         var cl = claveCuadrado(ll);
@@ -2596,6 +2672,17 @@ function revisarRuta(puntosRuta, pasos) {
       });
       // tramos cortos (por ejemplo, el pedacito de calle bajo un puente): alcanza con el 80% de su largo
       if (encima < Math.min(40, Math.max(8, 0.8 * largoTotal))) return;
+      // Calle paralela pegada (ej.: el Paseo del Bajo al lado de Alicia Moreau de Justo, o una colectora): si la
+      // calle restringida tiene nombre y ese nombre no aparece en NINGUNA indicación de la ruta, lo más probable es
+      // que la ruta vaya por la de al lado. Si es rojo se avisa como "posible" (sin esquivarlo); si no, nada.
+      if (!esReporte && p.capa !== 'corte' && p.calle && textoPasos && !/^(Entre|Calle|Avenida)$/i.test(p.calle) &&
+          textoPasos.indexOf(normalizarCalle(p.calle)) === -1) {
+        if (!rojo) return;
+        agregar({ texto: 'Posible: ' + texto + ' (si vas por esa calle; la ruta parece ir por una paralela)', rojo: false,
+                  posible: true, voz: voz.replace(/\. Tu camión no pasa$/, '') + ', si vas por esa calle',
+                  latlng: L.latLng(puntosRuta[ordenMin]), orden: ordenMin, clave: (p.osm || '') + '#' + L.stamp(l) });
+        return;
+      }
       agregar({ latlng: L.latLng(puntosRuta[ordenMin]), orden: ordenMin,   // donde la ruta EMPIEZA a usarla
                 clave: (p.osm || '') + '#' + L.stamp(l), zonas: esquivar ? zonas : null, zonasClaves: esquivar ? claves : null });
     });
@@ -2771,7 +2858,7 @@ function empezarNavegacion(rutaElegida) {
                       dist: nav.acum[Math.min(c.orden, nav.acum.length - 1)] +
                             (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
   });
-  nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.activo = true; nav.recalculando = false; nav.primera = true;
+  nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
   abrirPanelRuta(false);
   abrirPanel(false);
   document.getElementById('nav-cartel').hidden = false;
@@ -2844,10 +2931,24 @@ function seguirNavegacion(pos) {
   nav.ultimaPos = pos;
   var u = ubicarEnRuta(pos);
   // ¿Te saliste de la ruta?
+  var rumboGps = null;   // hacia dónde vas (con las últimas posiciones)
+  if (nav.posAnterior && L.latLng(nav.posAnterior).distanceTo(pos) > 8) {
+    rumboGps = rumboEntre(L.latLng(nav.posAnterior), L.latLng(pos));
+    nav.posAnterior = pos;
+  } else if (!nav.posAnterior) nav.posAnterior = pos;
   if (u.fuera > NAV.FUERA_DE_RUTA_M) {
     nav.fuera++;
+    // fuera de la ruta no hay avisos preparados: se mira lo que hay adelante (lo rojo para tu camión)
+    var lista = peligrosAdelante(L.latLng(pos), rumboGps), p0 = lista[0];
+    var txtP = p0 ? '⛔ A ' + textoDistancia(p0.d) + ': ' + p0.texto : '';
+    // una vez por calle (las avenidas vienen en varios pedazos); se puede repetir a los 3 minutos
+    p0 = lista.filter(function (x) { return !(Date.now() - (nav.dichos['f' + x.clave] || 0) < 180000); })[0];
+    if (p0) {
+      nav.dichos['f' + p0.clave] = Date.now();
+      hablar('Cuidado. ' + (p0.d < 30 ? 'Acá' : 'A ' + vozDistancia(Math.max(30, p0.d))) + ', ' + p0.voz + '.', true);
+    }
     if (nav.fuera >= NAV.FUERA_VECES && Date.now() - nav.ultimoRecalculo > NAV.RECALCULO_CADA_S * 1000) recalcularDesde(pos);
-    else mostrarCartelNav('Fuera de la ruta', 'Volvé a la ruta azul o esperá: la recalculo en unos segundos.');
+    else mostrarCartelNav('Fuera de la ruta', 'Volvé a la ruta azul o esperá: la recalculo en unos segundos.', txtP);
     return;
   }
   nav.fuera = 0;
@@ -2909,6 +3010,60 @@ function seguirNavegacion(pos) {
   // los peligros van primero; no se corta lo que se estaba diciendo
   if (decir.length) hablar(decir.join(' '));
   mapa.panTo(pos, { animate: true, duration: 0.5 });
+}
+
+// Lo que hay adelante (hasta 150 m) donde tu camión NO pasa, del más cercano al más lejano (uno por calle).
+// Se usa estando fuera de la ruta.
+// Sin rumbo (parado o recién empezado) mira alrededor, hasta 60 m.
+function peligrosAdelante(pos, rumbo) {
+  var MAX = rumbo == null ? 60 : 150;
+  var caja = pos.toBounds(MAX * 2.2), kx = Math.cos(pos.lat * Math.PI / 180) * 111320, ky = 110540, porClave = {};
+  function xy(ll) { return [(ll.lng - pos.lng) * kx, (ll.lat - pos.lat) * ky]; }
+  function considerar(ll, d, l, p) {
+    if (d > MAX) return;
+    if (rumbo != null && d > 25) {   // tiene que estar adelante (no atrás ni muy al costado)
+      var dif = Math.abs((((rumboEntre(pos, ll) - rumbo) % 360) + 540) % 360 - 180);
+      if (dif > 40) return;
+    }
+    var k = p.calle ? p.capa + ':' + p.calle : L.stamp(l);
+    if (!porClave[k] || d < porClave[k].d) porClave[k] = { d: d, l: l, p: p, clave: k };
+  }
+  Object.keys(grupos).forEach(function (id) {
+    if (id === 'sin_salida' || !grupos[id]) return;
+    grupos[id].eachLayer(function (l) {
+      var p = l.feature.properties;
+      if (evaluar(p).estado !== 'no') return;
+      if (l.getLatLng) { var q = l.getLatLng(); if (caja.contains(q)) considerar(q, pos.distanceTo(q), l, p); return; }
+      if (!caja.intersects(l.getBounds())) return;
+      if (l.feature.geometry.type === 'Polygon') {   // zona prohibida: ¿estás adentro?
+        if (dentroDeAnillo([pos.lng, pos.lat], l.feature.geometry.coordinates[0])) considerar(pos, 0, l, p);
+        return;
+      }
+      var partes = l.getLatLngs();
+      if (partes.length && !Array.isArray(partes[0])) partes = [partes];
+      partes.forEach(function (linea) {
+        for (var k = 1; k < linea.length; k++) {
+          var a = xy(linea[k - 1]), b = xy(linea[k]), vx = b[0] - a[0], vy = b[1] - a[1], L2 = vx * vx + vy * vy;
+          var t = L2 ? Math.max(0, Math.min(1, -(a[0] * vx + a[1] * vy) / L2)) : 0;
+          var cx = a[0] + t * vx, cy = a[1] + t * vy;
+          considerar(L.latLng(pos.lat + cy / ky, pos.lng + cx / kx), Math.hypot(cx, cy), l, p);
+        }
+      });
+    });
+  });
+  return Object.keys(porClave).map(function (k) { return porClave[k]; })
+    .sort(function (a, b) { return a.d - b.d; })
+    .map(function (m) {
+      var p = m.p;
+      var que = p.capa === 'barrera' || p.capa === 'obra' || p.capa === 'corte' || p.norma ? p.titulo : textoValor(p);
+      return { d: Math.round(m.d), clave: m.clave, texto: que + (p.calle && !p.norma ? ' — ' + p.calle : ''),
+               voz: String(que).replace(/^./, function (c) { return c.toLowerCase(); }) + (p.calle && !p.norma ? ' en ' + p.calle : '') +
+                    '. Tu camión no pasa' };
+    });
+}
+function rumboEntre(a, b) {
+  var y = (b.lng - a.lng) * Math.cos(a.lat * Math.PI / 180), x = b.lat - a.lat;
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
 function recalcularDesde(pos) {

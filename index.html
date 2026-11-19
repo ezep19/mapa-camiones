@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=25">
+  <link rel="stylesheet" href="css/estilos.css?v=26">
 </head>
 <body>
   <header class="barra">
@@ -25,6 +25,7 @@
       <span id="camion-resumen" class="camion-resumen">Cargar medidas</span>
     </button>
     <button id="btn-capas" class="boton" type="button" aria-controls="panel-capas" aria-expanded="false">Capas</button>
+    <button id="btn-ayuda" class="boton boton-ayuda" type="button" aria-controls="ventana-ayuda" aria-label="Cómo se usa">?</button>
   </header>
 
   <main id="mapa" aria-label="Mapa"></main>
@@ -80,6 +81,46 @@
       (por ejemplo en Mar del Plata casi no hay calles prohibidas cargadas). Respetá siempre la señalización.</p>
   </section>
 
+  <div id="ventana-ayuda" class="ventana-fondo" hidden>
+    <section class="ventana ayuda" role="dialog" aria-modal="true" aria-labelledby="titulo-ayuda">
+      <div class="panel-cabecera">
+        <h2 id="titulo-ayuda">Cómo se usa</h2>
+        <button id="cerrar-ayuda" class="boton-x" type="button" aria-label="Cerrar">×</button>
+      </div>
+      <h3>Colores</h3>
+      <ul class="ayuda-colores">
+        <li><i style="background:#d50000"></i><b>Rojo:</b> tu camión NO pasa (o está prohibido para camiones).</li>
+        <li><i style="background:#8a8f98"></i><b>Gris:</b> tu camión pasa.</li>
+        <li><i style="background:#f2b705"></i><b>Amarillo:</b> no hay dato: verificá en el lugar.</li>
+        <li><i style="background:#7b3fa0"></i><b>Violeta:</b> calle sin salida.</li>
+        <li><i style="background:#2e7d32"></i><b>Verde:</b> red de tránsito pesado (calles para camiones).</li>
+      </ul>
+      <p>Tocá cualquier marca para ver qué es y si pasás. Las medidas de tu camión se cambian arriba, en
+        <b>Mi camión</b>.</p>
+      <h3>Capas</h3>
+      <p>En <b>Capas</b> prendés y apagás cada tipo de restricción, los <b>lugares útiles</b> (gomerías, estaciones
+        de servicio, paradores, estacionamientos para camiones, duchas, balanzas: se ven al acercar el mapa) y los
+        <b>reportes de choferes</b>. Arriba están los botones <b>Ir a</b> para saltar a cada ciudad.</p>
+      <h3>Ruta para tu camión</h3>
+      <p>Tocá <b>🧭 Ruta</b>, elegí desde dónde salís (tu ubicación, una dirección o tocando el mapa) y adónde vas.
+        La ruta se calcula con tus medidas, esquiva lo que en el mapa sale rojo para tu camión y prefiere avenidas
+        y la red de tránsito pesado. También podés dejar el dedo apretado en el mapa: <b>Salir desde acá / Ir hasta acá</b>.</p>
+      <h3>Manejar con voz</h3>
+      <p>Con la ruta calculada, tocá <b>▶ Manejar con voz</b>: te dice cada giro, te avisa los pasos bajos y
+        restricciones que vienen y recalcula si te salís. Con 🔊 apagás o prendés la voz y con ✕ terminás.</p>
+      <h3>Reportar un problema</h3>
+      <p>¿Viste un puente más bajo, una calle prohibida o cortada? Tocá la marca y usá <b>📣 Reportar un problema
+        acá</b>, o dejá el dedo apretado en el lugar. El reporte se revisa antes de aparecer en el mapa.</p>
+      <h3>Como app y sin señal</h3>
+      <p>En Chrome: los 3 puntitos → <b>Instalar app</b> (o <b>Agregar a pantalla principal</b>). En iPhone:
+        compartir → <b>Agregar a inicio</b>. Lo que ya miraste se puede ver sin señal; las rutas y las búsquedas
+        necesitan internet.</p>
+      <p class="ayuda-aviso"><b>Importante:</b> los datos salen de OpenStreetMap y de algunas ordenanzas, y pueden
+        estar incompletos. Que no haya nada en rojo no quiere decir que se pueda pasar. <b>Respetá siempre la
+        señalización.</b></p>
+    </section>
+  </div>
+
   <div id="ventana-camion" class="ventana-fondo" hidden>
     <form id="form-camion" class="ventana" novalidate role="dialog" aria-modal="true" aria-labelledby="titulo-camion">
       <h2 id="titulo-camion">Medidas de tu camión</h2>
@@ -126,6 +167,6 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="js/mapa.js?v=25"></script>
+  <script src="js/mapa.js?v=26"></script>
 </body>
 </html>

@@ -2098,6 +2098,17 @@ if (document.getElementById('nav-cartel')) {
   });
 }
 
+// ===== Ayuda ("?") =====
+(function () {
+  var ventanaAyuda = document.getElementById('ventana-ayuda');
+  if (!ventanaAyuda) return;
+  function abrir(si) { ventanaAyuda.hidden = !si; }
+  document.getElementById('btn-ayuda').addEventListener('click', function () { abrirPanel(false); abrirPanelRuta(false); abrir(true); });
+  document.getElementById('cerrar-ayuda').addEventListener('click', function () { abrir(false); });
+  ventanaAyuda.addEventListener('click', function (ev) { if (ev.target === ventanaAyuda) abrir(false); });
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') abrir(false); });
+})();
+
 // ===== 11. App instalable y uso sin señal =====
 // sw.js guarda la página, los datos y los pedazos del mapa que ya se miraron.
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {

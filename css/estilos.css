@@ -545,3 +545,14 @@ body {
 @media (min-width: 601px) { .nav-cartel { left: auto; width: 420px; } }
 /* mientras se maneja, el botón "Ruta" no hace falta */
 body.navegando .boton-ruta { display: none; }
+
+/* ===== Ayuda ===== */
+.boton-ayuda { padding: 0; width: var(--tocable); font-size: 1.2rem; font-weight: 800; }
+.ventana.ayuda { max-width: 520px; }
+.ventana.ayuda h2 { margin: 0; }
+.ventana.ayuda h3 { margin: 14px 0 4px; font-size: 1.02rem; }
+.ventana.ayuda p { margin: 0 0 6px; line-height: 1.4; font-size: 0.95rem; }
+.ayuda-colores { list-style: none; margin: 0 0 6px; padding: 0; font-size: 0.95rem; }
+.ayuda-colores li { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0; }
+.ayuda-colores i { flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%; }
+.ayuda-aviso { margin-top: 12px !important; padding: 8px 10px; border-radius: 8px; background: #fff3c4; color: #5c4300; }

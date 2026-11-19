@@ -474,3 +474,4 @@ body {
   font-weight: 700;
   cursor: pointer;
 }
+.ruta-peligro { margin: 10px 0 4px; padding: 10px; border-radius: 8px; background: #d50000; color: #fff; }

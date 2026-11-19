@@ -1044,13 +1044,44 @@ function calcularRuta() {
   salida.hidden = false;
   salida.innerHTML = '<p class="ruta-cargando">Calculando la ruta para tu camión...</p>';
   var clave = ruta.config && ruta.config.ors_clave;
-  var pedido = clave
-    ? rutaORS(clave).catch(function (e) { console.warn('OpenRouteService falló:', e.message); return rutaValhalla(); })
-    : rutaValhalla();
-  pedido.then(mostrarRuta).catch(function (e) {
+
+  function pedir(evitar) {
+    return clave
+      ? rutaORS(clave, evitar).catch(function (e) { console.warn('OpenRouteService falló:', e.message); return rutaValhalla(evitar); })
+      : rutaValhalla(evitar);
+  }
+
+  // Los servicios de rutas solo esquivan lo que está cargado en OpenStreetMap. Si la ruta pasa por algo
+  // que en NUESTRO mapa es rojo para este camión (pasos bajos calculados, reportes aprobados), se vuelve
+  // a pedir la ruta esquivando esos lugares. Hasta 4 vueltas.
+  var MAX_VUELTAS = 4;
+  function vuelta(n, evitar, claves, anterior) {
+    return pedir(evitar).then(function (r) {
+      r.avisos = revisarRuta(r.puntos, r.pasos);
+      r.esquivados = Object.keys(claves).length;
+      var nuevas = r.avisos.filter(function (a) { return a.zonas && a.zonas.length && !claves[a.clave]; });
+      if (!nuevas.length || n >= MAX_VUELTAS) return r;
+      nuevas.forEach(function (a) { claves[a.clave] = true; evitar = evitar.concat(a.zonas); });
+      salida.innerHTML = '<p class="ruta-cargando">La ruta pasaba por ' + nuevas.length +
+        (nuevas.length === 1 ? ' lugar' : ' lugares') + ' donde no pasás. Buscando otra que los esquive...</p>';
+      return vuelta(n + 1, evitar, claves, r);
+    }, function (e) {
+      if (anterior) { anterior.sinAlternativa = true; return anterior; }   // no hay otra: se muestra la anterior con el aviso
+      throw e;
+    });
+  }
+
+  vuelta(1, [], {}, null).then(mostrarRuta).catch(function (e) {
     console.error(e);
     salida.innerHTML = '<p class="ruta-aviso">' + esc(e.mensaje || 'No pude calcular la ruta. Revisá la conexión y probá de nuevo en un rato.') + '</p>';
   });
+}
+
+// Cuadradito (en grados) alrededor de un punto, para pedirle al servicio que no pase por ahí
+function cuadrado(latlng, metrosLado) {
+  var dy = metrosLado / 110540, dx = metrosLado / (111320 * Math.cos(latlng.lat * Math.PI / 180));
+  var a = latlng.lng, b = latlng.lat;
+  return [[a - dx, b - dy], [a + dx, b - dy], [a + dx, b + dy], [a - dx, b + dy], [a - dx, b - dy]];
 }
 
 function conTiempoLimite(url, opciones, segundos) {
@@ -1059,13 +1090,16 @@ function conTiempoLimite(url, opciones, segundos) {
   return fetch(url, opciones);
 }
 
-function rutaORS(clave) {
+function rutaORS(clave, evitar) {
   var cuerpo = {
     coordinates: [[ruta.desde.latlng.lng, ruta.desde.latlng.lat], [ruta.hasta.latlng.lng, ruta.hasta.latlng.lat]],
     language: 'es', units: 'km', instructions: true,
     options: { vehicle_type: 'hgv', profile_params: { restrictions: {
       height: camion.altura, weight: camion.peso, length: camion.largo, width: CAMION_ANCHO } } }
   };
+  if (evitar && evitar.length) {
+    cuerpo.options.avoid_polygons = { type: 'MultiPolygon', coordinates: evitar.map(function (anillo) { return [anillo]; }) };
+  }
   return conTiempoLimite('https://api.openrouteservice.org/v2/directions/driving-hgv/geojson', {
     method: 'POST',
     headers: { 'Authorization': clave, 'Content-Type': 'application/json', 'Accept': 'application/geo+json' },
@@ -1090,7 +1124,7 @@ function rutaORS(clave) {
   });
 }
 
-function rutaValhalla() {
+function rutaValhalla(evitar) {
   var cuerpo = {
     locations: [{ lat: ruta.desde.latlng.lat, lon: ruta.desde.latlng.lng }, { lat: ruta.hasta.latlng.lat, lon: ruta.hasta.latlng.lng }],
     costing: 'truck',
@@ -1098,6 +1132,13 @@ function rutaValhalla() {
     units: 'kilometers',
     directions_options: { language: 'es-ES', units: 'kilometers' }
   };
+  // Valhalla acepta muy pocos polígonos (100 vértices en total): se le pasa el centro de cada
+  // cuadradito como "lugar a evitar" (acepta hasta 50)
+  if (evitar && evitar.length) {
+    cuerpo.exclude_locations = evitar.slice(-50).map(function (anillo) {
+      return { lat: (anillo[0][1] + anillo[2][1]) / 2, lon: (anillo[0][0] + anillo[2][0]) / 2 };
+    });
+  }
   return conTiempoLimite('https://valhalla1.openstreetmap.de/route', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo)
   }, 30).then(function (r) {
@@ -1118,7 +1159,7 @@ function rutaValhalla() {
       puntos = puntos.concat(decodificarPolilinea(leg.shape, 6));
       leg.maneuvers.forEach(function (m) { pasos.push({ texto: m.instruction, km: m.length }); });
     });
-    return { servicio: 'Valhalla', puntos: puntos, km: d.trip.summary.length, segundos: d.trip.summary.time, pasos: pasos };
+    return { servicio: 'Valhalla (servicio de respaldo, menos confiable)', puntos: puntos, km: d.trip.summary.length, segundos: d.trip.summary.time, pasos: pasos };
   });
 }
 
@@ -1157,10 +1198,20 @@ function mostrarRuta(r) {
   ruta.linea = L.polyline(r.puntos, { pane: 'ruta', color: '#1565c0', weight: 7, opacity: 0.85, interactive: false }).addTo(mapa);
   document.getElementById('borrar-ruta').hidden = false;
 
-  var avisos = revisarRuta(r.puntos);
+  var avisos = r.avisos || revisarRuta(r.puntos, r.pasos);
   var html = '<div class="ruta-resumen"><b>' + numero(r.km, 1) + ' km</b> · unos ' + duracion(r.segundos) +
              '<small>Tiempo de auto: con camión puede ser más. Calculada por ' + esc(r.servicio) +
              ' con tus medidas (' + metros(camion.altura) + ', ' + toneladas(camion.peso) + ', ' + metros(camion.largo) + ').</small></div>';
+  var rojos = avisos.filter(function (a) { return a.color === COLORES.no; }).length;
+  if (r.esquivados) {
+    html += '<p class="ruta-ok">Esquivé ' + r.esquivados + (r.esquivados === 1 ? ' lugar' : ' lugares') +
+            ' donde tu camión no pasa (pasos bajos o reportes que el servicio de rutas no conocía).</p>';
+  }
+  if (rojos) {
+    html += '<div class="ruta-peligro"><b>CUIDADO: no encontré una ruta que evite todo.</b> Esta ruta pasa por ' + rojos +
+            (rojos === 1 ? ' lugar' : ' lugares') + ' donde según el mapa NO PASÁS. No la uses tal cual: ' +
+            'elegí otro punto de salida o llegada, o buscá otro camino.</div>';
+  }
   if (avisos.length) {
     html += '<div class="ruta-aviso"><b>Ojo: la ruta pasa por ' + avisos.length + (avisos.length === 1 ? ' punto' : ' puntos') +
             ' para revisar</b> (tocalos para verlos):</div><ul class="ruta-lista">';
@@ -1202,7 +1253,13 @@ function duracion(seg) {
 // --- Revisar la ruta contra nuestros datos ---
 // Puntos (pasos bajos, alturas puntuales, reportes): a menos de 20 m de la ruta.
 // Líneas rojas o amarillas: que la ruta vaya por encima al menos 30 m (no solo que las cruce).
-function revisarRuta(puntosRuta) {
+function revisarRuta(puntosRuta, pasos) {
+  // nombres de calles por las que va la ruta (para saber si va POR DEBAJO de un puente o por arriba)
+  var textoPasos = normalizarCalle((pasos || []).map(function (p) { return p.texto; }).join(' | '));
+  var desde = ruta.desde && ruta.desde.latlng, hasta = ruta.hasta && ruta.hasta.latlng;
+  function cercaDeLosExtremos(ll) {
+    return (desde && desde.distanceTo(ll) < 30) || (hasta && hasta.distanceTo(ll) < 30);
+  }
   var lat0 = puntosRuta[0][0] * Math.PI / 180;
   var kx = Math.cos(lat0) * 111320, ky = 110540;
   function xy(ll) { return [ll[1] * kx, ll[0] * ky]; }
@@ -1230,17 +1287,24 @@ function revisarRuta(puntosRuta) {
       var color = estado === 'no' ? COLORES.no : estado === 'reporte' ? '#e65100' : COLORES.sin_dato;
       var texto = esReporte ? 'Reporte de un chofer: ' + p.tipo
         : (estado === 'no' ? 'NO PASÁS: ' : 'Verificar: ') + textoValor(p) + (p.calle ? ' — ' + p.calle : '');
+      // se esquiva lo rojo y los reportes aprobados que cierran el paso
+      var esquivar = estado === 'no' || (esReporte && /prohibid|peso|cortad|obra|puente|paso bajo/i.test(p.tipo || ''));
       if (l.getLatLng) {   // punto
         var ll = l.getLatLng();
         if (!caja.contains(ll) || distRuta(xy([ll.lat, ll.lng])) > 20) return;
-        avisos.push({ texto: texto, color: color, latlng: ll, capa: l });
+        // paso bajo: si la ruta no usa la calle de abajo, va por el puente de arriba y no importa
+        if (!esReporte && p.calle && /debajo/i.test(p.detalle || '') && textoPasos &&
+            textoPasos.indexOf(normalizarCalle(p.calle)) === -1) return;
+        avisos.push({ texto: texto, color: color, latlng: ll, capa: l,
+                      clave: (p.osm || '') + '@' + ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5),
+                      zonas: esquivar && !cercaDeLosExtremos(ll) ? [cuadrado(ll, 12)] : null });
       } else {             // línea: medir cuánto de la línea va por la ruta
         if (!caja.intersects(l.getBounds())) return;
         var partes = l.getLatLngs();
         if (partes.length && !Array.isArray(partes[0])) partes = [partes];
         // muestras cada 5 m a lo largo de la línea; cada una cerca de la ruta suma 5 m "por encima".
         // Cruzarla en una esquina da ~20 m; ir por ella, mucho más.
-        var encima = 0, donde = null;
+        var encima = 0, donde = null, zonas = [];
         partes.forEach(function (linea) {
           for (var k = 1; k < linea.length; k++) {
             var a = xy([linea[k - 1].lat, linea[k - 1].lng]), b = xy([linea[k].lat, linea[k].lng]);
@@ -1248,11 +1312,20 @@ function revisarRuta(puntosRuta) {
             var n = Math.max(1, Math.round(largo / 5));
             for (var m = 0; m < n; m++) {
               var q = [a[0] + (b[0] - a[0]) * (m + 0.5) / n, a[1] + (b[1] - a[1]) * (m + 0.5) / n];
-              if (distRuta(q) <= 10) { encima += largo / n; if (!donde) donde = L.latLng(q[1] / ky, q[0] / kx); }
+              if (distRuta(q) <= 10) {
+                encima += largo / n;
+                var llq = L.latLng(q[1] / ky, q[0] / kx);
+                if (!donde) donde = llq;
+                // un cuadradito cada ~20 m de la parte que la ruta usa
+                if (esquivar && (!zonas.ultimo || zonas.ultimo.distanceTo(llq) >= 20) && !cercaDeLosExtremos(llq)) {
+                  zonas.push(cuadrado(llq, 12)); zonas.ultimo = llq;
+                }
+              }
             }
           }
         });
-        if (encima >= 40) avisos.push({ texto: texto, color: color, latlng: donde, capa: l });
+        if (encima >= 40) avisos.push({ texto: texto, color: color, latlng: donde, capa: l,
+                                        clave: (p.osm || '') + '#' + L.stamp(l), zonas: esquivar ? zonas.slice() : null });
       }
     });
   }
@@ -1264,6 +1337,11 @@ function revisarRuta(puntosRuta) {
   // primero lo que no pasás
   avisos.sort(function (a, b) { return (a.color === COLORES.no ? 0 : 1) - (b.color === COLORES.no ? 0 : 1); });
   return avisos;
+}
+
+function normalizarCalle(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\b(avenida|av\.?|calle|pasaje|boulevard|bv\.?)\s+/g, '').replace(/\s+/g, ' ').trim();
 }
 
 // ===== 10. Utilidades =====

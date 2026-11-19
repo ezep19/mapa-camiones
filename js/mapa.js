@@ -169,7 +169,11 @@ document.addEventListener('keydown', function (ev) {
 // ===== 4. ¿Pasa o no pasa? =====
 // Devuelve: estado ('no' | 'si' | 'sin_dato' | 'aviso'), y la medida y el límite comparados
 function evaluar(p) {
-  if (p.capa === 'prohibido') return { estado: 'no' };
+  if (p.capa === 'prohibido') {
+    // ordenanzas como "prohibido camiones de más de 6 t": un camión liviano sí puede pasar
+    if (p.peso_desde && camion && camion.peso <= p.peso_desde) return { estado: 'si', norma: true };
+    return { estado: 'no', norma: !!p.peso_desde };
+  }
   if (p.capa === 'sin_salida') return { estado: 'aviso' };
   var medida = MEDIDA_DE_CAPA[p.capa];
   if (!medida || p.limite == null || !camion) return { estado: 'sin_dato', medida: medida };
@@ -200,7 +204,13 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
         : fetch('datos/' + z.red, { cache: 'no-cache' })
           .then(function (r) { if (!r.ok) throw new Error(z.red + ' ' + r.status); return r.json(); })
           .catch(function (e) { console.error(e); return { features: [] }; });
-      return Promise.all([restricciones, lugares, red]).then(function (r) {
+      var normas = !z.normas ? Promise.resolve({ features: [] })
+        : fetch('datos/' + z.normas, { cache: 'no-cache' })
+          .then(function (r) { if (!r.ok) throw new Error(z.normas + ' ' + r.status); return r.json(); })
+          .catch(function (e) { console.error(e); return { features: [] }; });
+      return Promise.all([restricciones, lugares, red, normas]).then(function (r) {
+        // las normas locales (ordenanzas) se suman a las restricciones de OpenStreetMap
+        r[0].features = r[0].features.concat(r[3].features);
         return { zona: z, datos: r[0], lugares: r[1], red: r[2] };
       });
     }));
@@ -275,7 +285,10 @@ function estiloLinea(f) {
     weight: grosorSegunZoom(estado),
     opacity: estado === 'si' ? 0.5 : lejos ? 0.75 : 0.95,
     lineCap: 'round',
-    dashArray: CAPA_POR_ID[f.properties.capa].forma === 'punteada' ? '8 6' : null
+    dashArray: CAPA_POR_ID[f.properties.capa].forma === 'punteada' ? '8 6' : null,
+    fill: f.geometry.type === 'Polygon',
+    fillColor: COLORES[estado],
+    fillOpacity: estado === 'si' ? 0.04 : 0.12
   };
 }
 
@@ -328,7 +341,9 @@ function armarCartel(p) {
   html += veredicto(p);
   if (p.detalle) html += '<div class="cartel-detalle">' + esc(p.detalle) + '</div>';
   html += '<div class="cartel-fuente">Fuente: ' + esc(p.fuente || 'OpenStreetMap');
-  if (p.osm) {
+  if (p.fuente_url) {
+    html += ' · <a href="' + esc(p.fuente_url) + '" target="_blank" rel="noopener">ver la norma</a>';
+  } else if (p.osm) {
     html += ' · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
             '" target="_blank" rel="noopener">ver en OpenStreetMap</a>';
   }
@@ -339,8 +354,12 @@ function armarCartel(p) {
 function veredicto(p) {
   var e = evaluar(p);
   var titulo, nota = '';
-  if (p.capa === 'prohibido') {
+  if (p.capa === 'prohibido' && e.estado === 'si') {
+    titulo = 'PASÁS';
+    nota = 'La prohibición es para camiones de más de ' + toneladas(p.peso_desde) + ' y el tuyo pesa ' + toneladas(camion.peso) + '.';
+  } else if (p.capa === 'prohibido') {
     titulo = 'NO PODÉS CIRCULAR: prohibido para camiones';
+    if (p.peso_desde && camion) nota = 'Es para camiones de más de ' + toneladas(p.peso_desde) + ' y el tuyo pesa ' + toneladas(camion.peso) + '.';
   } else if (e.estado === 'aviso') {
     titulo = 'OJO: no tiene salida';
     nota = 'No entres si no tenés lugar para dar la vuelta.';
@@ -380,6 +399,7 @@ function textoValor(p) {
     case 'peso':
       return p.limite != null ? 'Peso máximo ' + toneladas(p.limite) : sinDato(p.limite_texto, 'peso');
     case 'prohibido':
+      if (p.peso_desde) return 'Prohibido camiones de más de ' + toneladas(p.peso_desde);
       return 'Prohibido el paso de camiones';
     case 'verificar':
     case 'verificar_autopista':
@@ -1078,7 +1098,7 @@ function calcularRuta() {
   var MAX_VUELTAS = 4;
   function vuelta(n, evitar, claves, anteriores) {
     return pedir(evitar).then(function (caminos) {
-      var esquivados = Object.keys(claves).length;
+      var esquivados = Object.keys(claves).filter(function (k) { return k.indexOf('zona#') !== 0; }).length;
       caminos.forEach(function (c) {
         c.avisos = revisarRuta(c.puntos, c.pasos);
         c.rojos = c.avisos.filter(function (a) { return a.color === COLORES.no; }).length;
@@ -1102,7 +1122,19 @@ function calcularRuta() {
     });
   }
 
-  vuelta(1, [], {}, null).then(function (caminos) {
+  // Las zonas prohibidas para este camión (ordenanzas) se esquivan desde el primer pedido,
+  // salvo que la salida o la llegada estén adentro
+  var evitarDesdeElInicio = [], clavesIniciales = {};
+  if (grupos.prohibido) grupos.prohibido.eachLayer(function (l) {
+    if (l.feature.geometry.type !== 'Polygon' || evaluar(l.feature.properties).estado !== 'no') return;
+    var anillo = l.feature.geometry.coordinates[0];
+    if (dentroDeAnillo([ruta.desde.latlng.lng, ruta.desde.latlng.lat], anillo) ||
+        dentroDeAnillo([ruta.hasta.latlng.lng, ruta.hasta.latlng.lat], anillo)) return;
+    evitarDesdeElInicio.push(anillo);
+    clavesIniciales['zona#' + L.stamp(l)] = true;
+  });
+
+  vuelta(1, evitarDesdeElInicio, clavesIniciales, null).then(function (caminos) {
     ruta.opciones = elegirOpciones(caminos);
     mostrarRuta(0);
   }).catch(function (e) {
@@ -1230,7 +1262,12 @@ function rutaValhalla(evitar) {
   // Valhalla acepta muy pocos polígonos (100 vértices en total): se le pasa el centro de cada
   // cuadradito como "lugar a evitar" (acepta hasta 50)
   if (evitar && evitar.length) {
-    cuerpo.exclude_locations = evitar.slice(-50).map(function (anillo) {
+    var grandes = evitar.filter(function (a) { return a.length > 5; });
+    var chicos = evitar.filter(function (a) { return a.length <= 5; });
+    var vertices = 0;
+    cuerpo.exclude_polygons = grandes.filter(function (a) { vertices += a.length; return vertices <= 100; });
+    if (!cuerpo.exclude_polygons.length) delete cuerpo.exclude_polygons;
+    if (chicos.length) cuerpo.exclude_locations = chicos.slice(-50).map(function (anillo) {
       return { lat: (anillo[0][1] + anillo[2][1]) / 2, lon: (anillo[0][0] + anillo[2][0]) / 2 };
     });
   }
@@ -1478,9 +1515,20 @@ function revisarRuta(puntosRuta, pasos) {
       if (estado !== 'no' && estado !== 'sin_dato' && estado !== 'reporte') return;
       var color = estado === 'no' ? COLORES.no : estado === 'reporte' ? '#e65100' : COLORES.sin_dato;
       var texto = esReporte ? 'Reporte de un chofer: ' + p.tipo
-        : (estado === 'no' ? 'NO PASÁS: ' : 'Verificar: ') + textoValor(p) + (p.calle ? ' — ' + p.calle : '');
+        : (estado === 'no' ? 'NO PASÁS: ' : 'Verificar: ') + (p.norma ? p.titulo : textoValor(p) + (p.calle ? ' — ' + p.calle : ''));
       // se esquiva lo rojo y los reportes aprobados que cierran el paso
       var esquivar = estado === 'no' || (esReporte && /prohibid|peso|cortad|obra|puente|paso bajo/i.test(p.tipo || ''));
+      if (l.feature.geometry.type === 'Polygon') {   // zona entera
+        if (!caja.intersects(l.getBounds())) return;
+        var anillo = l.feature.geometry.coordinates[0];
+        var dentro = puntosRuta.filter(function (q) { return dentroDeAnillo([q[1], q[0]], anillo); });
+        if (!dentro.length) return;
+        var extremoAdentro = [desde, hasta].some(function (x) { return x && dentroDeAnillo([x.lng, x.lat], anillo); });
+        avisos.push({ texto: texto + (extremoAdentro ? ' (tu salida o llegada está adentro: necesitás permiso municipal)' : ''),
+                      color: color, latlng: L.latLng(dentro[Math.floor(dentro.length / 2)]), capa: l,
+                      clave: 'zona#' + L.stamp(l), zonas: esquivar && !extremoAdentro ? [anillo] : null });
+        return;
+      }
       if (l.getLatLng) {   // punto
         var ll = l.getLatLng();
         if (!caja.contains(ll) || distRuta(xy([ll.lat, ll.lng])) > 20) return;
@@ -1529,6 +1577,16 @@ function revisarRuta(puntosRuta, pasos) {
   // primero lo que no pasás
   avisos.sort(function (a, b) { return (a.color === COLORES.no ? 0 : 1) - (b.color === COLORES.no ? 0 : 1); });
   return avisos;
+}
+
+// ¿El punto [lng, lat] está dentro del anillo [[lng, lat], ...]? (regla par-impar)
+function dentroDeAnillo(pt, anillo) {
+  var x = pt[0], y = pt[1], dentro = false;
+  for (var i = 0, j = anillo.length - 1; i < anillo.length; j = i++) {
+    var xi = anillo[i][0], yi = anillo[i][1], xj = anillo[j][0], yj = anillo[j][1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) dentro = !dentro;
+  }
+  return dentro;
 }
 
 function normalizarCalle(s) {

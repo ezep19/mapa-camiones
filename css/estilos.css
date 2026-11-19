@@ -475,3 +475,19 @@ body {
   cursor: pointer;
 }
 .ruta-peligro { margin: 10px 0 4px; padding: 10px; border-radius: 8px; background: #d50000; color: #fff; }
+.ruta-opciones { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 6px; margin-bottom: 8px; }
+.ruta-opcion {
+  flex: 1;
+  min-height: 64px;
+  padding: 6px 8px;
+  border: 2px solid var(--borde);
+  border-radius: 10px;
+  background: #fff;
+  text-align: left;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.ruta-opcion b { display: block; font-size: 0.95rem; }
+.ruta-opcion small { display: block; color: var(--texto-suave); font-size: 0.75rem; margin-top: 2px; }
+.ruta-opcion.elegida { border-color: #1565c0; background: #e8f0fb; }

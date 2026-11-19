@@ -79,6 +79,7 @@ var mapa = L.map('mapa', {
   center: vista ? [vista.lat, vista.lng] : CENTRO_INICIAL,
   zoom: vista ? Math.min(Math.max(vista.zoom, 4), 19) : ZOOM_INICIAL,
   minZoom: 4,
+  maxZoom: 19,
   attributionControl: false,  // el crédito de OpenStreetMap está siempre visible en la esquina
   zoomControl: false,         // en el celular se usan los dedos; en la PC va abajo a la derecha (más abajo)
   // (el agregado para girar el mapa se sacó el 19/11/2026: giraba sin querer al mover o acercar con dos dedos y
@@ -157,9 +158,67 @@ var ControlBrujula = L.Control.extend({
 // crossOrigin: así el navegador puede guardar los pedazos del mapa para usarlos sin señal (ver sw.js)
 // En el celular el mapa de fondo se baja al soltar el dedo (lo que Leaflet trae por defecto): bajarlo mientras
 // arrastrás trababa los celulares con señal floja. keepBuffer: guarda un poco más de lo ya bajado alrededor.
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19, crossOrigin: '', keepBuffer: 3
-}).addTo(mapa);
+function fondoComun() {
+  if (fondo.tipo) return;
+  fondo.tipo = 'osm';
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, crossOrigin: '', keepBuffer: 3
+  }).addTo(mapa);
+}
+
+// Mapa de fondo "vectorial" (como Google Maps): se dibuja en el teléfono, así se ve nítido en cualquier pantalla
+// y al acercar no queda pixelado. Sale de OpenFreeMap (gratis, sin cuenta, datos de OpenStreetMap) con MapLibre.
+// Si el teléfono no puede (sin WebGL, o MapLibre / el estilo no cargan), queda el mapa común de OpenStreetMap.
+var ESTILO_FONDO = 'https://tiles.openfreemap.org/styles/liberty';
+var fondo = { tipo: null, gl: null };
+function puedeVectorial() {
+  if (!window.maplibregl || !L.maplibreGL) return false;
+  try {
+    var c = document.createElement('canvas');
+    return !!(c.getContext('webgl2') || c.getContext('webgl'));
+  } catch (e) { return false; }
+}
+function estiloLiviano(est) {
+  // edificios planos (sin 3D, que pesa mucho en el celular) y sin los negocios chiquitos (ensucian el mapa)
+  est.layers = est.layers.filter(function (l) { return l.id !== 'building-3d' && l.id !== 'poi_r20'; });
+  est.layers.forEach(function (l) { if (l.id === 'building') delete l.maxzoom; });
+  return est;
+}
+function ponerFondo() {
+  if (!puedeVectorial()) { fondoComun(); return; }
+  var listo = false;
+  var espera = setTimeout(function () { if (!listo) { listo = true; fondoComun(); } }, 8000);
+  fetch(ESTILO_FONDO).then(function (r) {
+    if (!r.ok) throw new Error('estilo ' + r.status);
+    return r.json();
+  }).then(function (est) {
+    if (listo) return;
+    listo = true;
+    clearTimeout(espera);
+    fondo.tipo = 'vectorial';
+    fondo.gl = L.maplibreGL({
+      style: estiloLiviano(est),
+      // pantallas de 3x: se dibuja a 2x (casi igual de nítido y mucho menos trabajo para el teléfono)
+      pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+      fadeDuration: 0,
+      // al arrastrar se redibuja cada 50 ms (no en cada movimiento) con un 15% de margen alrededor de la pantalla
+      updateInterval: 50,
+      padding: 0.15
+    }).addTo(mapa);
+    var gl = fondo.gl.getMaplibreMap();
+    gl.on('error', function (ev) { if (window.console) console.warn('Mapa de fondo:', ev && ev.error); });
+    // íconos que el estilo nombra pero no trae: uno vacío (si no, avisa cada vez)
+    gl.on('styleimagemissing', function (ev) {
+      if (!gl.hasImage(ev.id)) gl.addImage(ev.id, { width: 1, height: 1, data: new Uint8Array(4) });
+    });
+  }).catch(function () {
+    if (listo) return;
+    listo = true;
+    clearTimeout(espera);
+    fondoComun();
+  });
+}
+ponerFondo();
 
 // Dibujar en "canvas" es más rápido con miles de elementos, y "tolerance"
 // agranda la zona sensible al toque para poder tocar líneas finas con el dedo.

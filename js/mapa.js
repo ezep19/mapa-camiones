@@ -410,6 +410,8 @@ fetch('datos/pais.json', { cache: 'no-cache' })
     pais.celdas = d.celdas;
     pais.actualizado = d.actualizado;
     if (mapa.getZoom() >= ZOOM_MINIMO_DATOS) cargarPaisEn(mapa.getBounds().pad(0.2));
+    // si ya se dijo "no hay datos" (el índice del país llegó después), se corrige el cartel
+    if (/^Todavía no hay datos/.test(document.getElementById('mensaje').textContent)) cargarZonasVisibles();
   })
   .catch(function (e) { console.warn('Sin datos del resto del país:', e); });
 

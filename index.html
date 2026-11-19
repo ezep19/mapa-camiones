@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#1f2a36">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=8">
+  <link rel="stylesheet" href="css/estilos.css?v=10">
 </head>
 <body>
   <header class="barra">
@@ -34,6 +34,43 @@
     <div id="titulo-reportes" class="panel-subtitulo" hidden>Reportes de choferes</div>
     <ul id="lista-reportes" class="lista-capas" hidden></ul>
     <p id="nota-datos" class="panel-nota"></p>
+  </section>
+
+  <section id="panel-ruta" class="panel" hidden aria-label="Ruta para mi camión">
+    <div class="panel-cabecera">
+      <strong>Ruta para mi camión</strong>
+      <button id="cerrar-ruta" class="boton-x" type="button" aria-label="Cerrar">×</button>
+    </div>
+    <div class="ruta-punto">
+      <label for="ruta-desde"><span class="ruta-marca desde">A</span> Desde</label>
+      <div class="ruta-fila">
+        <input id="ruta-desde" type="search" placeholder="Calle y número, ciudad" enterkeyhint="search" autocomplete="off">
+        <button type="button" class="boton-chico" data-buscar="desde">Buscar</button>
+      </div>
+      <div class="ruta-fila">
+        <button type="button" class="boton-chico" id="desde-ubicacion">📍 Mi ubicación</button>
+        <button type="button" class="boton-chico" data-tocar="desde">Tocar en el mapa</button>
+      </div>
+      <ul id="resultados-desde" class="ruta-resultados" hidden></ul>
+    </div>
+    <div class="ruta-punto">
+      <label for="ruta-hasta"><span class="ruta-marca hasta">B</span> Hasta</label>
+      <div class="ruta-fila">
+        <input id="ruta-hasta" type="search" placeholder="Calle y número, ciudad" enterkeyhint="search" autocomplete="off">
+        <button type="button" class="boton-chico" data-buscar="hasta">Buscar</button>
+      </div>
+      <div class="ruta-fila">
+        <button type="button" class="boton-chico" data-tocar="hasta">Tocar en el mapa</button>
+      </div>
+      <ul id="resultados-hasta" class="ruta-resultados" hidden></ul>
+    </div>
+    <div class="ruta-fila">
+      <button type="button" id="calcular-ruta" class="boton-principal">Calcular ruta para mi camión</button>
+      <button type="button" id="borrar-ruta" class="boton-chico" hidden>Borrar</button>
+    </div>
+    <div id="ruta-resultado" hidden></div>
+    <p class="panel-nota">La ruta se calcula con los datos de OpenStreetMap, que pueden estar incompletos
+      (por ejemplo en Mar del Plata casi no hay calles prohibidas cargadas). Respetá siempre la señalización.</p>
   </section>
 
   <div id="ventana-camion" class="ventana-fondo" hidden>
@@ -70,6 +107,6 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="js/mapa.js?v=8"></script>
+  <script src="js/mapa.js?v=10"></script>
 </body>
 </html>

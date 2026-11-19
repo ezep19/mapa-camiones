@@ -353,3 +353,124 @@ body {
   border: 2px solid #e65100;
 }
 .reportes-ayuda { padding: 6px 2px 2px; font-size: 0.85rem; color: var(--texto-suave); }
+
+/* ===== Ruta para mi camión ===== */
+.boton-ruta {
+  min-height: 52px;
+  margin: 0 0 14px 12px !important;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 26px;
+  background: #1565c0;
+  color: #fff;
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 700;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+.ruta-punto { padding: 8px 0; border-bottom: 1px solid var(--borde); }
+.ruta-punto label { display: flex; align-items: center; gap: 8px; font-weight: 700; margin-bottom: 6px; }
+.ruta-fila { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.ruta-fila input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tocable);
+  padding: 0 10px;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 16px;   /* 16 px o más: el iPhone no agranda la página al escribir */
+}
+.boton-chico {
+  min-height: var(--tocable);
+  padding: 0 12px;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--texto);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.boton-principal {
+  flex: 1;
+  min-height: 48px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 10px;
+  background: #1565c0;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ruta-resultados { list-style: none; margin: 6px 0 0; padding: 0; }
+.ruta-resultados button {
+  width: 100%;
+  min-height: var(--tocable);
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--borde);
+  background: #f5f7fa;
+  text-align: left;
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.ruta-cargando { padding: 8px 2px; color: var(--texto-suave); }
+.ruta-marca {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+.ruta-marca.desde { background: #2e7d32; }
+.ruta-marca.hasta { background: #1565c0; }
+#ruta-resultado { margin-top: 10px; }
+.ruta-resumen { font-size: 1.15rem; }
+.ruta-resumen small { display: block; font-size: 0.8rem; color: var(--texto-suave); margin-top: 2px; }
+.ruta-aviso { margin: 10px 0 4px; padding: 8px; border-radius: 8px; background: #fff3c4; color: #5c4300; }
+.ruta-ok { margin: 10px 0 4px; color: #1b5e20; font-weight: 600; }
+.ruta-lista { list-style: none; margin: 0; padding: 0; }
+.ruta-lista button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tocable);
+  padding: 4px 6px;
+  border: 0;
+  border-bottom: 1px solid var(--borde);
+  background: none;
+  text-align: left;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.ruta-lista i { flex: none; width: 14px; height: 14px; border-radius: 50%; }
+.ruta-pasos { margin-top: 10px; }
+.ruta-pasos summary { min-height: var(--tocable); display: flex; align-items: center; font-weight: 600; cursor: pointer; }
+.ruta-pasos ol { margin: 0; padding-left: 22px; font-size: 0.9rem; }
+.ruta-pasos li { margin: 4px 0; }
+.ruta-pasos small { color: var(--texto-suave); }
+.cartel-fila { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 4px; }
+.cartel-boton-chico {
+  flex: 1;
+  min-height: var(--tocable);
+  padding: 0 8px;
+  border: 2px solid #1565c0;
+  border-radius: 10px;
+  background: #fff;
+  color: #1565c0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}

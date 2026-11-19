@@ -1038,13 +1038,14 @@ function controlesEnRuta(puntosRuta) {
 
 // ===== 7e. Cortes de calle y obras EN VIVO (TomTom) =====
 // TomTom junta cortes, obras y accidentes de muchas fuentes (municipios, policía, autos con GPS).
-// Se piden por "celdas" de 0,25° (unos 25 km) a medida que se mira el mapa de cerca o pasa una ruta, y quedan
-// solo en la memoria de la página por 10 minutos. La clave está en datos/ruta_config.json ("tomtom_clave").
-// El plan gratis da unos 2.500 pedidos por día para todos los usuarios juntos: por eso no se pide de lejos.
-var CORTES = { celda: 0.25, vigencia: 10 * 60 * 1000, zoom: 12, maxCeldasVista: 6, maxCeldasRuta: 30 };
+// Se piden en "cuadraditos" (tiles vectoriales de nivel 13, unos 5 x 4 km): el plan gratis da 200.000 por mes
+// (los pedidos de detalle, en cambio, son solo 2.500 por mes: se usan únicamente al tocar un corte, para saber
+// entre qué calles es). Se piden los de lo que se ve (con el mapa cerca) y los de por donde pasa una ruta, y
+// quedan solo en la memoria de la página por 10 minutos. Clave: datos/ruta_config.json ("tomtom_clave").
+var CORTES = { z: 13, vigencia: 10 * 60 * 1000, zoom: 13, maxCeldasVista: 8, maxCeldasRuta: 40 };
 var TIPO_CORTE = { 1: 'Accidente', 3: 'Peligro en la calle', 7: 'Carril cerrado', 8: 'Calle cortada',
                    9: 'Obra en la calle', 11: 'Calle inundada', 14: 'Vehículo detenido' };
-var cortes = { celdas: {}, porId: {}, atribucion: false };
+var cortes = { celdas: {}, atribucion: false };
 
 function claveTomTom() { return ruta && ruta.config && ruta.config.tomtom_clave; }   // ruta se define más abajo
 
@@ -1054,113 +1055,229 @@ function bajarCeldaCortes(clave) {
   var c = cortes.celdas[clave];
   if (c && c.pedido) return c.pedido;
   if (c && Date.now() - c.hora < CORTES.vigencia) return Promise.resolve();
-  var celda = cortes.celdas[clave] = { hora: c ? c.hora : 0, ids: c ? c.ids : [], pedido: null };
-  var p = clave.split(','), s = p[0] * CORTES.celda, o = p[1] * CORTES.celda;
-  var url = 'https://api.tomtom.com/traffic/services/5/incidentDetails?key=' + encodeURIComponent(clv) +
-    '&bbox=' + [o, s, o + CORTES.celda, s + CORTES.celda].map(function (n) { return n.toFixed(4); }).join(',') +
-    '&fields=' + encodeURIComponent('{incidents{type,geometry{type,coordinates},properties{id,iconCategory,' +
-      'events{description,code},startTime,endTime,from,to,roadNumbers,probabilityOfOccurrence}}}') +
-    '&language=es-ES&categoryFilter=1,3,7,8,9,11,14&timeValidityFilter=present';
+  var celda = cortes.celdas[clave] = { hora: c ? c.hora : 0, capas: c ? c.capas : [], pedido: null };
+  var xy = clave.split(',');
+  var url = 'https://api.tomtom.com/traffic/map/4/tile/incidents/' + CORTES.z + '/' + xy[0] + '/' + xy[1] + '.pbf?key=' +
+    encodeURIComponent(clv) + '&language=es-ES&tags=' +
+    encodeURIComponent('[icon_category,description,end_date,id,probability_of_occurrence,road_category,traffic_road_coverage]');
   celda.pedido = conTiempoLimite(url, {}, 15)
-    .then(function (r) { if (!r.ok) throw new Error('TomTom ' + r.status); return r.json(); })
-    .then(function (d) { ponerCortes(clave, d.incidents || []); celda.hora = Date.now(); })
+    .then(function (r) { if (!r.ok) throw new Error('TomTom ' + r.status); return r.arrayBuffer(); })
+    .then(function (b) { ponerCortes(clave, leerTileCortes(new Uint8Array(b), +xy[0], +xy[1])); celda.hora = Date.now(); })
     .catch(function (e) {
       console.warn('Sin cortes en vivo:', e.message);
-      celda.hora = Date.now() - CORTES.vigencia + 60 * 1000;   // reintenta en un minuto
+      celda.hora = Date.now() - CORTES.vigencia + 2 * 60 * 1000;   // reintenta en dos minutos
     })
     .then(function () { celda.pedido = null; });
   return celda.pedido;
 }
 
-function sinCalle(s) {
-  return String(s || '').replace(/^(Calle|Avenida) /, '').replace(/ \/ (Calle|Avenida) /g, ' / ').replace(/ exit \[[^\]]*\]/g, '');
+// --- Lector de "vector tiles" (formato Mapbox, protobuf). Es chico y así no hay que agregar una biblioteca. ---
+function leerTileCortes(b, tx, ty) {
+  function varint(s) {
+    var r = 0, m = 1, c;
+    do { c = b[s.i++]; r += (c & 0x7f) * m; m *= 128; } while (c >= 128);
+    return r;
+  }
+  function campos(ini, fin, cada) {   // recorre los campos de un mensaje: cada(número, tipo, s)
+    var s = { i: ini };
+    while (s.i < fin) {
+      var k = varint(s), n = Math.floor(k / 8), t = k & 7, antes;
+      if (t === 0) { antes = s.i; cada(n, t, s); if (s.i === antes) varint(s); }
+      else if (t === 2) { var largo = varint(s); var fin2 = s.i + largo; cada(n, t, s, fin2); s.i = fin2; }
+      else if (t === 1) s.i += 8;
+      else if (t === 5) s.i += 4;
+      else break;
+    }
+  }
+  function texto(ini, fin) { return new TextDecoder().decode(b.subarray(ini, fin)); }
+  var n2 = Math.pow(2, CORTES.z), res = [];
+  campos(0, b.length, function (n, t, s, fin) {
+    if (n !== 3 || t !== 2) return;   // capa
+    var nombre = '', claves = [], valores = [], feats = [], extent = 4096;
+    campos(s.i, fin, function (m, tt, s2, fin2) {
+      if (m === 1 && tt === 2) nombre = texto(s2.i, fin2);
+      else if (m === 3 && tt === 2) claves.push(texto(s2.i, fin2));
+      else if (m === 4 && tt === 2) {
+        var v = null;
+        campos(s2.i, fin2, function (q, t3, s3, fin3) {
+          if (q === 1 && t3 === 2) v = texto(s3.i, fin3);
+          else if (t3 === 0) { v = varint(s3); if (q === 6) v = (v % 2) ? -(v + 1) / 2 : v / 2; }   // int / sint
+          // los números con coma (rumbo) se saltean: no hacen falta
+        });
+        valores.push(v);
+      }
+      else if (m === 5 && tt === 0) extent = varint(s2);
+      else if (m === 2 && tt === 2) feats.push([s2.i, fin2]);
+    });
+    var esLinea = /flow/i.test(nombre);
+    feats.forEach(function (rango) {
+      var tags = [], geom = [], tipo = 0;
+      campos(rango[0], rango[1], function (m, tt, s2, fin2) {
+        var arr = (m === 2) ? tags : (m === 4) ? geom : null;
+        if (tt === 0 && m === 3) { tipo = varint(s2); return; }
+        if (!arr || tt !== 2) return;
+        var s4 = { i: s2.i };
+        while (s4.i < fin2) arr.push(varint(s4));
+      });
+      var p = {};
+      for (var k = 0; k + 1 < tags.length; k += 2) p[claves[tags[k]]] = valores[tags[k + 1]];
+      // geometría: comandos MoveTo / LineTo con coordenadas relativas (zigzag) dentro del cuadradito
+      var lineas = [], actual = null, x = 0, y = 0, i = 0;
+      while (i < geom.length) {
+        var cmd = geom[i] & 7, cuenta = geom[i] >> 3; i++;
+        if (cmd === 7) continue;
+        for (var j = 0; j < cuenta; j++) {
+          var dx = geom[i++], dy = geom[i++];
+          x += (dx % 2) ? -(dx + 1) / 2 : dx / 2;
+          y += (dy % 2) ? -(dy + 1) / 2 : dy / 2;
+          var lng = (tx + x / extent) / n2 * 360 - 180;
+          var lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (ty + y / extent) / n2))) * 180 / Math.PI;
+          if (cmd === 1) { actual = [[lng, lat]]; lineas.push(actual); } else actual.push([lng, lat]);
+        }
+      }
+      if (!lineas.length) return;
+      res.push({ linea: esLinea, puntoSolo: !esLinea && p.poi_type === 'standalone_poi', tags: p, lineas: lineas });
+    });
+  });
+  // de los puntos, solo los "sueltos" (los de punta de una línea ya están en la línea)
+  return res.filter(function (f) { return f.linea || f.puntoSolo; });
 }
 
-// Convierte un incidente de TomTom en una restricción más (capa 'corte') con el mismo formato que las de OSM
-function featureCorte(inc) {
-  var q = inc.properties || {};
-  var eventos = (q.events || []).map(function (e) { return e.description; }).filter(Boolean);
-  var probable = !q.probabilityOfOccurrence || /certain|probable/.test(q.probabilityOfOccurrence);
-  var cortada = probable && (q.iconCategory === 8 || eventos.some(function (t) { return /^cerrad|cortad/i.test(t); }));
-  var titulo = cortada ? 'Calle cortada' : TIPO_CORTE[q.iconCategory] || 'Problema en la calle';
-  var calle = (q.roadNumbers && q.roadNumbers.length ? q.roadNumbers.join(' / ') + ' — ' : '') +
-              (q.from && q.to && q.from !== q.to ? 'Entre ' + sinCalle(q.from) + ' y ' + sinCalle(q.to) : sinCalle(q.from || q.to));
-  var detalle = (eventos.length ? eventos.join('. ') + '. ' : '') +
-    (q.endTime ? 'Hasta: ' + fechaHora(q.endTime) + '. ' : '') +
-    'Dato en vivo de TomTom: puede ser solo en una mano o ya haberse levantado.';
+// Convierte un corte del cuadradito en una restricción más (capa 'corte') con el mismo formato que las de OSM
+function featureCorte(f) {
+  var q = f.tags, cats = [], eventos = [];
+  Object.keys(q).forEach(function (k) {
+    if (/^icon_category(_\d+)?$/.test(k)) cats.push(+q[k]);
+    if (/^description(_\d+)?$/.test(k) && q[k]) eventos.push(q[k]);
+  });
+  var cat = cats.filter(function (c) { return TIPO_CORTE[c]; })[0];
+  if (cat == null) return null;   // embotellamientos, niebla, grupos: no interesan acá
+  var probable = !q.probability_of_occurrence || /certain|probable/.test(q.probability_of_occurrence);
+  var cortada = probable && (cats.indexOf(8) !== -1 || eventos.some(function (t) { return /^cerrad|cortad/i.test(t); }));
+  var geometria = f.linea
+    ? (f.lineas.length === 1 ? { type: 'LineString', coordinates: f.lineas[0] } : { type: 'MultiLineString', coordinates: f.lineas })
+    : { type: 'Point', coordinates: f.lineas[0][0] };
   return {
-    type: 'Feature', geometry: inc.geometry,
-    properties: { capa: 'corte', titulo: titulo, cortada: cortada, calle: calle || null, detalle: detalle,
-                  desde_hora: q.startTime || null, hasta: q.endTime || null, fuente: 'TomTom (en vivo)', id_tomtom: q.id }
+    type: 'Feature', geometry: geometria,
+    properties: { capa: 'corte', titulo: cortada ? 'Calle cortada' : TIPO_CORTE[cat], cortada: cortada, calle: null,
+                  eventos: eventos.join('. '), hasta: q.end_date || null, una_mano: q.traffic_road_coverage === 'one_side',
+                  detalle: detalleCorte(eventos.join('. '), q.end_date, q.traffic_road_coverage === 'one_side'),
+                  fuente: 'TomTom (en vivo)', id_tomtom: q.id || null }
   };
 }
+function detalleCorte(eventos, hasta, unaMano) {
+  return (eventos ? eventos + '. ' : '') + (hasta ? 'Hasta: ' + fechaHora(hasta) + '. ' : '') +
+    (unaMano ? 'Es en una sola mano. ' : '') + 'Dato en vivo de TomTom: puede haberse levantado o no figurar todavía.';
+}
 
-function ponerCortes(clave, incidentes) {
-  var celda = cortes.celdas[clave], nuevos = {}, cambio = false;
-  incidentes.forEach(function (inc) {
-    var id = inc.properties && inc.properties.id;
-    if (!id || !inc.geometry || nuevos[id]) return;
-    nuevos[id] = true;
-    var ya = cortes.porId[id];
-    if (ya) { ya.celdas[clave] = true; return; }
-    grupos.corte.addData(featureCorte(inc));
+function ponerCortes(clave, lista) {
+  var celda = cortes.celdas[clave];
+  celda.capas.forEach(function (l) {
+    if (l.isPopupOpen && l.isPopupOpen()) mapa.closePopup();
+    grupos.corte.removeLayer(l);
+  });
+  celda.capas = [];
+  lista.forEach(function (f) {
+    var feat = featureCorte(f);
+    if (!feat) return;
+    grupos.corte.addData(feat);
     var capas = grupos.corte.getLayers();
-    cortes.porId[id] = { capa: capas[capas.length - 1], celdas: {} };
-    cortes.porId[id].celdas[clave] = true;
-    cambio = true;
+    celda.capas.push(capas[capas.length - 1]);
   });
-  // los que esta celda tenía y ya no figuran: se levantaron (salvo que otra celda todavía los tenga)
-  celda.ids.forEach(function (id) {
-    var ya = cortes.porId[id];
-    if (!ya || nuevos[id]) return;
-    delete ya.celdas[clave];
-    if (Object.keys(ya.celdas).length) return;
-    if (ya.capa.isPopupOpen && ya.capa.isPopupOpen()) mapa.closePopup();
-    grupos.corte.removeLayer(ya.capa);
-    delete cortes.porId[id];
-    cambio = true;
-  });
-  celda.ids = Object.keys(nuevos);
-  cantidades.corte = Object.keys(cortes.porId).length;
+  cantidades.corte = grupos.corte.getLayers().length;
   if (!cortes.atribucion && cantidades.corte) {
     var pie = document.getElementById('pie-tomtom');   // el crédito va en el pie, junto al de OpenStreetMap
     if (pie) pie.hidden = false;
     cortes.atribucion = true;
   }
-  if (cambio) {
-    ponerRojosArriba();
-    if (zonasIndice.length) armarPanel();
-  }
+  // si llegan varios cuadraditos juntos, se redibuja una sola vez
+  clearTimeout(cortes.timer);
+  cortes.timer = setTimeout(function () { ponerRojosArriba(); if (zonasIndice.length) armarPanel(); }, 250);
 }
 
+// Al tocar un corte: entre qué calles es (un pedido de detalle por corte tocado, y queda guardado)
+var detallesCorte = {};
+grupos.corte.on('popupopen', function (e) {
+  var l = e.layer || e.propagatedFrom, p = l && l.feature && l.feature.properties;
+  if (!p || !p.id_tomtom || p.calle || !claveTomTom()) return;
+  var poner = function (d) {
+    if (!d) return;
+    p.calle = d.calle;
+    if (d.hasta && !p.hasta) p.hasta = d.hasta;
+    p.detalle = detalleCorte(p.eventos, p.hasta, p.una_mano);
+    if (e.popup && e.popup.isOpen()) e.popup.update();
+  };
+  if (detallesCorte[p.id_tomtom]) { detallesCorte[p.id_tomtom].then(poner); return; }
+  var url = 'https://api.tomtom.com/traffic/services/5/incidentDetails?key=' + encodeURIComponent(claveTomTom()) +
+    '&ids=' + encodeURIComponent(p.id_tomtom) + '&language=es-ES&fields=' +
+    encodeURIComponent('{incidents{properties{id,from,to,roadNumbers,endTime}}}');
+  detallesCorte[p.id_tomtom] = conTiempoLimite(url, {}, 10)
+    .then(function (r) { if (!r.ok) throw new Error('TomTom ' + r.status); return r.json(); })
+    .then(function (d) {
+      var q = d.incidents && d.incidents[0] && d.incidents[0].properties;
+      if (!q) return null;
+      var calle = (q.roadNumbers && q.roadNumbers.length ? q.roadNumbers.join(' / ') + ' — ' : '') +
+                  (q.from && q.to && q.from !== q.to ? 'Entre ' + sinCalle(q.from) + ' y ' + sinCalle(q.to) : sinCalle(q.from || q.to));
+      return { calle: calle || null, hasta: q.endTime || null };
+    })
+    .catch(function (err) { console.warn('Sin detalle del corte:', err.message); delete detallesCorte[p.id_tomtom]; return null; });
+  detallesCorte[p.id_tomtom].then(poner);
+});
+
+function sinCalle(s) {
+  return String(s || '').replace(/^(Calle|Avenida) /, '').replace(/ \/ (Calle|Avenida) /g, ' / ').replace(/ exit \[[^\]]*\]/g, '');
+}
+
+// Número de cuadradito (nivel 13) de un punto
+function celdaDe(lat, lng) {
+  var n = Math.pow(2, CORTES.z);
+  var x = Math.floor((lng + 180) / 360 * n);
+  var y = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n);
+  return x + ',' + y;
+}
 function celdasEn(limites) {
-  var c = CORTES.celda, res = [];
-  for (var i = Math.floor(limites.getSouth() / c); i <= Math.floor(limites.getNorth() / c); i++) {
-    for (var j = Math.floor(limites.getWest() / c); j <= Math.floor(limites.getEast() / c); j++) res.push(i + ',' + j);
-  }
+  var a = celdaDe(limites.getNorth(), limites.getWest()).split(','), b = celdaDe(limites.getSouth(), limites.getEast()).split(',');
+  var res = [];
+  for (var x = +a[0]; x <= +b[0]; x++) for (var y = +a[1]; y <= +b[1]; y++) res.push(x + ',' + y);
   return res;
 }
 
-// Los de lo que se ve (solo de cerca: de lejos serían muchos pedidos)
+// Los de lo que se ve (solo de cerca: de lejos serían muchos cuadraditos)
 function mostrarCortes() {
   if (!claveTomTom() || apagadas.corte || mapa.getZoom() < CORTES.zoom) return;
-  celdasEn(mapa.getBounds()).slice(0, CORTES.maxCeldasVista).forEach(bajarCeldaCortes);
+  var centro = mapa.getCenter();
+  // los más cercanos al centro primero (si la pantalla es grande y son muchos, los de la orilla quedan)
+  celdasEn(mapa.getBounds()).map(function (k) {
+    var xy = k.split(','), n = Math.pow(2, CORTES.z);
+    var lng = (+xy[0] + 0.5) / n * 360 - 180;
+    var lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (+xy[1] + 0.5) / n))) * 180 / Math.PI;
+    return { k: k, d: centro.distanceTo([lat, lng]) };
+  }).sort(function (a, b) { return a.d - b.d; }).slice(0, CORTES.maxCeldasVista)
+    .forEach(function (c) { bajarCeldaCortes(c.k); });
 }
 mapa.on('moveend', mostrarCortes);
-// Al volver a la página (o cada 10 minutos con el mapa abierto, por ejemplo navegando) se actualizan
+// Con el mapa abierto (por ejemplo, navegando) se actualizan cada 10 minutos
 setInterval(function () { if (!document.hidden) mostrarCortes(); }, 60 * 1000);
 
-// Los de las celdas por donde pasan uno o varios recorridos (para revisar la ruta). Nunca falla.
+// Los de los cuadraditos por donde pasan uno o varios recorridos (para revisar la ruta). Nunca falla.
 function cargarCortesEn(listas) {
   if (!claveTomTom()) return Promise.resolve();
-  var c = CORTES.celda, vistas = {}, orden = [];
+  var vistas = {}, orden = [];
+  function marcar(lat, lng) { var k = celdaDe(lat, lng); if (!vistas[k]) { vistas[k] = true; orden.push(k); } }
   listas.forEach(function (puntos) {
-    puntos.forEach(function (pt) {
-      var k = Math.floor(pt[0] / c) + ',' + Math.floor(pt[1] / c);
-      if (!vistas[k]) { vistas[k] = true; orden.push(k); }
-    });
+    for (var i = 0; i < puntos.length; i++) {
+      marcar(puntos[i][0], puntos[i][1]);
+      // en una ruta recta los puntos pueden estar a varios km: se agregan puntos intermedios cada ~1 km
+      if (i + 1 < puntos.length) {
+        var d = L.latLng(puntos[i]).distanceTo(puntos[i + 1]), pasos = Math.floor(d / 1000);
+        for (var j = 1; j <= pasos; j++) {
+          var t = j / (pasos + 1);
+          marcar(puntos[i][0] + (puntos[i + 1][0] - puntos[i][0]) * t, puntos[i][1] + (puntos[i + 1][1] - puntos[i][1]) * t);
+        }
+      }
+    }
   });
-  // en un viaje muy largo: las de la salida y la llegada primero (ahí están las calles chicas)
+  // en un viaje muy largo: los de la salida y la llegada (ahí están las calles chicas)
   if (orden.length > CORTES.maxCeldasRuta) {
     var mitad = CORTES.maxCeldasRuta / 2;
     orden = orden.slice(0, mitad).concat(orden.slice(-mitad));

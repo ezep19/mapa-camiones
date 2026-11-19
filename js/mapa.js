@@ -87,14 +87,11 @@ function crearPane(nombre) {
 // Para que no gire sin querer al hacer zoom con dos dedos: recién empieza a girar si los dedos giran más de 20°
 var UMBRAL_GIRO = 20;
 if (PUEDE_GIRAR && L.Map.TouchGestures) {
-  var gestoInicio = L.Map.TouchGestures.prototype._onTouchStart;
   var gestoMover = L.Map.TouchGestures.prototype._onTouchMove;
-  L.Map.TouchGestures.prototype._onTouchStart = function (e) {
-    this._giroLibre = false;
-    this._angInicio = null;
-    return gestoInicio.call(this, e);
-  };
   L.Map.TouchGestures.prototype._onTouchMove = function (e) {
+    // gesto nuevo (todavía no se movió): vuelve a exigir el umbral. Se hace acá y no en _onTouchStart
+    // porque el agregado ya registró su _onTouchStart original al crear el mapa.
+    if (!this._moved) { this._giroLibre = false; this._angInicio = null; }
     if (this._rotating && !this._giroLibre && e.touches && e.touches.length === 2) {
       var m = this._map;
       var v = m.mouseEventToContainerPoint(e.touches[0]).subtract(m.mouseEventToContainerPoint(e.touches[1]));

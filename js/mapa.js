@@ -489,8 +489,7 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
       var c = z.conteo || {};
       var cargadas = (c.prohibido || 0) + (c.peso || 0) + (c.altura || 0) + (c.largo || 0);
       if (!z.aviso && z.conteo && cargadas < 25) {
-        z.aviso = 'En ' + z.titulo + ' casi no hay restricciones cargadas en el mapa (' + cargadas +
-                  '). Puede haber calles prohibidas o puentes bajos que no figuran: respetá la señalización.';
+        z.aviso = 'En ' + z.titulo + ' casi no hay datos de restricciones: respetá la señalización.';
       }
     });
     ocultarMensaje();
@@ -1536,7 +1535,7 @@ function revisarAvisoZona() {
     if (!adentro && !m.hidden && m.textContent.indexOf(z.zona.aviso) !== -1) ocultarMensaje();
     if (!adentro || avisosMostrados[z.zona.id]) return;
     avisosMostrados[z.zona.id] = true;
-    mostrarMensaje('⚠ ' + z.zona.aviso + ' (tocá para cerrar)');
+    mostrarMensaje('⚠ ' + z.zona.aviso);
     setTimeout(function () {
       var m = document.getElementById('mensaje');
       if (m.textContent.indexOf(z.zona.aviso) !== -1) ocultarMensaje();

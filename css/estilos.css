@@ -577,3 +577,16 @@ body.navegando .boton-ruta { display: none; }
 }
 .boton-brujula[hidden] { display: none; }
 .nav-boton.apagado { opacity: 0.55; }
+
+/* "Ir a una ciudad": lista desplegable (con 40 ciudades los botones ocupaban toda la pantalla) */
+.selector-zona {
+  width: 100%;
+  min-height: var(--tocable);
+  padding: 0 12px;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  background: var(--fondo);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+}

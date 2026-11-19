@@ -289,10 +289,6 @@ var zonasPedidas = {};        // id de zona -> promesa de su carga
 var ZOOM_MINIMO_DATOS = 9;    // más lejos que esto no se baja nada (sería el país entero)
 var zonasCargando = 0;
 var zonasOk = {};             // zonas que se cargaron bien
-// Zonas que tocan este rectángulo y NO se pudieron cargar: una ruta por ahí no está revisada
-function zonasSinCargarEn(limites) {
-  return zonasEn(limites).filter(function (z) { return !zonasOk[z.id]; }).map(function (z) { return z.titulo; });
-}
 
 CAPAS.forEach(function (c) {
   cantidades[c.id] = 0;
@@ -366,6 +362,27 @@ function agregarZona(r) {
 function zonasEn(limites) {
   return zonasIndice.filter(function (z) { return z.limites && L.latLngBounds(z.limites).pad(0.05).intersects(limites); });
 }
+// Zonas por donde pasan uno o varios recorridos. No el rectángulo entero: en un viaje en diagonal
+// (Mar del Plata → Córdoba) el rectángulo toca casi todas las zonas y el celular bajaría varios MB de más.
+function zonasEnRutas(listas) {
+  var cajas = zonasIndice.map(function (z) { return { z: z, b: L.latLngBounds(z.limites).pad(0.02) }; });
+  var res = {};
+  listas.forEach(function (puntos) {
+    for (var i = 0; i < puntos.length; i++) {
+      var a = puntos[i], b = puntos[i + 1] || a;
+      var n = Math.max(1, Math.ceil(L.latLng(a).distanceTo(b) / 2000));   // un punto cada 2 km como mínimo
+      for (var k = 0; k < n; k++) {
+        var ll = L.latLng(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n);
+        for (var j = 0; j < cajas.length; j++) if (!res[cajas[j].z.id] && cajas[j].b.contains(ll)) res[cajas[j].z.id] = cajas[j].z;
+      }
+    }
+  });
+  return Object.keys(res).map(function (k) { return res[k]; });
+}
+function cargarZonasEnRutas(listas) { return Promise.all(zonasEnRutas(listas).map(cargarZona)); }
+function zonasSinCargarEnRutas(listas) {
+  return zonasEnRutas(listas).filter(function (z) { return !zonasOk[z.id]; }).map(function (z) { return z.titulo; });
+}
 function cargarZonasEn(limites) {
   return Promise.all(zonasEn(limites).map(cargarZona));
 }
@@ -385,11 +402,11 @@ function cargarZonasVisibles() {
       if (pais.avisado) return;
       pais.avisado = true;
       mostrarMensaje('Acá solo hay restricciones cargadas en rutas y calles (alturas, pesos, prohibidos). ' +
-                     'Las calles sin salida y los pasos bajos calculados están solo en las ciudades de Capas → "Ir a".');
+                     'Las calles sin salida y los pasos bajos calculados están solo en las ciudades de Capas → "Ir a una ciudad".');
       setTimeout(function () { if (/^Acá solo hay/.test(m.textContent)) ocultarMensaje(); }, 9000);
       return;
     }
-    mostrarMensaje('Todavía no hay datos de esta zona. Las zonas con datos están en Capas → "Ir a".');
+    mostrarMensaje('Todavía no hay datos de esta zona. Las ciudades con datos están en Capas → "Ir a una ciudad".');
     setTimeout(function () { if (/^Todavía no hay datos/.test(m.textContent)) ocultarMensaje(); }, 6000);
     return;
   }
@@ -1454,30 +1471,32 @@ function armarPanel() {
   armarBotonesZonas();
 }
 
-// Botones "Ir a:" para saltar a cada zona (solo si hay más de una)
+// "Ir a una ciudad": lista desplegable para saltar a cada zona (solo si hay más de una)
 function armarBotonesZonas() {
   var caja = document.getElementById('ir-zonas');
   if (!caja) return;   // index.html viejo guardado en el celular
-  caja.innerHTML = '';
-  var conLimites = zonasIndice.map(function (z) { return { zona: z }; });
-  if (conLimites.length < 2) { caja.hidden = true; return; }
-  var titulo = document.createElement('span');
-  titulo.className = 'ir-zonas-titulo';
-  titulo.textContent = 'Ir a:';
-  caja.appendChild(titulo);
-  conLimites.forEach(function (z) {
-    var b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'boton-zona';
-    b.textContent = z.zona.titulo;
-    b.addEventListener('click', function () {
-      abrirPanel(false);
-      var ir = z.zona.ir_a;
-      if (ir && ir.centro) mapa.setView(ir.centro, ir.zoom || 13);
-      else mapa.fitBounds(z.zona.limites);
-    });
-    caja.appendChild(b);
+  if (zonasIndice.length < 2) { caja.hidden = true; return; }
+  // con muchas ciudades, una lista desplegable (en el celular abre la lista grande del teléfono)
+  var ordenadas = zonasIndice.slice().sort(function (a, b) { return a.titulo.localeCompare(b.titulo, 'es'); });
+  var claveLista = ordenadas.map(function (z) { return z.id; }).join(',');
+  if (caja.dataset.lista === claveLista) return;   // ya está armada (armarPanel se llama seguido)
+  caja.dataset.lista = claveLista;
+  caja.innerHTML = '<label class="ir-zonas-titulo" for="selector-zona">Ir a una ciudad con datos:</label>';
+  var sel = document.createElement('select');
+  sel.id = 'selector-zona';
+  sel.className = 'selector-zona';
+  sel.innerHTML = '<option value="">Elegí una ciudad (' + ordenadas.length + ')</option>' +
+    ordenadas.map(function (z) { return '<option value="' + esc(z.id) + '">' + esc(z.titulo) + '</option>'; }).join('');
+  sel.addEventListener('change', function () {
+    var z = zonasIndice.filter(function (x) { return x.id === sel.value; })[0];
+    sel.value = '';
+    if (!z) return;
+    abrirPanel(false);
+    var ir = z.ir_a;
+    if (ir && ir.centro) mapa.setView(ir.centro, ir.zoom || 13);
+    else mapa.fitBounds(z.limites);
   });
+  caja.appendChild(sel);
   caja.hidden = false;
 }
 
@@ -1916,7 +1935,8 @@ function calcularRuta() {
   var desde = ruta.desde.latlng, hasta = ruta.hasta.latlng;
   var largo = desde.distanceTo(hasta) / 1000 > VIAJE_LARGO_KM;
 
-  cargarZonasEn(L.latLngBounds([desde, hasta]).pad(largo ? 0 : 0.1))
+  (largo ? cargarZonasEnRutas([[[desde.lat, desde.lng]], [[hasta.lat, hasta.lng]]])
+         : cargarZonasEn(L.latLngBounds([desde, hasta]).pad(0.1)))
     .then(function () {
       if (!largo) return calcularTramo(desde, hasta, salida, true);
       return calcularViajeLargo(desde, hasta, salida);
@@ -1972,10 +1992,8 @@ function calcularTramo(a, b, salida, conAlternativas) {
   var inicio = zonasProhibidasEntre(a, b);
   function vuelta(n, evitar, claves, anteriores) {
     return pedirCaminos(a, b, evitar, conAlternativas).then(function (caminos) {
-      var todo = L.latLngBounds([]);
-      caminos.forEach(function (c) { todo.extend(L.latLngBounds(c.puntos)); });
       var listas = caminos.map(function (c) { return c.puntos; });
-      return Promise.all([cargarZonasEn(todo), cargarCortesEn(listas), cargarPaisEnRutas(listas)])
+      return Promise.all([cargarZonasEnRutas(listas), cargarCortesEn(listas), cargarPaisEnRutas(listas)])
         .then(function () { return caminos; });
     }).then(function (caminos) {
       caminos.forEach(function (c) {
@@ -1985,7 +2003,7 @@ function calcularTramo(a, b, salida, conAlternativas) {
         c.esquivados = Object.keys(lugares).filter(function (k) {
           return !c.avisos.some(function (x) { return x.clave === k && x.rojo; });
         }).length;
-        c.sinRevisar = zonasSinCargarEn(L.latLngBounds(c.puntos));
+        c.sinRevisar = zonasSinCargarEnRutas([c.puntos]);
       });
       var limpios = caminos.filter(function (c) { return !c.avisos.some(function (x) { return x.zonas && x.zonas.length; }); });
       if (limpios.length || n >= MAX_VUELTAS) return caminos;
@@ -2028,7 +2046,7 @@ function calcularViajeLargo(desde, hasta, salida) {
     var p1 = L.latLng(base.puntos[i1]), p2 = L.latLng(base.puntos[i2]);
     salida.innerHTML = '<p class="ruta-cargando">Viaje largo: revisando la salida y la llegada para tu camión...</p>';
     // cargar las zonas de todo el recorrido (para revisar el tramo del medio)
-    return Promise.all([cargarZonasEn(L.latLngBounds(base.puntos)), cargarCortesEn([base.puntos]), cargarPaisEnRutas([base.puntos])]).then(function () {
+    return Promise.all([cargarZonasEnRutas([base.puntos]), cargarCortesEn([base.puntos]), cargarPaisEnRutas([base.puntos])]).then(function () {
       return Promise.all([calcularTramo(desde, p1, null, true), calcularTramo(p2, hasta, null, true)]);
     }).then(function (r) {
       var salidaMejor = elegirOpciones(r[0])[0], llegadaMejor = elegirOpciones(r[1])[0];
@@ -2063,7 +2081,7 @@ function calcularViajeLargo(desde, hasta, salida) {
       c.esquivados = salidaMejor.esquivados + llegadaMejor.esquivados;
       var m0 = salidaMejor.puntos.length, m1 = m0 + medio.puntos.length;
       return arreglarMedio(c, m0, m1, salida).then(function (c2) {
-        c2.sinRevisar = zonasSinCargarEn(L.latLngBounds(c2.puntos));
+        c2.sinRevisar = zonasSinCargarEnRutas([c2.puntos]);
         return [c2];
       });
     });

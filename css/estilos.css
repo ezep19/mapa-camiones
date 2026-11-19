@@ -491,3 +491,57 @@ body {
 .ruta-opcion b { display: block; font-size: 0.95rem; }
 .ruta-opcion small { display: block; color: var(--texto-suave); font-size: 0.75rem; margin-top: 2px; }
 .ruta-opcion.elegida { border-color: #1565c0; background: #e8f0fb; }
+
+/* ===== Navegación por voz ===== */
+.boton-manejar {
+  width: 100%;
+  min-height: 52px;
+  margin: 4px 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: #2e7d32;
+  color: #fff;
+  font: inherit;
+  font-size: 1.1rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.nav-cartel {
+  position: fixed;
+  z-index: 1150;
+  left: 8px;
+  right: 8px;
+  top: 64px;
+  padding: 10px 10px 10px 14px;
+  border-radius: 14px;
+  background: #1b5e20;
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.nav-cartel[hidden] { display: none; }
+.nav-fila { display: flex; align-items: center; gap: 8px; }
+.nav-principal { flex: 1; min-width: 0; }
+.nav-distancia { font-size: 1.7rem; font-weight: 800; line-height: 1.1; }
+.nav-texto { font-size: 1.1rem; font-weight: 600; line-height: 1.25; margin-top: 2px; }
+.nav-boton {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+.nav-peligro {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fff3c4;
+  color: #5c4300;
+  font-weight: 700;
+}
+@media (min-width: 601px) { .nav-cartel { left: auto; width: 420px; } }
+/* mientras se maneja, el botón "Ruta" no hace falta */
+body.navegando .boton-ruta { display: none; }

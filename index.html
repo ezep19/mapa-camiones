@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=20">
+  <link rel="stylesheet" href="css/estilos.css?v=23">
 </head>
 <body>
   <header class="barra">
@@ -107,6 +107,18 @@
 
   <div id="mensaje" class="mensaje" role="status" hidden></div>
 
+  <section id="nav-cartel" class="nav-cartel" hidden aria-live="polite" aria-label="Navegación">
+    <div class="nav-fila">
+      <div class="nav-principal">
+        <div id="nav-distancia" class="nav-distancia"></div>
+        <div id="nav-texto" class="nav-texto"></div>
+      </div>
+      <button id="nav-voz" class="nav-boton" type="button" aria-label="Apagar la voz">🔊</button>
+      <button id="nav-terminar" class="nav-boton" type="button" aria-label="Terminar la navegación">✕</button>
+    </div>
+    <div id="nav-peligro" class="nav-peligro" hidden></div>
+  </section>
+
   <footer class="pie">
     <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© Colaboradores de OpenStreetMap</a>
     <span>Información de referencia. Puede estar incompleta. Respetá siempre la señalización.</span>
@@ -114,6 +126,6 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="js/mapa.js?v=20"></script>
+  <script src="js/mapa.js?v=23"></script>
 </body>
 </html>

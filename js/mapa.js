@@ -1143,12 +1143,19 @@ function calcularRuta() {
     })
     .then(function (caminos) {
       ruta.opciones = elegirOpciones(caminos);
-      mostrarRuta(0);
+      mostrarRuta(0, !!ruta.alTerminarCalculo);
+      terminoCalculo(true);
     })
     .catch(function (e) {
       console.error(e);
       salida.innerHTML = '<p class="ruta-aviso">' + esc(e.mensaje || 'No pude calcular la ruta. Revisá la conexión y probá de nuevo en un rato.') + '</p>';
+      terminoCalculo(false);
     });
+  function terminoCalculo(ok) {
+    var f = ruta.alTerminarCalculo;
+    ruta.alTerminarCalculo = null;
+    if (f) f(ok);
+  }
 }
 
 // Pide el camino entre a y b (hasta 3 opciones)
@@ -1247,7 +1254,12 @@ function calcularViajeLargo(desde, hasta, salida) {
         km: salidaMejor.km + medio.km + llegadaMejor.km,
         segundos: salidaMejor.segundos + medio.segundos + llegadaMejor.segundos,
         // sin el "llegaste" de la salida ni el "salí hacia..." de la llegada (son puntos de corte, no paradas)
-        pasos: salidaMejor.pasos.slice(0, -1).concat(medio.pasos, llegadaMejor.pasos.slice(1)),
+        pasos: salidaMejor.pasos.slice(0, -1).concat(
+          // las indicaciones de cada parte apuntan a su propio recorrido: se corren al recorrido completo
+          medio.pasos.map(function (p) { return Object.assign({}, p, { ini: p.ini == null ? null : p.ini - i1 + salidaMejor.puntos.length }); }),
+          llegadaMejor.pasos.slice(1).map(function (p) {
+            return Object.assign({}, p, { ini: p.ini == null ? null : p.ini + salidaMejor.puntos.length + medio.puntos.length });
+          })),
         vueltas: salidaMejor.vueltas + medio.vueltas + llegadaMejor.vueltas,
         kmChicas: salidaMejor.kmChicas == null || llegadaMejor.kmChicas == null ? null : salidaMejor.kmChicas + llegadaMejor.kmChicas,
         largo: true
@@ -1464,6 +1476,7 @@ function borrarRuta() {
 function mostrarRuta(indice, sinMoverMapa) {
   var opciones = ruta.opciones;
   var r = opciones[indice];
+  ruta.elegida = indice;
   quitarLineasRuta();
   // la otra opción, en gris finito, para que se vea por dónde iría
   opciones.forEach(function (o, i) {
@@ -1485,6 +1498,7 @@ function mostrarRuta(indice, sinMoverMapa) {
     });
     html += '</div>';
   }
+  html += '<button type="button" id="empezar-manejo" class="boton-manejar">▶ Manejar con voz</button>';
   html += '<div class="ruta-resumen"><b>' + numero(r.km, 1) + ' km</b> · unos ' + duracion(r.segundos) +
           '<small>' + (opciones.length > 1 ? '' : resumenFacilidad(r) + '. ') +
           'Tiempo de auto: con camión puede ser más. Calculada por ' + esc(r.servicio) +
@@ -1518,6 +1532,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   }
   var salida = document.getElementById('ruta-resultado');
   salida.innerHTML = html;
+  document.getElementById('empezar-manejo').addEventListener('click', function () { empezarNavegacion(); });
   salida.querySelectorAll('[data-opcion]').forEach(function (b) {
     b.addEventListener('click', function () { mostrarRuta(+b.getAttribute('data-opcion'), true); });
   });
@@ -1638,6 +1653,10 @@ function revisarRuta(puntosRuta, pasos) {
       var color = estado === 'no' ? COLORES.no : estado === 'reporte' ? '#e65100' : COLORES.sin_dato;
       var texto = esReporte ? 'Reporte de un chofer: ' + p.tipo
         : (estado === 'no' ? 'NO PASÁS: ' : 'Verificar: ') + (p.norma ? p.titulo : textoValor(p) + (p.calle ? ' — ' + p.calle : ''));
+      // lo que dice la voz durante la navegación
+      var voz = esReporte ? 'reporte de un chofer: ' + p.tipo
+        : (p.titulo || textoValor(p)).replace(/^./, function (c) { return c.toLowerCase(); }) +
+          (p.calle && !p.norma ? ' en ' + p.calle : '') + (estado === 'no' ? '. Tu camión no pasa' : '. Verificá en el lugar');
       // se esquiva lo rojo y los reportes aprobados que cierran el paso
       var esquivar = estado === 'no' || (esReporte && /prohibid|peso|cortad|obra|puente|paso bajo/i.test(p.tipo || ''));
       if (l.feature.geometry.type === 'Polygon') {   // zona entera
@@ -1646,7 +1665,7 @@ function revisarRuta(puntosRuta, pasos) {
         var dentro = puntosRuta.filter(function (q) { return dentroDeAnillo([q[1], q[0]], anillo); });
         if (!dentro.length) return;
         var extremoAdentro = [desde, hasta].some(function (x) { return x && dentroDeAnillo([x.lng, x.lat], anillo); });
-        avisos.push({ texto: texto + (extremoAdentro ? ' (tu salida o llegada está adentro: necesitás permiso municipal)' : ''),
+        avisos.push({ voz: voz, texto: texto + (extremoAdentro ? ' (tu salida o llegada está adentro: necesitás permiso municipal)' : ''),
                       color: color, latlng: L.latLng(dentro[Math.floor(dentro.length / 2)]), capa: l,
                       clave: 'zona#' + L.stamp(l), zonas: esquivar && !extremoAdentro ? [anillo] : null });
         return;
@@ -1657,7 +1676,7 @@ function revisarRuta(puntosRuta, pasos) {
         // paso bajo: si la ruta no usa la calle de abajo, va por el puente de arriba y no importa
         if (!esReporte && p.calle && /debajo/i.test(p.detalle || '') && textoPasos &&
             textoPasos.indexOf(normalizarCalle(p.calle)) === -1) return;
-        avisos.push({ texto: texto, color: color, latlng: ll, capa: l,
+        avisos.push({ voz: voz, texto: texto, color: color, latlng: ll, capa: l,
                       clave: (p.osm || '') + '@' + ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5),
                       zonas: esquivar && !cercaDeLosExtremos(ll) ? [cuadrado(ll, 12)] : null });
       } else {             // línea: medir cuánto de la línea va por la ruta
@@ -1686,7 +1705,7 @@ function revisarRuta(puntosRuta, pasos) {
             }
           }
         });
-        if (encima >= 40) avisos.push({ texto: texto, color: color, latlng: donde, capa: l,
+        if (encima >= 40) avisos.push({ voz: voz, texto: texto, color: color, latlng: donde, capa: l,
                                         clave: (p.osm || '') + '#' + L.stamp(l), zonas: esquivar ? zonas.slice() : null });
       }
     });
@@ -1751,6 +1770,224 @@ function leerGuardado(clave) {
 }
 function guardar(clave, valor) {
   try { localStorage.setItem(clave, JSON.stringify(valor)); } catch (e) { /* sin guardar */ }
+}
+
+// ===== 12. Navegación por voz ("Manejar con voz") =====
+// Sigue al GPS sobre la ruta elegida, muestra la próxima indicación arriba y la dice en voz alta.
+// Avisa los pasos bajos / reportes que vienen, recalcula si te salís y mantiene la pantalla prendida.
+var nav = {
+  activo: false, r: null, acum: [], idx: 0, maniobras: [], avisos: [], dichos: {},
+  fuera: 0, ultimoRecalculo: 0, recalculando: false, wake: null, voz: true, ultimaPos: null
+};
+var NAV = {
+  FUERA_DE_RUTA_M: 60,      // más lejos que esto de la ruta = te saliste
+  FUERA_VECES: 3,           // ...durante 3 posiciones seguidas
+  RECALCULO_CADA_S: 30,
+  PRIMER_AVISO_M: 600, ULTIMO_AVISO_M: 80, AVISO_PELIGRO_M: 400, LLEGADA_M: 35
+};
+
+try { nav.voz = leerGuardado('mapa-camiones:voz') !== false; } catch (e) { /* sin guardar */ }
+
+function hablar(texto, urgente) {
+  if (!nav.voz || !window.speechSynthesis || !texto) return;
+  try {
+    if (urgente) window.speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(texto);
+    u.lang = 'es-AR';
+    var voces = window.speechSynthesis.getVoices();
+    var v = voces.filter(function (x) { return /^es(-|_)AR/i.test(x.lang); })[0] ||
+            voces.filter(function (x) { return /^es/i.test(x.lang); })[0];
+    if (v) u.voice = v;
+    u.rate = 1;
+    window.speechSynthesis.speak(u);
+  } catch (e) { /* el teléfono no habla: queda el cartel */ }
+}
+
+function textoDistancia(m) {
+  if (m >= 1000) return numero(m / 1000, 1) + ' km';
+  if (m >= 100) return (Math.round(m / 50) * 50) + ' m';
+  return (Math.round(m / 10) * 10) + ' m';
+}
+function vozDistancia(m) {
+  if (m >= 1000) return numero(m / 1000, 1).replace(',', ' coma ') + ' kilómetros';
+  return (m >= 100 ? Math.round(m / 50) * 50 : Math.round(m / 10) * 10) + ' metros';
+}
+// "Gire a la derecha a Avenida Juan B. Justo." -> "gire a la derecha a Avenida Juan B. Justo"
+function frase(texto) {
+  var t = String(texto || '').replace(/\.\s*$/, '');
+  return t.charAt(0).toLowerCase() + t.slice(1);
+}
+
+function empezarNavegacion(rutaElegida) {
+  var r = rutaElegida || (ruta.opciones && ruta.opciones[ruta.elegida || 0]);
+  if (!r) return;
+  nav.r = r;
+  nav.acum = [0];
+  for (var i = 1; i < r.puntos.length; i++) nav.acum.push(nav.acum[i - 1] + L.latLng(r.puntos[i - 1]).distanceTo(r.puntos[i]));
+  nav.maniobras = r.pasos.map(function (p, n) {
+    var idx = p.ini == null ? null : Math.min(p.ini, r.puntos.length - 1);
+    var llegada = /^(Llegar|Su destino|Has llegado|Llegaste)/i.test(p.texto || '');
+    var lado = /izquierda/i.test(p.texto) ? ', a la izquierda' : /derecha/i.test(p.texto) ? ', a la derecha' : '';
+    return { n: n, texto: llegada ? 'Llegás a destino' + lado : p.texto, llegada: llegada,
+             idx: idx, dist: idx == null ? null : nav.acum[idx] };
+  }).filter(function (m) { return m.dist != null && m.n > 0; });   // la primera es "salí hacia..."
+  nav.avisos = (r.avisos || []).map(function (a, n) {
+    var mejor = 0, dmin = Infinity;
+    for (var k = 0; k < r.puntos.length; k++) {
+      var d = a.latlng.distanceTo(r.puntos[k]);
+      if (d < dmin) { dmin = d; mejor = k; }
+    }
+    return { n: n, texto: a.texto, voz: a.voz, rojo: a.color === COLORES.no, dist: nav.acum[mejor] };
+  });
+  nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.activo = true; nav.recalculando = false;
+  abrirPanelRuta(false);
+  abrirPanel(false);
+  document.getElementById('nav-cartel').hidden = false;
+  document.body.classList.add('navegando');
+  ponerVozBoton();
+  mostrarCartelNav('Buscando tu ubicación...', '');
+  if (!ruta.esRecalculo) hablar('Vamos. Seguí la ruta azul.', true);
+  ruta.esRecalculo = false;
+  pedirPantallaPrendida();
+  if (ubicacion.ultima) seguirNavegacion(ubicacion.ultima);
+  tocarUbicacion();   // empieza a seguir el GPS (si ya estaba, centra)
+}
+
+function terminarNavegacion(mensaje) {
+  nav.activo = false;
+  document.getElementById('nav-cartel').hidden = true;
+  document.body.classList.remove('navegando');
+  if (nav.wake) { try { nav.wake.release(); } catch (e) { /* nada */ } nav.wake = null; }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  if (mensaje) { mostrarMensaje(mensaje); setTimeout(ocultarMensaje, 6000); }
+}
+
+function pedirPantallaPrendida() {
+  if (!('wakeLock' in navigator) || nav.wake) return;
+  navigator.wakeLock.request('screen').then(function (w) {
+    nav.wake = w;
+    w.addEventListener('release', function () { nav.wake = null; });
+  }).catch(function () { /* el teléfono no deja: se puede apagar la pantalla */ });
+}
+document.addEventListener('visibilitychange', function () {
+  if (nav.activo && document.visibilityState === 'visible') pedirPantallaPrendida();
+});
+
+function mostrarCartelNav(distancia, texto, peligro) {
+  document.getElementById('nav-distancia').textContent = distancia;
+  document.getElementById('nav-texto').textContent = texto;
+  document.getElementById('nav-peligro').textContent = peligro || '';
+  document.getElementById('nav-peligro').hidden = !peligro;
+}
+
+// Dónde estoy sobre la ruta: tramo más cercano (buscando cerca del último) y metros recorridos
+function ubicarEnRuta(pos) {
+  var pts = nav.r.puntos, desde = Math.max(0, nav.idx - 10), hasta = Math.min(pts.length - 1, nav.idx + 400);
+  if (nav.idx === 0) hasta = pts.length - 1;
+  var kx = 111320 * Math.cos(pos.lat * Math.PI / 180), ky = 110540;
+  var px = pos.lng * kx, py = pos.lat * ky, mejor = { d: Infinity, i: nav.idx, t: 0 };
+  for (var i = desde; i < hasta; i++) {
+    var ax = pts[i][1] * kx, ay = pts[i][0] * ky, bx = pts[i + 1][1] * kx, by = pts[i + 1][0] * ky;
+    var vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
+    var t = L2 ? Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / L2)) : 0;
+    var d = Math.hypot(ax + t * vx - px, ay + t * vy - py);
+    if (d < mejor.d) mejor = { d: d, i: i, t: t };
+  }
+  var recorrido = nav.acum[mejor.i] + mejor.t * (nav.acum[mejor.i + 1] - nav.acum[mejor.i]);
+  return { fuera: mejor.d, idx: mejor.i, recorrido: recorrido };
+}
+
+function seguirNavegacion(pos) {
+  if (!nav.activo || nav.recalculando) return;
+  nav.ultimaPos = pos;
+  var u = ubicarEnRuta(pos);
+  // ¿Te saliste de la ruta?
+  if (u.fuera > NAV.FUERA_DE_RUTA_M) {
+    nav.fuera++;
+    if (nav.fuera >= NAV.FUERA_VECES && Date.now() - nav.ultimoRecalculo > NAV.RECALCULO_CADA_S * 1000) recalcularDesde(pos);
+    else mostrarCartelNav('Fuera de la ruta', 'Volvé a la ruta azul o esperá: la recalculo en unos segundos.');
+    return;
+  }
+  nav.fuera = 0;
+  nav.idx = u.idx;
+  var total = nav.acum[nav.acum.length - 1];
+  var falta = total - u.recorrido;
+  // ¿Llegaste?
+  if (falta < NAV.LLEGADA_M || pos.distanceTo(nav.r.puntos[nav.r.puntos.length - 1]) < NAV.LLEGADA_M) {
+    hablar('Llegaste a destino.', true);
+    terminarNavegacion('Llegaste a destino.');
+    return;
+  }
+  // Próxima indicación
+  var prox = nav.maniobras.filter(function (m) { return m.dist > u.recorrido + 5; })[0];
+  var peligro = '';
+  // Pasos bajos, prohibidos o reportes que vienen adelante
+  nav.avisos.forEach(function (a) {
+    var hasta = a.dist - u.recorrido;
+    if (hasta < -20 || hasta > NAV.AVISO_PELIGRO_M) return;
+    if (!peligro) peligro = (a.rojo ? '⛔ ' : '⚠ ') + 'En ' + textoDistancia(Math.max(0, hasta)) + ': ' + a.texto;
+    if (!nav.dichos['a' + a.n]) {
+      nav.dichos['a' + a.n] = true;
+      hablar((a.rojo ? 'Cuidado. ' : 'Atención. ') + 'En ' + vozDistancia(Math.max(50, hasta)) + ', ' +
+             (a.voz || a.texto) + '.', a.rojo);
+    }
+  });
+  if (!prox) {
+    mostrarCartelNav(textoDistancia(falta), 'Seguí hasta el destino', peligro);
+    return;
+  }
+  var dist = prox.dist - u.recorrido;
+  mostrarCartelNav('En ' + textoDistancia(dist), prox.texto, peligro);
+  if (prox.llegada) {
+    // del destino se avisa una sola vez; al llegar se dice "Llegaste"
+    if (dist <= NAV.PRIMER_AVISO_M && !nav.dichos['b' + prox.n]) {
+      nav.dichos['b' + prox.n] = true;
+      hablar('En ' + vozDistancia(dist) + ', llegás a destino' + prox.texto.replace('Llegás a destino', '') + '.');
+    }
+  } else if (dist <= NAV.ULTIMO_AVISO_M && !nav.dichos['c' + prox.n]) {
+    nav.dichos['c' + prox.n] = nav.dichos['b' + prox.n] = true;
+    hablar('Ahora, ' + frase(prox.texto) + '.', true);
+  } else if (dist <= NAV.PRIMER_AVISO_M && !nav.dichos['b' + prox.n]) {
+    nav.dichos['b' + prox.n] = true;
+    hablar('En ' + vozDistancia(dist) + ', ' + frase(prox.texto) + '.');
+  } else if (dist > 2000 && !nav.dichos['s' + prox.n]) {
+    nav.dichos['s' + prox.n] = true;
+    hablar('Seguí por ' + vozDistancia(dist) + '.');
+  }
+  mapa.panTo(pos, { animate: true, duration: 0.5 });
+}
+
+function recalcularDesde(pos) {
+  if (!ruta.hasta) return;
+  nav.recalculando = true;
+  nav.ultimoRecalculo = Date.now();
+  mostrarCartelNav('Recalculando...', 'Te saliste de la ruta. Busco otra desde donde estás.');
+  hablar('Recalculando la ruta.', true);
+  ponerPunto('desde', pos, 'Mi ubicación');
+  ruta.alTerminarCalculo = function (ok) {
+    nav.recalculando = false;
+    if (ok && ruta.opciones) { ruta.esRecalculo = true; empezarNavegacion(ruta.opciones[0]); }
+    else mostrarCartelNav('Sin ruta nueva', 'No pude recalcular (¿sin señal?). Lo vuelvo a intentar en unos segundos.');
+  };
+  calcularRuta();
+}
+
+mapa.on('locationfound', function (e) { if (nav.activo) seguirNavegacion(e.latlng); });
+
+function ponerVozBoton() {
+  var b = document.getElementById('nav-voz');
+  b.textContent = nav.voz ? '🔊' : '🔇';
+  b.setAttribute('aria-label', nav.voz ? 'Apagar la voz' : 'Prender la voz');
+}
+if (document.getElementById('nav-cartel')) {
+  document.getElementById('nav-terminar').addEventListener('click', function () { terminarNavegacion('Navegación terminada.'); });
+  document.getElementById('nav-voz').addEventListener('click', function () {
+    nav.voz = !nav.voz;
+    guardar('mapa-camiones:voz', nav.voz);
+    if (!nav.voz && window.speechSynthesis) window.speechSynthesis.cancel();
+    ponerVozBoton();
+    if (nav.voz) hablar('Voz prendida.', true);
+  });
 }
 
 // ===== 11. App instalable y uso sin señal =====

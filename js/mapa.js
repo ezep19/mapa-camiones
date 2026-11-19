@@ -79,11 +79,13 @@ var mapa = L.map('mapa', {
   center: vista ? [vista.lat, vista.lng] : CENTRO_INICIAL,
   zoom: vista ? Math.min(Math.max(vista.zoom, 4), 19) : ZOOM_INICIAL,
   minZoom: 4,
-  attributionControl: false,  // el crédito de OpenStreetMap está siempre visible en el pie
+  attributionControl: false,  // el crédito de OpenStreetMap está siempre visible en la esquina
+  zoomControl: false,         // en el celular se usan los dedos; en la PC va abajo a la derecha (más abajo)
   // Girar el mapa (agregado leaflet-rotate): con dos dedos en el celular, Shift + rueda en la PC
   rotate: true, touchRotate: true, shiftKeyRotate: true, rotateControl: false, bearing: 0
 });
-var PUEDE_GIRAR = typeof mapa.setBearing === 'function';   // si el agregado no cargó, el mapa anda igual sin girar
+var PUEDE_GIRAR = typeof mapa.setBearing === 'function';
+if (!L.Browser.mobile) L.control.zoom({ position: 'bottomright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(mapa);   // si el agregado no cargó, el mapa anda igual sin girar
 
 // Capas propias que tienen que girar junto con el mapa (si no, quedan derechas y desfasadas)
 function crearPane(nombre) {
@@ -187,9 +189,11 @@ function camionValido(c) {
 }
 
 function mostrarResumenCamion() {
-  document.getElementById('camion-resumen').textContent = camion
-    ? metros(camion.altura) + ' · ' + toneladas(camion.peso) + ' · ' + metros(camion.largo)
-    : 'Cargar medidas';
+  var el = document.getElementById('camion-resumen');
+  if (camion) el.innerHTML = esc(metros(camion.altura) + ' · ' + toneladas(camion.peso)) + '<span class="menos"> · ' + esc(metros(camion.largo)) + '</span>';
+  else el.textContent = 'Medidas';
+  var chip = document.getElementById('btn-camion');
+  if (chip) chip.classList.toggle('falta', !camion);
 }
 
 function abrirVentanaCamion() {
@@ -524,11 +528,17 @@ function grosorSegunZoom(estado) {
   return estado === 'no' ? base + 1.5 : estado === 'si' ? Math.max(1, base - 1) : base;
 }
 
+// ¿Se dibuja? Lo que tu camión pasa (gris) solo si lo pediste en Capas; "pasás justo" siempre
+function oculto(e) { return e.estado === 'si' && !e.justo && !apagadas.ver_gris; }
+var INVISIBLE = { opacity: 0, fillOpacity: 0, interactive: false };
+
 function estiloLinea(f) {
-  var estado = evaluar(f.properties).estado;
+  var ev = evaluar(f.properties), estado = ev.estado;
+  if (oculto(ev)) return Object.assign({ renderer: dibujo, weight: 1 }, INVISIBLE);
   var lejos = mapa.getZoom() <= 13;
   return {
     renderer: dibujo,
+    interactive: true,
     color: COLORES[estado],
     weight: grosorSegunZoom(estado),
     opacity: estado === 'no' ? 1 : estado === 'si' ? 0.5 : lejos ? 0.75 : 0.95,
@@ -547,10 +557,13 @@ function radioSegunZoom() {
 }
 
 function estiloPunto(f) {
-  var estado = evaluar(f.properties).estado;
+  var ev = evaluar(f.properties), estado = ev.estado;
+  if (oculto(ev)) return Object.assign({ renderer: dibujo, radius: 1, weight: 0 }, INVISIBLE);
   var r = radioSegunZoom() + (estado === 'no' ? 0.5 : 0);
   return {
     renderer: dibujo,
+    interactive: true,
+    opacity: 1,
     radius: r,
     color: '#ffffff',
     weight: r < 4 ? 0.5 : r < 6 ? 1 : 2,
@@ -1385,89 +1398,90 @@ function fechaHora(iso) {
 }
 
 // ===== 8. Panel para prender y apagar capas =====
+// Opciones del panel "Qué mostrar": pocas y juntas (antes había una casilla por cada tipo de dato)
+var OPCIONES_MAPA = [
+  { id: 'restricciones', icono: '⛔', nombre: 'Donde no pasás', detalle: 'Puentes bajos, pesos, prohibidos, calles angostas',
+    capas: ['altura', 'peso', 'largo', 'prohibido', 'ancho', 'barrera'] },
+  { id: 'verificar', icono: '⚠️', nombre: 'Para verificar', detalle: 'Pasos bajos sin altura, calles en obra',
+    capas: ['verificar', 'verificar_autopista', 'obra'] },
+  { id: 'corte', icono: '🚧', nombre: 'Cortes en vivo', detalle: 'Calles cortadas ahora (TomTom)', capas: ['corte'],
+    hay: function () { return !!claveTomTom(); } },
+  { id: 'sin_salida', icono: '🔚', nombre: 'Calles sin salida', detalle: 'Se ven de cerca', capas: ['sin_salida'] },
+  { id: 'lugares', icono: '⛽', nombre: 'Lugares útiles', detalle: 'Gomerías, combustible, paradores, duchas', lugares: true },
+  { id: 'controles', icono: '👮', nombre: 'Controles policiales', clave: 'controles',
+    hay: function () { return controles.lista.length > 0; } },
+  { id: 'red_pesada', icono: '🟩', nombre: 'Calles para camiones', detalle: 'Red de tránsito pesado', clave: 'red_pesada',
+    hay: function () { return !!redPesada.grupo; } },
+  { id: 'reportes', icono: '📣', nombre: 'Reportes de choferes', clave: 'reportes',
+    hay: function () { return !!(reportesConfig || grupoReportes); } },
+  { id: 'ver_gris', icono: '⚪', nombre: 'También donde sí pasás', detalle: 'En gris', alReves: true }
+];
+function opcionPrendida(o) {
+  if (o.lugares) return LUGARES.some(function (l) { return lugaresPrendidos[l.id]; });
+  if (o.alReves) return !!apagadas[o.id];   // ver_gris: se guarda "prendido" (arranca apagado)
+  if (o.clave) return !apagadas[o.clave];
+  return o.capas.some(function (id) { return !apagadas[id]; });
+}
+function cambiarOpcion(o, prender) {
+  if (o.lugares) {
+    LUGARES.forEach(function (l) { if (prender) lugaresPrendidos[l.id] = true; else delete lugaresPrendidos[l.id]; });
+    guardar(CLAVE_LUGARES, lugaresPrendidos);
+    mostrarLugares();
+    if (prender && mapa.getZoom() < ZOOM_LUGARES) { mostrarMensaje('Acercá el mapa para ver los lugares.'); setTimeout(ocultarMensaje, 3000); }
+    return;
+  }
+  if (o.alReves) {
+    if (prender) apagadas[o.id] = true; else delete apagadas[o.id];
+    guardar(CLAVE_CAPAS, apagadas);
+    repintar();
+    return;
+  }
+  if (o.clave) {
+    var g = o.clave === 'controles' ? controles.grupo : o.clave === 'red_pesada' ? redPesada.grupo : grupoReportes;
+    if (prender) { delete apagadas[o.clave]; if (g) g.addTo(mapa); if (o.clave === 'controles') mostrarControles(); }
+    else { apagadas[o.clave] = true; if (g) mapa.removeLayer(g); }
+    guardar(CLAVE_CAPAS, apagadas);
+    return;
+  }
+  o.capas.forEach(function (id) {
+    if (prender) { delete apagadas[id]; if (id !== 'sin_salida') grupos[id].addTo(mapa); }
+    else { apagadas[id] = true; mapa.removeLayer(grupos[id]); }
+  });
+  guardar(CLAVE_CAPAS, apagadas);
+  if (o.id === 'sin_salida') {
+    mostrarSinSalida();
+    if (prender && mapa.getZoom() < ZOOM_SIN_SALIDA) { mostrarMensaje('Acercá el mapa para ver las calles sin salida.'); setTimeout(ocultarMensaje, 3000); }
+  }
+  if (o.id === 'corte' && prender) mostrarCortes();
+  if (prender) ponerRojosArriba(); else armarBordesRojos();
+}
+
 function armarPanel() {
   var lista = document.getElementById('lista-capas');
-  var leyenda =
-    '<div class="leyenda">' +
-      '<span><i style="background:' + COLORES.no + '"></i>No pasás</span>' +
-      '<span><i style="background:' + COLORES.si + '"></i>Pasás</span>' +
-      '<span><i style="background:' + COLORES.sin_dato + '"></i>Sin dato: verificar</span>' +
-      '<span><i style="background:' + COLORES.aviso + '"></i>Sin salida</span>' +
-    '</div>';
-  lista.innerHTML = '<li>' + leyenda + '</li>';
-  CAPAS.forEach(function (c) {
-    var noPasa = 0;
-    if (grupos[c.id]) grupos[c.id].eachLayer(function (l) { if (evaluar(l.feature.properties).estado === 'no') noPasa++; });
-    var vacia = cantidades[c.id] === 0 && c.id !== 'corte';
-    var muestra = c.id === 'sin_salida' ? COLORES.aviso : '#3d4652';
-    var cuenta = vacia ? 'Sin datos en esta zona'
-      : cantidades[c.id].toLocaleString('es-AR') + ' en el mapa' +
-        (MEDIDA_DE_CAPA[c.id] && camion ? ' · no pasás en ' + noPasa.toLocaleString('es-AR') : '') +
-        (c.id === 'sin_salida' ? ' · se ven al acercar el mapa' : '');
-    if (c.id === 'corte') {
-      if (!claveTomTom()) return;
-      cuenta = (cantidades.corte ? cantidades.corte.toLocaleString('es-AR') + ' cerca de lo que miraste · ' : 'Se ven al acercar el mapa · ') +
-               'datos de TomTom, se actualizan cada 10 minutos';
-    }
+  lista.innerHTML = '';
+  OPCIONES_MAPA.forEach(function (o) {
+    if (o.hay && !o.hay()) return;
     var li = document.createElement('li');
     li.innerHTML =
-      '<label' + (vacia ? ' class="capa-vacia"' : '') + '>' +
-        '<input type="checkbox"' + (apagadas[c.id] ? '' : ' checked') + '>' +
-        '<span class="muestra ' + c.forma + '" style="--c:' + muestra + '"></span>' +
-        '<span class="capa-texto">' + esc(c.nombre) +
-          '<br><span class="capa-cantidad">' + cuenta + '</span></span>' +
+      '<label><input type="checkbox"' + (opcionPrendida(o) ? ' checked' : '') + '>' +
+        '<span class="muestra-capa" aria-hidden="true">' + o.icono + '</span>' +
+        '<span class="capa-texto">' + esc(o.nombre) +
+          (o.detalle ? '<br><span class="capa-cantidad">' + esc(o.detalle) + '</span>' : '') + '</span>' +
       '</label>';
-    li.querySelector('input').addEventListener('change', function (ev) {
-      if (ev.target.checked) { grupos[c.id].addTo(mapa); delete apagadas[c.id]; ponerRojosArriba(); if (c.id === 'corte') mostrarCortes(); }
-      else { mapa.removeLayer(grupos[c.id]); apagadas[c.id] = true; armarBordesRojos(); }
-      guardar(CLAVE_CAPAS, apagadas);
-      if (c.id === 'sin_salida') {
-        mostrarSinSalida();
-        if (ev.target.checked && mapa.getZoom() < ZOOM_SIN_SALIDA) { mostrarMensaje('Acercá el mapa para ver las calles sin salida.'); setTimeout(ocultarMensaje, 3000); }
-      }
-    });
+    li.querySelector('input').addEventListener('change', function (ev) { cambiarOpcion(o, ev.target.checked); });
     lista.appendChild(li);
   });
-  if (redPesada.grupo) {
-    var liRed = document.createElement('li');
-    liRed.innerHTML =
-      '<label><input type="checkbox"' + (apagadas.red_pesada ? '' : ' checked') + '>' +
-        '<span class="muestra linea" style="--c:#2e7d32"></span>' +
-        '<span class="capa-texto">Red de tránsito pesado<br><span class="capa-cantidad">' +
-        (redPesada.km ? redPesada.km.toLocaleString('es-AR') + ' km · ' : '') +
-        'calles marcadas para camiones (solo Buenos Aires)</span></span></label>';
-    liRed.querySelector('input').addEventListener('change', function (ev) {
-      if (ev.target.checked) { redPesada.grupo.addTo(mapa); delete apagadas.red_pesada; }
-      else { mapa.removeLayer(redPesada.grupo); apagadas.red_pesada = true; }
-      guardar(CLAVE_CAPAS, apagadas);
-    });
-    lista.appendChild(liRed);
-  }
-  if (controles.lista.length) {
-    var liCon = document.createElement('li');
-    liCon.innerHTML =
-      '<label><input type="checkbox"' + (apagadas.controles ? '' : ' checked') + '>' +
-        '<span class="muestra-lugar">👮</span>' +
-        '<span class="capa-texto">Controles policiales fijos<br><span class="capa-cantidad">' +
-        controles.lista.length.toLocaleString('es-AR') + ' en todo el país · se ven al acercar el mapa</span></span></label>';
-    liCon.querySelector('input').addEventListener('change', function (ev) {
-      if (ev.target.checked) { controles.grupo.addTo(mapa); delete apagadas.controles; mostrarControles(); }
-      else { mapa.removeLayer(controles.grupo); apagadas.controles = true; }
-      guardar(CLAVE_CAPAS, apagadas);
-    });
-    lista.appendChild(liCon);
-  }
-  var fechas = zonasCargadas.map(function (z) { return z.zona.titulo + ': ' + fecha(z.zona.actualizado); });
-  if (pais.cargadas && pais.actualizado) fechas.push('Rutas y resto del país: ' + fecha(pais.actualizado));
+  // abajo, chiquito: de dónde salen los datos y el aviso de la zona que estás mirando
   var nota = document.getElementById('nota-datos');
-  nota.textContent = 'Datos actualizados — ' + fechas.join(' · ');
-  zonasCargadas.forEach(function (z) {
-    if (!z.zona.aviso) return;
-    var p = document.createElement('span');
-    p.className = 'nota-aviso';
-    p.textContent = '⚠ ' + z.zona.aviso;
-    nota.appendChild(p);
-  });
+  var c = mapa.getCenter();
+  var aca = zonasIndice.filter(function (z) { return z.aviso && z.limites && L.latLngBounds(z.limites).contains(c); })[0];
+  nota.textContent = 'Datos: OpenStreetMap' + (claveTomTom() ? ', TomTom' : '') + ' y ordenanzas. Pueden estar incompletos.';
+  if (aca) {
+    var av = document.createElement('span');
+    av.className = 'nota-aviso';
+    av.textContent = '⚠ ' + aca.aviso;
+    nota.appendChild(av);
+  }
   armarBotonesZonas();
 }
 
@@ -1536,6 +1550,7 @@ var panel = document.getElementById('panel-capas');
 function abrirPanel(abrir) {
   if (abrir && typeof abrirPanelRuta === 'function') abrirPanelRuta(false);
   panel.hidden = !abrir;
+  if (abrir) armarPanel();
   botonCapas.setAttribute('aria-expanded', abrir ? 'true' : 'false');
 }
 botonCapas.addEventListener('click', function () { abrirPanel(panel.hidden); });
@@ -1668,7 +1683,22 @@ function abrirPanelRuta(abrir) {
   if (!panelRuta) return;
   if (abrir) abrirPanel(false);
   panelRuta.hidden = !abrir;
+  document.body.classList.toggle('ruta-abierta', !!abrir);
   if (abrir) prepararRuta();
+}
+// Pasa el panel de ruta a "resultado" (tarjeta abajo, como Google Maps) o a "escribir" (arriba)
+function modoResultado(si) {
+  if (!panelRuta) return;
+  panelRuta.classList.toggle('con-resultado', !!si);
+  actualizarTrayecto();
+}
+function actualizarTrayecto() {
+  var b = document.getElementById('ruta-trayecto');
+  if (b) b.innerHTML = '<span class="ruta-marca desde">A</span><span>' + esc(ruta.desde ? ruta.desde.nombre : '¿Desde?') +
+    '</span><span class="ruta-marca hasta">B</span><span>' + esc(ruta.hasta ? ruta.hasta.nombre : '¿Hasta?') + '</span>';
+  var t = document.getElementById('buscador-texto'), campo = document.getElementById('btn-buscar');
+  if (t) t.textContent = ruta.hasta ? ruta.hasta.nombre : '¿A dónde vas?';
+  if (campo) campo.classList.toggle('con-destino', !!ruta.hasta);
 }
 
 // Para que sea rápido: al abrir, la salida es tu ubicación (si el GPS está disponible) y el cursor queda
@@ -1747,13 +1777,16 @@ var ControlRuta = L.Control.extend({
     return boton;
   }
 });
-if (panelRuta) new ControlRuta().addTo(mapa);
+// (el botón "Ruta" de abajo se reemplazó por "¿A dónde vas?" arriba)
+var botonBuscar = document.getElementById('btn-buscar');
+if (botonBuscar && panelRuta) botonBuscar.addEventListener('click', function () { abrirPanelRuta(true); });
 
 // --- Elegir los puntos ---
 function ponerPunto(cual, latlng, nombre) {
   ruta[cual] = { latlng: L.latLng(latlng), nombre: nombre || coordenadas(latlng) };
   var input = document.getElementById('ruta-' + cual);
   if (input) input.value = ruta[cual].nombre;
+  actualizarTrayecto();
   var lista = document.getElementById('resultados-' + cual);
   if (lista) { lista.hidden = true; lista.innerHTML = ''; }
   if (ruta.marcas[cual]) mapa.removeLayer(ruta.marcas[cual]);
@@ -1891,8 +1924,9 @@ if (panelRuta) {
   document.getElementById('cerrar-ruta').addEventListener('click', function () { abrirPanelRuta(false); });
   document.getElementById('desde-ubicacion').addEventListener('click', usarMiUbicacion);
   ['desde', 'hasta'].forEach(function (cual) {
-    document.querySelector('[data-buscar="' + cual + '"]').addEventListener('click', function () { buscarDireccion(cual); });
-    document.querySelector('[data-tocar="' + cual + '"]').addEventListener('click', function () { empezarATocar(cual); });
+    var bBuscar = document.querySelector('[data-buscar="' + cual + '"]'), bTocar = document.querySelector('[data-tocar="' + cual + '"]');
+    if (bBuscar) bBuscar.addEventListener('click', function () { buscarDireccion(cual); });
+    if (bTocar) bTocar.addEventListener('click', function () { empezarATocar(cual); });
     var campo = document.getElementById('ruta-' + cual);
     campo.addEventListener('keydown', function (ev) {
       if (ev.key === 'Enter') { ev.preventDefault(); buscarDireccion(cual); }
@@ -1904,8 +1938,19 @@ if (panelRuta) {
       if (cual === 'hasta' && !campo.value.trim()) mostrarRecientes();
     });
   });
-  document.getElementById('calcular-ruta').addEventListener('click', calcularRuta);
+  var bCalcular = document.getElementById('calcular-ruta');
+  if (bCalcular) bCalcular.addEventListener('click', calcularRuta);
   document.getElementById('borrar-ruta').addEventListener('click', borrarRuta);
+  // "A ... B ...": volver a escribir la salida o la llegada
+  var trayecto = document.createElement('button');
+  trayecto.type = 'button'; trayecto.id = 'ruta-trayecto'; trayecto.className = 'ruta-trayecto';
+  trayecto.setAttribute('aria-label', 'Cambiar la salida o la llegada');
+  trayecto.addEventListener('click', function () {
+    modoResultado(false);
+    var h = document.getElementById('ruta-hasta'); h.focus(); h.select();
+  });
+  panelRuta.insertBefore(trayecto, document.getElementById('ruta-resultado'));
+  actualizarTrayecto();
 }
 
 // --- Calcular ---
@@ -1931,6 +1976,7 @@ function calcularRuta() {
     return;
   }
   salida.innerHTML = '<p class="ruta-cargando">Buscando caminos para tu camión...</p>';
+  modoResultado(true);
   var numero = ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;
   var desde = ruta.desde.latlng, hasta = ruta.hasta.latlng;
   var largo = desde.distanceTo(hasta) / 1000 > VIAJE_LARGO_KM;
@@ -2356,9 +2402,7 @@ function anularRutaCalculada() {
   ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;   // descarta cálculos en curso
   quitarLineasRuta();
   ruta.opciones = null;
-  var salida = document.getElementById('ruta-resultado');
-  salida.hidden = false;
-  salida.innerHTML = '<p class="ruta-aviso">Cambiaste las medidas del camión. Tocá "Calcular ruta para mi camión" de nuevo.</p>';
+  if (ruta.desde && ruta.hasta) calcularRuta();   // con las medidas nuevas
 }
 
 function borrarRuta() {
@@ -2373,6 +2417,7 @@ function borrarRuta() {
   var salida = document.getElementById('ruta-resultado');
   if (salida) { salida.hidden = true; salida.innerHTML = ''; }
   document.getElementById('borrar-ruta').hidden = true;
+  modoResultado(false);
 }
 
 function mostrarRuta(indice, sinMoverMapa) {
@@ -2390,49 +2435,44 @@ function mostrarRuta(indice, sinMoverMapa) {
   ruta.lineas.push(ruta.linea);
   document.getElementById('borrar-ruta').hidden = false;
 
-  var html = '';
+  var avisos = r.avisos || [];
+  var sinRevisar = r.sinRevisar && r.sinRevisar.length;
+  // Arriba, lo importante (como Google Maps): cuánto tarda, si hay problemas y el botón para salir
+  var html = '<div class="ruta-cabeza"><div class="ruta-tiempo"><b>' + duracion(r.segundos) + '</b><span>' +
+             numero(r.km, 1) + ' km</span></div>' +
+             '<button type="button" id="empezar-manejo" class="boton-ir">▶ Ir</button></div>';
+  if (r.rojos) {
+    html += '<div class="ruta-estado mal">⛔ Pasa por ' + r.rojos + (r.rojos === 1 ? ' lugar' : ' lugares') +
+            ' donde NO pasás<small>No encontré otro camino. Probá salir o llegar por otro lado.</small></div>';
+  } else if (sinRevisar) {
+    html += '<div class="ruta-estado mal">⚠ No pude revisar parte de la ruta<small>No se cargaron los datos de ' +
+            esc(r.sinRevisar.join(', ')) + ' (¿mala señal?). Volvé a intentar.</small></div>';
+  } else if (avisos.length) {
+    html += '<div class="ruta-estado ojo">⚠ ' + avisos.length + (avisos.length === 1 ? ' cosa' : ' cosas') +
+            ' para mirar en el camino<small>Están abajo, en "Ver detalles".</small></div>';
+  } else {
+    html += '<div class="ruta-estado bien">✓ Sin problemas para tu camión</div>';
+  }
   if (opciones.length > 1) {
     html += '<div class="ruta-opciones">';
     opciones.forEach(function (o, i) {
       html += '<button type="button" data-opcion="' + i + '" class="ruta-opcion' + (i === indice ? ' elegida' : '') + '">' +
-              '<b>' + esc(o.etiqueta) + '</b>' + numero(o.km, 1) + ' km · ' + duracion(o.segundos) +
-              '<small>' + resumenFacilidad(o) + '</small></button>';
+              '<b>' + esc(o.etiqueta) + '</b>' + duracion(o.segundos) + ' · ' + numero(o.km, 1) + ' km</button>';
     });
     html += '</div>';
   }
-  html += '<button type="button" id="empezar-manejo" class="boton-manejar">▶ Manejar con voz</button>';
-  html += '<div class="ruta-resumen"><b>' + numero(r.km, 1) + ' km</b> · unos ' + duracion(r.segundos) +
-          '<small>' + (opciones.length > 1 ? '' : resumenFacilidad(r) + '. ') +
-          'Tiempo de auto: con camión puede ser más. Calculada por ' + esc(r.servicio) +
-          ' con tus medidas (' + metros(camion.altura) + ', ' + toneladas(camion.peso) + ', ' + metros(camion.largo) + ').</small></div>';
-  var avisos = r.avisos || [];
-  if (r.esquivados) {
-    html += '<p class="ruta-ok">Esquivé ' + r.esquivados + (r.esquivados === 1 ? ' lugar' : ' lugares') +
-            ' donde tu camión no pasa (pasos bajos o reportes que el servicio de rutas no conocía).</p>';
-  }
-  if (r.sinRevisar && r.sinRevisar.length) {
-    html += '<div class="ruta-peligro"><b>NO PUDE REVISAR esta ruta</b> en ' + esc(r.sinRevisar.join(', ')) +
-            ': no se cargaron los datos (¿mala señal?). Puede pasar por lugares donde tu camión no pasa. ' +
-            'Revisá la conexión y volvé a calcular.</div>';
-  }
-  if (r.rojos) {
-    html += '<div class="ruta-peligro"><b>CUIDADO: no encontré una ruta que evite todo.</b> Esta ruta pasa por ' + r.rojos +
-            (r.rojos === 1 ? ' lugar' : ' lugares') + ' donde según el mapa NO PASÁS. No la uses tal cual: ' +
-            'elegí otro punto de salida o llegada, o buscá otro camino.</div>';
-  }
+  // Lo demás, escondido
+  html += '<details class="ruta-mas"' + (r.rojos || avisos.length ? ' open' : '') + '><summary>Ver detalles</summary>';
   if (avisos.length) {
-    html += '<div class="ruta-aviso"><b>Ojo: la ruta pasa por ' + avisos.length + (avisos.length === 1 ? ' punto' : ' puntos') +
-            ' para revisar</b> (tocalos para verlos):</div><ul class="ruta-lista">';
+    html += '<ul class="ruta-lista">';
     avisos.forEach(function (a, i) {
       html += '<li><button type="button" data-aviso="' + i + '"><i style="background:' + a.color + '"></i>' + esc(a.texto) + '</button></li>';
     });
     html += '</ul>';
-  } else if (!(r.sinRevisar && r.sinRevisar.length)) {
-    html += '<p class="ruta-ok">No encontré pasos bajos ni reportes sobre esta ruta. Igual respetá la señalización.</p>';
   }
   r.controles = controlesEnRuta(r.puntos);
   if (r.controles.length) {
-    html += '<details class="ruta-pasos"><summary>👮 Controles policiales en el camino (' + r.controles.length + ')</summary><ul class="ruta-lista">';
+    html += '<details class="ruta-pasos"><summary>👮 Controles policiales (' + r.controles.length + ')</summary><ul class="ruta-lista">';
     r.controles.forEach(function (c, i) {
       var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
       html += '<li><button type="button" data-control="' + i + '"><span class="ruta-lista-icono">' + tipo.icono + '</span>' +
@@ -2441,12 +2481,16 @@ function mostrarRuta(indice, sinMoverMapa) {
     html += '</ul></details>';
   }
   if (r.pasos.length) {
-    html += '<details class="ruta-pasos"><summary>Ver indicaciones (' + r.pasos.length + ')</summary><ol>';
+    html += '<details class="ruta-pasos"><summary>Indicaciones (' + r.pasos.length + ')</summary><ol>';
     r.pasos.forEach(function (p) {
       html += '<li>' + esc(p.texto) + (p.km ? ' <small>' + (p.km < 1 ? Math.round(p.km * 1000) + ' m' : numero(p.km, 1) + ' km') + '</small>' : '') + '</li>';
     });
     html += '</ol></details>';
   }
+  html += '<p class="panel-nota">' + (r.esquivados ? 'Esquivé ' + r.esquivados + (r.esquivados === 1 ? ' lugar' : ' lugares') +
+          ' donde tu camión no pasa. ' : '') + resumenFacilidad(r) + '. Tiempo de auto: con camión puede ser más. ' +
+          'Calculada por ' + esc(r.servicio) + ' con tus medidas (' + metros(camion.altura) + ', ' + toneladas(camion.peso) +
+          ', ' + metros(camion.largo) + '). Respetá siempre la señalización.</p></details>';
   var salida = document.getElementById('ruta-resultado');
   salida.innerHTML = html;
   document.getElementById('empezar-manejo').addEventListener('click', function () { empezarNavegacion(); });
@@ -2473,8 +2517,9 @@ function mostrarRuta(indice, sinMoverMapa) {
   if (sinMoverMapa) return;
   var lim = L.latLngBounds([]);
   opciones.forEach(function (o) { lim.extend(L.latLngBounds(o.puntos)); });
-  if (window.innerWidth <= 600) mapa.fitBounds(lim, { paddingTopLeft: [20, 20], paddingBottomRight: [20, 20] });
-  else mapa.fitBounds(lim, { padding: [30, 30] });
+  // que la ruta no quede tapada por la tarjeta de abajo (celular) o por el panel de la izquierda (PC)
+  if (window.innerWidth <= 600) mapa.fitBounds(lim, { paddingTopLeft: [20, 30], paddingBottomRight: [20, (panelRuta.offsetHeight || 0) + 20] });
+  else mapa.fitBounds(lim, { paddingTopLeft: [(panelRuta.offsetWidth || 0) + 30, 30], paddingBottomRight: [30, 30] });
 }
 
 // "6 vueltas · 69% por red de tránsito pesado · 0,5 km por calles chicas"

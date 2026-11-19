@@ -1963,9 +1963,16 @@ function calcularRuta() {
 // Pide el camino entre a y b (hasta 3 opciones)
 function pedirCaminos(a, b, evitar, conAlternativas) {
   var clave = ruta.config && ruta.config.ors_clave;
+  // si OpenRouteService dijo que se terminó el cupo, se va directo a Valhalla un rato
+  // (403 = cupo del día o clave mala: 15 minutos; 429 = demasiados pedidos por minuto: 1 minuto; sin respuesta
+  // legible —cuando se queda sin cupo contesta sin permiso CORS y el navegador lo ve como "Failed to fetch"—: 2 minutos)
+  if (clave && ruta.orsHasta && Date.now() < ruta.orsHasta) clave = null;
   return clave
     ? rutaORS(clave, evitar, !conAlternativas, a, b).catch(function (e) {
         console.warn('OpenRouteService falló:', e.message);
+        if (/ 403$/.test(e.message)) ruta.orsHasta = Date.now() + 15 * 60 * 1000;
+        if (/ 429$/.test(e.message)) ruta.orsHasta = Date.now() + 60 * 1000;
+        if (e instanceof TypeError) ruta.orsHasta = Date.now() + 2 * 60 * 1000;
         return rutaValhalla(evitar, a, b);
       })
     : rutaValhalla(evitar, a, b);

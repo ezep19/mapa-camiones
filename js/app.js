@@ -2945,61 +2945,116 @@ function ponerRumboBoton() {
   b.title = nav.rumbo ? 'El mapa gira hacia donde vas (tocá para norte arriba)' : 'Norte arriba (tocá para que gire hacia donde vas)';
 }
 
-// Voz. Cuidados por fallas de Chrome en Android (el 19/11/2026 el chofer probó en la calle y no habló nada):
-// - "cancel()" seguido enseguida de "speak()" a veces se traga la frase nueva: si había algo hablando, se corta
-//   y la frase nueva sale 150 ms después; si no había nada, no se llama a cancel().
+// Voz. El 19/11/2026 el chofer probó dos veces en la calle y no habló nada. Cuidados:
+// - "cancel()" seguido enseguida de "speak()" a veces se traga la frase nueva (Chrome en Android): si había algo
+//   hablando, se corta y la frase nueva sale 150 ms después; si no había nada, no se llama a cancel().
 // - la frase se guarda en una variable (si no, el navegador puede tirarla antes de decirla y no suena).
 // - si quedó en pausa (la app estuvo en segundo plano), se reanuda.
-// - si a los 5 s de la primera frase no empezó a hablar, o da error, se avisa en pantalla qué revisar.
-var voz = { frases: [], probada: false, avisada: false };
+// - PLAN B: hay teléfonos que se quedan callados si se les pide una voz o un idioma que no tienen bien instalado.
+//   Si la primera frase no empieza en 3 s, se repite SIN elegir voz (la del teléfono) y, si así anda, queda
+//   recordado ("mapa-camiones:voz-modo"). Si tampoco, se avisa en pantalla qué revisar.
+// - Algunos navegadores no tienen voz (el que se abre dentro de WhatsApp o Facebook): se avisa que abra en Chrome.
+// - Botón "Probar la voz" (en Qué mostrar): habla y dice en pantalla qué pasó (para saber qué falla).
+var voz = { frases: [], probada: false, avisada: false, modo: leerGuardado('mapa-camiones:voz-modo') || 'elegida' };
 if (window.speechSynthesis) {
   try {
     window.speechSynthesis.getVoices();   // en Android la lista llega después: se pide al abrir
     window.speechSynthesis.addEventListener('voiceschanged', function () { window.speechSynthesis.getVoices(); });
   } catch (e) { /* nada */ }
 }
+function hayVoz() { return !!(window.speechSynthesis && window.SpeechSynthesisUtterance); }
+// ¿la página se abrió dentro de otra app (WhatsApp, Facebook, Instagram...)? Esos navegadores no hablan
+function navegadorDeApp() { return /; wv\)|FBAN|FBAV|Instagram|WhatsApp|Line\//i.test(navigator.userAgent || ''); }
+function vocesDelTelefono() {
+  try { return window.speechSynthesis.getVoices() || []; } catch (e) { return []; }
+}
 function vozEnEspanol() {
-  var voces = [];
-  try { voces = window.speechSynthesis.getVoices() || []; } catch (e) { /* nada */ }
+  var voces = vocesDelTelefono();
   return voces.filter(function (x) { return /^es(-|_)(AR|419|US|MX)/i.test(x.lang); })[0] ||
          voces.filter(function (x) { return /^es/i.test(x.lang); })[0] || null;
+}
+function textoSinVoz() {
+  return 'Este navegador no puede hablar' + (navegadorDeApp() ? ' (se abrió dentro de otra app, como WhatsApp)' : '') +
+         '. Abrí el mapa en Chrome: tocá ⋮ arriba a la derecha → "Abrir en Chrome".';
 }
 function avisarVozFalla(motivo) {
   if (voz.avisada || !nav.activo) return;
   voz.avisada = true;
-  mostrarMensaje('🔇 El teléfono no está hablando' + (motivo ? ' (' + motivo + ')' : '') + '. Subí el volumen ' +
-                 '"multimedia" y revisá que tenga instalada la voz en español (Ajustes → Texto a voz). ' +
-                 'Las indicaciones siguen en el cartel verde.', true);
-  setTimeout(ocultarMensaje, 12000);
+  mostrarMensaje(hayVoz()
+    ? '🔇 El teléfono no está hablando' + (motivo ? ' (' + motivo + ')' : '') + '. Subí el volumen "multimedia" y ' +
+      'revisá que tenga la voz en español (Ajustes → Texto a voz). Las indicaciones siguen en el cartel verde.'
+    : '🔇 ' + textoSinVoz() + ' Las indicaciones siguen en el cartel verde.', true);
+  setTimeout(ocultarMensaje, 15000);
 }
-function hablar(texto, urgente) {
-  if (!nav.voz || !window.speechSynthesis || !texto) return;
-  var s = window.speechSynthesis;
-  try {
-    var ocupado = s.speaking || s.pending;
-    if (urgente && ocupado) s.cancel();
-    if (s.paused) s.resume();
-    var u = new SpeechSynthesisUtterance(texto);
+// Arma una frase según el modo: 'elegida' = una voz en español del teléfono; 'telefono' = la que el teléfono use
+function armarFrase(texto, modo) {
+  var u = new SpeechSynthesisUtterance(texto);
+  if (modo === 'elegida') {
     u.lang = 'es-AR';
     var v = vozEnEspanol();
     if (v) { u.voice = v; u.lang = v.lang; }
-    u.rate = 1;
-    u.volume = 1;
-    voz.frases.push(u);
-    if (voz.frases.length > 6) voz.frases.shift();
-    u.onstart = function () { voz.probada = true; };
-    u.onend = function () { voz.probada = true; };
+  }
+  u.rate = 1;
+  u.volume = 1;
+  voz.frases.push(u);
+  if (voz.frases.length > 8) voz.frases.shift();
+  return u;
+}
+// Dice una frase. alFin(ok, detalle) se llama una vez: ok = empezó a hablar.
+function decirFrase(texto, urgente, alFin) {
+  var s = window.speechSynthesis, listo = false;
+  function fin(ok, detalle) { if (!listo) { listo = true; if (alFin) alFin(ok, detalle); } }
+  function intentar(modo, esReintento) {
+    var u = armarFrase(texto, modo), empezo = false;
+    u.onstart = function () {
+      empezo = true;
+      voz.probada = true;
+      if (esReintento && voz.modo !== modo) { voz.modo = modo; guardar('mapa-camiones:voz-modo', modo); }   // así anda
+      fin(true, modo);
+    };
+    u.onend = function () { if (!empezo) { empezo = true; voz.probada = true; fin(true, modo); } };
     u.onerror = function (ev) {
       var err = ev && ev.error;
       if (err === 'interrupted' || err === 'canceled') return;   // la cortó otra frase: normal
-      avisarVozFalla(err === 'not-allowed' ? 'el navegador no lo dejó: apagá y prendé la voz con el botón 🔊' : err);
+      if (!esReintento && modo === 'elegida') { intentar('telefono', true); return; }
+      fin(false, err === 'not-allowed' ? 'el navegador no lo dejó' : err);
     };
-    if (!voz.probada) {
-      setTimeout(function () { if (!voz.probada && nav.voz && nav.activo) avisarVozFalla(); }, 5000);
+    // no empezó en 3 s: plan B (sin elegir voz). Si tampoco, falla.
+    setTimeout(function () {
+      if (empezo || listo) return;
+      if (!esReintento && modo === 'elegida' && !voz.probada) { try { s.cancel(); } catch (e) { /* nada */ } intentar('telefono', true); }
+      else if (!voz.probada) fin(false, null);
+    }, 3000);
+    try {
+      var ocupado = s.speaking || s.pending;
+      if (urgente && ocupado) s.cancel();
+      if (s.paused) s.resume();
+      if (urgente && ocupado) setTimeout(function () { s.speak(u); }, 150); else s.speak(u);
+    } catch (e) { fin(false, e.message); }
+  }
+  intentar(voz.modo, voz.modo !== 'elegida');
+}
+function hablar(texto, urgente) {
+  if (!nav.voz || !texto) return;
+  if (!hayVoz()) { avisarVozFalla(); return; }
+  decirFrase(texto, urgente, function (ok, detalle) { if (!ok) avisarVozFalla(detalle); });
+}
+// Botón "Probar la voz": habla y muestra qué pasó (sirve para saber por qué no habla en un teléfono)
+function probarVoz() {
+  if (!hayVoz()) { mostrarMensaje('🔇 ' + textoSinVoz(), true); return; }
+  var voces = vocesDelTelefono(), es = voces.filter(function (x) { return /^es/i.test(x.lang); });
+  mostrarMensaje('🔊 Probando la voz...');
+  decirFrase('Hola. Soy la voz del mapa para camiones. Si me escuchás, la voz anda bien.', true, function (ok, detalle) {
+    var datos = ' (voces en español: ' + es.length + ' de ' + voces.length + (detalle && ok ? '; modo ' + detalle : '') + ')';
+    if (ok) {
+      mostrarMensaje('✓ El teléfono está hablando. Si no escuchaste nada, subí el volumen "multimedia" (el de la música).' + datos);
+      if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
+    } else {
+      mostrarMensaje('🔇 El teléfono no habló' + (detalle ? ' (error: ' + detalle + ')' : '') + datos +
+                     '. Revisá en Ajustes del teléfono → "Texto a voz" que haya una voz en español instalada.', true);
     }
-    if (urgente && ocupado) setTimeout(function () { s.speak(u); }, 150);
-    else s.speak(u);
-  } catch (e) { avisarVozFalla(); }
+    setTimeout(ocultarMensaje, 15000);
+  });
 }
 
 function textoDistancia(m) {
@@ -3311,6 +3366,8 @@ if (document.getElementById('nav-cartel')) {
   if (!ventanaAyuda) return;
   function abrir(si) { ventanaAyuda.hidden = !si; }
   document.getElementById('btn-ayuda').addEventListener('click', function () { abrirPanel(false); abrirPanelRuta(false); abrir(true); });
+  var bVoz = document.getElementById('btn-probar-voz');
+  if (bVoz) bVoz.addEventListener('click', function () { abrirPanel(false); probarVoz(); });
   document.getElementById('cerrar-ayuda').addEventListener('click', function () { abrir(false); });
   ventanaAyuda.addEventListener('click', function (ev) { if (ev.target === ventanaAyuda) abrir(false); });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') abrir(false); });

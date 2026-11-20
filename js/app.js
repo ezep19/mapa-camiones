@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 59;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 60;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2201,13 +2201,15 @@ function etiquetaPhoton(p) {
   return partes.join(', ');
 }
 
-function buscarPhoton(cual, texto, conRespaldo) {
+// "Pasar por": primero solo ciudades y pueblos (si no, "Arrecifes" daba calles con ese nombre cerca de lo que se ve)
+function buscarPhoton(cual, texto, conRespaldo, sinFiltro) {
+  var soloLugares = /^p\d/.test(cual) && !sinFiltro;
   var lista = document.getElementById('resultados-' + cual);
   if (sugerencia.ctrl) sugerencia.ctrl.abort();
   var ctrl = sugerencia.ctrl = window.AbortController ? new AbortController() : null;
   var c = mapa.getCenter();
   var url = 'https://photon.komoot.io/api/?limit=6&bbox=-73.6,-55.1,-53.6,-21.7' +
-            '&lat=' + c.lat.toFixed(3) + '&lon=' + c.lng.toFixed(3) + '&q=' + encodeURIComponent(texto);
+            (soloLugares ? '&osm_tag=place' : '&lat=' + c.lat.toFixed(3) + '&lon=' + c.lng.toFixed(3)) + '&q=' + encodeURIComponent(texto);
   if (conRespaldo) { lista.hidden = false; lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>'; }
   fetch(url, ctrl ? { signal: ctrl.signal } : {})
     .then(function (r) { if (!r.ok) throw new Error('photon ' + r.status); return r.json(); })
@@ -2223,6 +2225,7 @@ function buscarPhoton(cual, texto, conRespaldo) {
       });
       if (document.getElementById('ruta-' + cual).value.trim() !== texto) return;   // ya escribió otra cosa
       if (!res.length) {
+        if (soloLugares) { buscarPhoton(cual, texto, conRespaldo, true); return; }
         if (conRespaldo) buscarNominatim(cual, texto);
         else lista.hidden = true;
         return;

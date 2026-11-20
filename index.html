@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
         integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=55">
+  <link rel="stylesheet" href="css/estilos.css?v=58">
 </head>
 <body>
   <main id="mapa" aria-label="Mapa"></main>
@@ -26,6 +26,7 @@
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
       <span id="buscador-texto">¿A dónde vas?</span>
     </button>
+    <button id="btn-cancelar-ruta" class="buscador-cancelar" type="button" hidden aria-label="Cancelar la ruta">✕</button>
     <button id="btn-camion" class="chip-camion" type="button" aria-controls="ventana-camion" aria-label="Medidas de mi camión">
       <span aria-hidden="true">🚛</span><span id="camion-resumen" class="camion-resumen">Medidas</span>
     </button>
@@ -40,6 +41,12 @@
       <button id="cerrar-capas" class="boton-x" type="button" aria-label="Cerrar">×</button>
     </div>
     <button id="btn-probar-voz" class="boton-chico boton-ancho boton-voz" type="button">🔊 Probar la voz</button>
+    <label class="voz-motor" for="voz-motor">Voz al navegar
+      <select id="voz-motor">
+        <option value="grabada">Grabada: suena con el iPhone en silencio</option>
+        <option value="telefono">Del teléfono: dice los nombres de las calles</option>
+      </select>
+    </label>
     <ul id="lista-capas" class="lista-capas"></ul>
     <div id="ir-zonas" class="ir-zonas" hidden></div>
     <button id="btn-ayuda" class="boton-chico boton-ancho" type="button" aria-controls="ventana-ayuda">Cómo se usa</button>
@@ -48,9 +55,9 @@
 
   <section id="panel-ruta" class="panel panel-ruta" hidden aria-label="Ruta para mi camión">
     <div class="panel-cabecera">
-      <strong>Ruta para tu camión</strong>
+      <strong>Ruta<span class="largo"> para tu camión</span></strong>
       <span>
-        <button id="borrar-ruta" class="boton-texto" type="button" hidden>Borrar</button>
+        <button id="borrar-ruta" class="boton-cancelar-ruta" type="button" hidden>✕ Cancelar<span class="largo"> ruta</span></button>
         <button id="cerrar-ruta" class="boton-x" type="button" aria-label="Cerrar">×</button>
       </span>
     </div>
@@ -161,6 +168,6 @@
   <!-- MapLibre dibuja todo el mapa (como Google Maps) -->
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
           integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin=""></script>
-  <script src="js/app.js?v=55"></script>
+  <script src="js/app.js?v=58"></script>
 </body>
 </html>

@@ -990,3 +990,29 @@ body.navegando .mensaje { top: auto; left: var(--m-izq); right: 84px; transform:
   .campo-error { min-height: 0.9em; }
   .ventana-botones .boton { min-height: 48px; }
 }
+/* Elegir la voz (grabada / del teléfono) */
+.voz-motor { display: block; margin: 0 0 10px; font-size: 0.85rem; font-weight: 700; color: #5b6470; }
+.voz-motor select { display: block; width: 100%; min-height: 46px; margin-top: 4px; padding: 0 10px; border: 2px solid #e3e8ee;
+                    border-radius: 12px; background: #f8fafc; color: var(--noche); font-size: 0.95rem; font-weight: 600; }
+
+/* --- Cancelar la ruta --- */
+/* ✕ adentro de la barra "¿A dónde vas?", a la derecha (solo si hay una ruta) */
+.buscador-cancelar {
+  flex: none; position: relative; z-index: 1; align-self: center;
+  width: 40px; height: 40px; margin-left: -52px; margin-right: 4px; border: 0; border-radius: 50%;
+  background: #eef1f5; color: #3d4652; font-size: 1.05rem; font-weight: 800; cursor: pointer;
+}
+.buscador-cancelar[hidden] { display: none; }
+.buscador-campo.con-destino { padding-right: 52px; }
+/* en la tarjeta de la ruta */
+.boton-cancelar-ruta {
+  min-height: 40px; padding: 0 14px; border: 0; border-radius: 20px; margin-right: 6px;
+  background: #ffe9e7; color: #c21717; font: inherit; font-size: 0.92rem; font-weight: 800; cursor: pointer; white-space: nowrap;
+}
+.boton-cancelar-ruta[hidden] { display: none; }
+.panel-ruta .panel-cabecera strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* celulares angostos: "Ruta" y "✕ Cancelar" (sin las palabras de más) para que entren en la cabecera */
+@media (max-width: 400px) {
+  .panel-ruta .panel-cabecera .largo { display: none; }
+  body.navegando .boton-centrar { bottom: calc(var(--alto-hoja, 0px) + 40px); }
+}

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 55;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 58;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -682,20 +682,155 @@ function ponerDatos(id, features) {
 var restrPorId = {};        // número -> capa de Leaflet (para el cartel)
 var pintura = { timer: null };
 function pedirRepintar() { if (!pintura.timer) pintura.timer = setTimeout(repintar, 60); }
+// --- Zonas agrupadas (20/11/2026, pedido del chofer: "unirlas como la zona de Mar del Plata, que no haya tantas rayas") ---
+// Donde hay MUCHAS calles rojas juntas (ej. el microcentro de Buenos Aires), de lejos se dibuja una sola zona roja
+// clarita y se esconden esas rayas; de cerca (zoom de MapLibre 14,5 o más) desaparece la zona y se ven las calles
+// una por una (dentro de la zona puede haber calles permitidas). Es solo el dibujo: la ruta y los avisos siguen
+// usando cada calle. Cómo se arma: cuadritos de 150 m; un cuadrito es "denso" si lo tocan 2 o más calles rojas
+// distintas; los cuadritos densos pegados forman un grupo; si el grupo tiene 6 o más cuadritos y 8 o más calles,
+// la zona es la envolvente de los puntos de esas calles dentro del grupo (más 25 m de margen).
+var AGRUPAR = { celda: 150, minCeldas: 6, minCalles: 8, margen: 25, zoomCalles: 14.5 };
+var zonasAgrupadas = [];
+function agruparRojas(lineas) {   // lineas: [{ id, capa, coords: [[lng, lat], ...] }] (solo las rojas)
+  zonasAgrupadas = [];
+  if (lineas.length < AGRUPAR.minCalles) return { zonas: [], adentro: null };
+  var lat0 = lineas[0].coords[0][1], kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540, C = AGRUPAR.celda;
+  var celdas = {};   // 'x,y' -> { ids: {}, pts: [] }
+  lineas.forEach(function (l) {
+    var c = l.coords;
+    for (var i = 0; i < c.length; i++) {
+      var a = c[i], b = c[i + 1] || c[i];
+      var dx = (b[0] - a[0]) * kx, dy = (b[1] - a[1]) * ky, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 40));
+      for (var k = 0; k < (i < c.length - 1 ? n : 1); k++) {
+        var x = a[0] * kx + dx * k / n, y = a[1] * ky + dy * k / n;
+        var key = Math.floor(x / C) + ',' + Math.floor(y / C);
+        var cel = celdas[key] || (celdas[key] = { ids: {}, n: 0, pts: [] });
+        if (!cel.ids[l.id]) { cel.ids[l.id] = l; cel.n++; }
+        cel.pts.push([x, y]);
+      }
+    }
+  });
+  var densas = {};
+  Object.keys(celdas).forEach(function (k) { if (celdas[k].n >= 2) densas[k] = true; });
+  var visto = {}, zonas = [];
+  Object.keys(densas).forEach(function (k0) {
+    if (visto[k0]) return;
+    var grupo = [], pila = [k0];
+    visto[k0] = true;
+    while (pila.length) {
+      var k = pila.pop(), p = k.split(','), x = +p[0], y = +p[1];
+      grupo.push(k);
+      for (var ix = -1; ix <= 1; ix++) for (var iy = -1; iy <= 1; iy++) {
+        var v = (x + ix) + ',' + (y + iy);
+        if (densas[v] && !visto[v]) { visto[v] = true; pila.push(v); }
+      }
+    }
+    if (grupo.length < AGRUPAR.minCeldas) return;
+    var ids = {}, nCalles = 0, pts = [];
+    grupo.forEach(function (k) {
+      var cel = celdas[k];
+      Object.keys(cel.ids).forEach(function (id) { if (!ids[id]) { ids[id] = cel.ids[id]; nCalles++; } });
+      pts = pts.concat(cel.pts);
+    });
+    if (nCalles < AGRUPAR.minCalles) return;
+    var casco = envolvente(pts);
+    if (casco.length < 3) return;
+    // margen: cada punto se aleja 25 m del centro
+    var cx = 0, cy = 0;
+    casco.forEach(function (q) { cx += q[0]; cy += q[1]; });
+    cx /= casco.length; cy /= casco.length;
+    casco = casco.map(function (q) {
+      var d = Math.hypot(q[0] - cx, q[1] - cy) || 1;
+      return [q[0] + (q[0] - cx) / d * AGRUPAR.margen, q[1] + (q[1] - cy) / d * AGRUPAR.margen];
+    });
+    // muy alargada (una avenida larga, no un barrio): no es una zona
+    var area = 0;
+    for (var i = 0; i < casco.length; i++) { var a = casco[i], b = casco[(i + 1) % casco.length]; area += a[0] * b[1] - b[0] * a[1]; }
+    area = Math.abs(area) / 2;
+    if (area > grupo.length * C * C * 3) return;
+    var cuenta = {};
+    Object.keys(ids).forEach(function (id) { var c = ids[id].capa; cuenta[c] = (cuenta[c] || 0) + 1; });
+    zonas.push({ casco: casco, anillo: casco.concat([casco[0]]).map(function (q) { return [q[0] / kx, q[1] / ky]; }),
+                 calles: nCalles, cuenta: cuenta });
+  });
+  zonasAgrupadas = zonas;
+  return { zonas: zonas, adentro: function (lng, lat) {
+    var x = lng * kx, y = lat * ky;
+    for (var z = 0; z < zonas.length; z++) if (dentroConvexo(zonas[z].casco, x, y)) return z;
+    return -1;
+  } };
+}
+// envolvente convexa (cadena monótona), puntos [x, y] en metros
+function envolvente(pts) {
+  pts = pts.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+  if (pts.length < 3) return pts;
+  function cruz(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+  var abajo = [], arriba = [];
+  pts.forEach(function (p) {
+    while (abajo.length >= 2 && cruz(abajo[abajo.length - 2], abajo[abajo.length - 1], p) <= 0) abajo.pop();
+    abajo.push(p);
+  });
+  for (var i = pts.length - 1; i >= 0; i--) {
+    var p = pts[i];
+    while (arriba.length >= 2 && cruz(arriba[arriba.length - 2], arriba[arriba.length - 1], p) <= 0) arriba.pop();
+    arriba.push(p);
+  }
+  abajo.pop(); arriba.pop();
+  return abajo.concat(arriba);
+}
+function dentroConvexo(casco, x, y) {   // casco en sentido antihorario
+  for (var i = 0; i < casco.length; i++) {
+    var a = casco[i], b = casco[(i + 1) % casco.length];
+    if ((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]) < 0) return false;
+  }
+  return true;
+}
+// Parte una línea en pedazos de adentro / afuera de las zonas (para dibujar: lo de adentro se ve solo de cerca)
+function partirLinea(coords, adentro) {
+  var piezas = [], actual = null, estado = null;
+  for (var i = 0; i < coords.length - 1; i++) {
+    var a = coords[i], b = coords[i + 1];
+    var dentro = adentro((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) >= 0;
+    if (dentro !== estado) { if (actual) piezas.push({ ag: estado, coords: actual }); actual = [a]; estado = dentro; }
+    actual.push(b);
+  }
+  if (actual) piezas.push({ ag: estado, coords: actual });
+  return piezas;
+}
 function repintar() {
   clearTimeout(pintura.timer);
   pintura.timer = null;
-  var feats = [];
+  var feats = [], rojas = [];
   restrPorId = {};
   CAPAS.forEach(function (c) {
     if (apagadas[c.id] || !grupos[c.id]) return;
     grupos[c.id].eachLayer(function (l) {
       var f = l.feature, ev = evaluar(f.properties), id = L.stamp(l);
       restrPorId[id] = l;
-      feats.push({ type: 'Feature', geometry: f.geometry, properties: {
-        id: id, e: ev.estado, ve: oculto(ev) ? 0 : 1, ss: c.id === 'sin_salida' ? 1 : 0,
-        pt: c.forma === 'punteada' || (c.id === 'corte' && ev.estado !== 'no') ? 1 : 0 } });
+      var props = { id: id, e: ev.estado, ve: oculto(ev) ? 0 : 1, ss: c.id === 'sin_salida' ? 1 : 0,
+                    pt: c.forma === 'punteada' || (c.id === 'corte' && ev.estado !== 'no') ? 1 : 0 };
+      var g = f.geometry;
+      // calles rojas (no cortes en vivo): candidatas a juntarse en una zona
+      if (ev.estado === 'no' && c.id !== 'corte' && g && (g.type === 'LineString' || g.type === 'MultiLineString')) {
+        (g.type === 'LineString' ? [g.coordinates] : g.coordinates).forEach(function (cs) {
+          if (cs.length > 1) rojas.push({ id: id, capa: f.properties.capa, coords: cs, props: props });
+        });
+        return;
+      }
+      feats.push({ type: 'Feature', geometry: g, properties: props });
     });
+  });
+  var ag = agruparRojas(rojas);
+  rojas.forEach(function (r) {
+    var piezas = ag.zonas.length ? partirLinea(r.coords, ag.adentro) : [{ ag: false, coords: r.coords }];
+    piezas.forEach(function (pz) {
+      feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: pz.coords },
+                   properties: pz.ag ? L.extend({ ag: 1 }, r.props) : r.props });
+    });
+  });
+  ag.zonas.forEach(function (z, i) {
+    feats.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [z.anillo] },
+                 properties: { id: -1 - i, zg: i, e: 'no', ve: 1, ss: 0, pt: 0 } });
   });
   ponerDatos('restr', feats);
 }
@@ -740,9 +875,14 @@ function ponerCapasPropias() {
       paint: { 'line-color': '#ffffff', 'line-opacity': 0.9, 'line-width': 11 } },
     { id: 'ruta-linea', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: redondo,
       paint: { 'line-color': '#1565c0', 'line-opacity': 0.85, 'line-width': 7 } },
-    { id: 'r-zona', type: 'fill', source: 'restr', filter: ['all', GEO_AREAS, es('ve', 1)],
+    // zonas agrupadas (muchas calles rojas juntas): solo de lejos
+    { id: 'r-agrupada', type: 'fill', source: 'restr', maxzoom: AGRUPAR.zoomCalles, filter: ['all', GEO_AREAS, ['has', 'zg']],
+      paint: { 'fill-color': COLORES.no, 'fill-opacity': 0.14 } },
+    { id: 'r-agrupada-borde', type: 'line', source: 'restr', maxzoom: AGRUPAR.zoomCalles, filter: ['all', GEO_AREAS, ['has', 'zg']],
+      paint: { 'line-color': COLORES.no, 'line-width': grosorZoom(0), 'line-opacity': 0.9 } },
+    { id: 'r-zona', type: 'fill', source: 'restr', filter: ['all', GEO_AREAS, es('ve', 1), ['!', ['has', 'zg']]],
       paint: { 'fill-color': COLOR_ESTADO, 'fill-opacity': ['case', es('e', 'si'), 0.04, 0.12] } },
-    { id: 'r-zona-borde', type: 'line', source: 'restr', filter: ['all', GEO_AREAS, es('ve', 1)],
+    { id: 'r-zona-borde', type: 'line', source: 'restr', filter: ['all', GEO_AREAS, es('ve', 1), ['!', ['has', 'zg']]],
       paint: { 'line-color': COLOR_ESTADO, 'line-width': grosorZoom(0) } },
     { id: 'r-gris', type: 'line', source: 'restr', filter: ['all', GEO_LINEAS, es('ve', 1), es('e', 'si')], layout: redondo,
       paint: { 'line-color': COLORES.si, 'line-opacity': 0.5, 'line-width': grosorZoom(-1, 1) } },
@@ -754,9 +894,14 @@ function ponerCapasPropias() {
       filter: ['all', GEO_LINEAS, es('ve', 1), es('e', 'sin_dato'), es('pt', 1)],
       paint: { 'line-color': COLORES.sin_dato, 'line-width': grosorZoom(0), 'line-dasharray': [2, 1.5],
                'line-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.75, 13, 0.95] } },
-    { id: 'r-rojo-borde', type: 'line', source: 'restr', filter: ['all', GEO_LINEAS, es('e', 'no')], layout: redondo,
+    { id: 'r-rojo-borde', type: 'line', source: 'restr', filter: ['all', GEO_LINEAS, es('e', 'no'), ['!=', ['get', 'ag'], 1]], layout: redondo,
       paint: { 'line-color': '#ffffff', 'line-opacity': 0.95, 'line-width': grosorZoom(5.5) } },
-    { id: 'r-rojo', type: 'line', source: 'restr', filter: ['all', GEO_LINEAS, es('e', 'no')], layout: redondo,
+    { id: 'r-rojo', type: 'line', source: 'restr', filter: ['all', GEO_LINEAS, es('e', 'no'), ['!=', ['get', 'ag'], 1]], layout: redondo,
+      paint: { 'line-color': COLORES.no, 'line-width': grosorZoom(1.5) } },
+    // las calles de adentro de una zona agrupada: solo de cerca
+    { id: 'r-rojo-ag-borde', type: 'line', source: 'restr', minzoom: AGRUPAR.zoomCalles, filter: ['all', GEO_LINEAS, es('ag', 1)], layout: redondo,
+      paint: { 'line-color': '#ffffff', 'line-opacity': 0.95, 'line-width': grosorZoom(5.5) } },
+    { id: 'r-rojo-ag', type: 'line', source: 'restr', minzoom: AGRUPAR.zoomCalles, filter: ['all', GEO_LINEAS, es('ag', 1)], layout: redondo,
       paint: { 'line-color': COLORES.no, 'line-width': grosorZoom(1.5) } }
   ].forEach(function (c) { gl.addLayer(c, debajo); });
   [
@@ -796,6 +941,29 @@ function abrirCartelRestriccion(l, ll) {
   var c = abrirCartel(ll, contenido());
   // un corte en vivo: entre qué calles es (se pide al tocarlo)
   if (p.capa === 'corte') detalleCorteAlAbrir(p, function () { if (cartel === c) c.setHTML(contenido()); });
+}
+// Cartel de una zona agrupada (muchas calles rojas juntas)
+var NOMBRES_AGRUPADA = { prohibido: 'prohibidas para camiones', peso: 'con límite de peso', altura: 'con paso bajo',
+                         largo: 'con límite de largo', ancho: 'angostas', barrera: 'con barrera', obra: 'en obra' };
+function abrirCartelAgrupada(i, ll) {
+  var z = zonasAgrupadas[i];
+  if (!z) return;
+  var detalle = Object.keys(z.cuenta).sort(function (a, b) { return z.cuenta[b] - z.cuenta[a]; }).map(function (c) {
+    return z.cuenta[c] + ' ' + (NOMBRES_AGRUPADA[c] || c);
+  }).join(' · ');
+  var div = document.createElement('div');
+  div.innerHTML = '<div class="cartel-tipo">Zona con muchas calles prohibidas</div>' +
+    '<div class="cartel-valor">' + z.calles + ' calles donde tu camión NO pasa</div>' +
+    '<div class="veredicto no">Evitá esta zona con el camión<small>' + esc(detalle) + '</small></div>' +
+    '<div class="cartel-detalle">De lejos se muestran juntas para que el mapa se vea más limpio. Acercá el mapa para ver ' +
+    'cuáles son: alguna calle de adentro puede estar permitida.</div>' +
+    '<div class="cartel-fila"><button type="button" class="cartel-boton-chico">🔍 Acercar y ver las calles</button></div>' +
+    '<div class="cartel-fuente">Fuente: OpenStreetMap</div>';
+  div.querySelector('button').addEventListener('click', function () {
+    cerrarCartel();
+    gl.easeTo({ center: [ll.lng, ll.lat], zoom: Math.max(gl.getZoom(), AGRUPAR.zoomCalles + 0.6) });
+  });
+  abrirCartel(ll, div);
 }
 // Lo que marca un aviso de la ruta (una restricción o un reporte)
 function abrirCartelDeCapa(l, ll) {
@@ -1849,7 +2017,19 @@ function actualizarTrayecto() {
   var t = document.getElementById('buscador-texto'), campo = document.getElementById('btn-buscar');
   if (t) t.textContent = ruta.hasta ? ruta.hasta.nombre : '¿A dónde vas?';
   if (campo) campo.classList.toggle('con-destino', !!ruta.hasta);
+  // ✕ en la barra de arriba: sacar la ruta del mapa (antes no había forma clara de cancelarla)
+  var cancelar = document.getElementById('btn-cancelar-ruta');
+  if (cancelar) cancelar.hidden = !(ruta.hasta || ruta.opciones);
 }
+function cancelarRuta() {
+  if (typeof nav !== 'undefined' && nav.activo) terminarNavegacion();
+  borrarRuta();
+  abrirPanelRuta(false);
+  actualizarTrayecto();
+  mostrarMensaje('Ruta cancelada.');
+  setTimeout(ocultarMensaje, 2500);
+}
+if (document.getElementById('btn-cancelar-ruta')) document.getElementById('btn-cancelar-ruta').addEventListener('click', cancelarRuta);
 
 // Para que sea rápido: al abrir, la salida es tu ubicación (si el GPS está disponible) y el cursor queda
 // en "Hasta" con tus destinos recientes. Cuando están los dos puntos, la ruta se calcula sola.
@@ -2103,7 +2283,7 @@ if (panelRuta) {
   });
   var bCalcular = document.getElementById('calcular-ruta');
   if (bCalcular) bCalcular.addEventListener('click', calcularRuta);
-  document.getElementById('borrar-ruta').addEventListener('click', borrarRuta);
+  document.getElementById('borrar-ruta').addEventListener('click', cancelarRuta);
   // "A ... B ...": volver a escribir la salida o la llegada
   var trayecto = document.createElement('button');
   trayecto.type = 'button'; trayecto.id = 'ruta-trayecto'; trayecto.className = 'ruta-trayecto';
@@ -3155,8 +3335,138 @@ function paraDecir(texto) {
     .replace(/(\d+),(\d+)/g, '$1 coma $2')
     .replace(/\s+/g, ' ');
 }
+// ===== Voz grabada (20/11/2026) =====
+// En el iPhone con el silencio puesto, Safari NO deja sonar la voz del teléfono (speechSynthesis), pero sí los
+// sonidos comunes (por eso se escuchaba el pitido y no las indicaciones). La "voz grabada" son frases cortas
+// grabadas de antemano (voz/*.wav, scripts/grabar_voz.ps1) que se encadenan: "En 300 metros" + "doblá a la
+// derecha". No dice nombres de calles (están en el cartel verde). En el iPhone es la voz por defecto.
+// Se usa SIEMPRE el mismo reproductor: el iPhone solo deja sonar sin tocar la pantalla a un reproductor que ya
+// sonó una vez después de un toque (el pitido de "▶ Ir" o de "Probar la voz").
+var ES_IPHONE = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+voz.motor = leerGuardado('mapa-camiones:voz-motor') || (ES_IPHONE ? 'grabada' : 'telefono');
+var grabada = { el: null, cola: [], sonando: false, bajadas: false };
+function reproductor() {
+  if (!grabada.el) {
+    grabada.el = new Audio();
+    grabada.el.preload = 'auto';
+    grabada.el.addEventListener('ended', siguienteGrabada);
+    grabada.el.addEventListener('error', function () { setTimeout(siguienteGrabada, 50); });
+  }
+  return grabada.el;
+}
+function siguienteGrabada() {
+  var url = grabada.cola.shift();
+  if (!url) { grabada.sonando = false; return; }
+  grabada.sonando = true;
+  var a = reproductor();
+  sesionDeAudio();
+  a.src = url;
+  try {
+    var p = a.play();
+    if (p && p.catch) p.catch(function (e) {
+      if (e && e.name === 'AbortError') return;   // se cambió el sonido antes de empezar: normal
+      grabada.sonando = false;
+      grabada.cola = [];
+      avisarVozFalla('el teléfono no dejó reproducir el sonido');
+    });
+  } catch (e) { grabada.sonando = false; }
+}
+// urgente: se descarta lo que estaba esperando (lo que está sonando termina)
+function sonar(urls, urgente) {
+  if (!urls.length) return;
+  if (urgente) grabada.cola = [];
+  grabada.cola = grabada.cola.concat(urls);
+  if (!grabada.sonando) siguienteGrabada();
+}
+// Baja todas las frases una vez (quedan guardadas: sirven sin señal)
+function bajarVozGrabada() {
+  if (grabada.bajadas) return;
+  grabada.bajadas = true;
+  fetch('voz/frases.json').then(function (r) { return r.json(); }).then(function (lista) {
+    lista.forEach(function (k, i) { setTimeout(function () { fetch('voz/' + k + '.wav').catch(function () {}); }, i * 40); });
+  }).catch(function () { grabada.bajadas = false; });
+}
+// Distancia dicha ("300 metros", "1 coma 5 kilómetros") → grabación "En 300 metros"
+function clipDistancia(t) {
+  var m = /(\d+) metros/.exec(t);
+  if (m) {
+    var n = +m[1];
+    n = n < 100 ? Math.max(30, Math.min(90, Math.round(n / 10) * 10)) : Math.min(1000, Math.round(n / 50) * 50);
+    return 'd_' + n;
+  }
+  var k = /(\d+)(?: coma (\d))? kilómetros/.exec(t);
+  if (k && +k[1] + (k[2] ? +k[2] / 10 : 0) < 1.3) return 'd_1k';
+  return 'd_mas';
+}
+// Qué peligro es, por las palabras de la frase
+function clipPeligro(t) {
+  t = t.toLowerCase();
+  var tipo = /caminera/.test(t) ? 'h_caminera' : /gendarmer/.test(t) ? 'h_gendarmeria' : /fitosanitari/.test(t) ? 'h_fito'
+    : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona/.test(t) ? 'h_zona'
+    : /paso bajo|altura|puente/.test(t) ? 'h_altura' : /peso/.test(t) ? 'h_peso' : /largo/.test(t) ? 'h_largo'
+    : /angost|ancho/.test(t) ? 'h_ancho' : /cortad|corte/.test(t) ? 'h_corte' : /obra/.test(t) ? 'h_obra'
+    : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib/.test(t) ? 'h_prohibido' : 'h_otro';
+  var fin = /no pasa/.test(t) ? 's_nopasa' : /si vas por esa calle|si la ruta pasa/.test(t) ? 's_sivas' : /verific/.test(t) ? 's_verificar' : null;
+  return fin ? [tipo, fin] : [tipo];
+}
+// Qué maniobra es ("doblá a la izquierda hacia Avenida...")
+function clipManiobra(t) {
+  t = t.toLowerCase();
+  var izq = /izquierda/.test(t), der = /derecha/.test(t), lado = izq ? 'izq' : der ? 'der' : '';
+  if (/destino/.test(t)) return lado ? 'm_dest_' + lado : 'm_llegas';
+  if (/rotonda|glorieta/.test(t)) {
+    var n = /(\d)\s*(ª|a\b|°|º)?\s*salida/.exec(t), pal = /(primera|segunda|tercera|cuarta|quinta) salida/.exec(t);
+    var num = n ? +n[1] : pal ? ['primera', 'segunda', 'tercera', 'cuarta', 'quinta'].indexOf(pal[1]) + 1 : 0;
+    return num >= 1 && num <= 5 ? 'm_rot' + num : 'm_rot';
+  }
+  if (/pegá la vuelta|cambio de sentido|vuelta en u/.test(t)) return 'm_vuelta';
+  if (/mantenete|seguí por la (izquierda|derecha)|manten[eé]/.test(t)) return lado ? 'm_mant_' + lado : 'm_recto';
+  if (/salida|rampa/.test(t)) return lado ? 'm_salida_' + lado : 'm_salida';
+  if (/incorpor/.test(t)) return 'm_incorp';
+  if (lado && /cerrad|brusca/.test(t)) return 'm_' + lado + '_cer';
+  if (lado && /levemente|ligeramente/.test(t)) return 'm_' + lado + '_lev';
+  if (lado) return 'm_' + lado;
+  if (/seguí|continu|recto|derecho/.test(t)) return 'm_recto';
+  return 'm_otro';
+}
+// Pasa lo que diría la voz del teléfono a la lista de grabaciones. Las frases las arma esta misma página
+// (navegación: "Cuidado. En 300 metros, paso bajo... Tu camión no pasa. Ahora, doblá a la derecha hacia X.").
+var INICIO_FRASE = /\s(?=(?:Cuidado|Atención)\.|En \d|Ahora,|Seguí por \d|Llegaste a destino|Recalculando)/;
+function clipsDe(texto) {
+  var t = String(texto || '').trim(), out = [], vueltas = 0;
+  function cuerpo() {   // hasta el comienzo de la frase siguiente
+    var i = t.search(INICIO_FRASE), c = i < 0 ? t : t.slice(0, i);
+    t = i < 0 ? '' : t.slice(i).trim();
+    return c;
+  }
+  while (t && vueltas++ < 12) {
+    var m;
+    if ((m = /^Vamos\. Seguí la ruta azul\.\s*/.exec(t))) { out.push('vamos'); t = t.slice(m[0].length); }
+    else if ((m = /^Recalculando la ruta\.\s*/.exec(t))) { out.push('recalc'); t = t.slice(m[0].length); }
+    else if ((m = /^Llegaste a destino\.\s*/.exec(t))) { out.push('llegaste'); t = t.slice(m[0].length); }
+    else if ((m = /^Voz prendida\.\s*/.exec(t))) { out.push('voz_on'); t = t.slice(m[0].length); }
+    else if ((m = /^Seguí por [^.]*\.\s*/.exec(t))) { out.push('seguir'); t = t.slice(m[0].length); }
+    else if ((m = /^(Cuidado|Atención)\.\s*(?:(Acá)|(?:En|A) ([^,]+)),\s*/.exec(t))) {
+      t = t.slice(m[0].length);
+      out.push(m[1] === 'Cuidado' ? 'cuidado' : 'atencion', m[2] ? 'aca' : clipDistancia(m[3]));
+      out = out.concat(clipPeligro(cuerpo()));
+    } else if ((m = /^En ([^,]+),\s*/.exec(t))) {
+      t = t.slice(m[0].length);
+      out.push(clipDistancia(m[1]), clipManiobra(cuerpo()));
+    } else if ((m = /^Ahora,\s*/.exec(t))) {
+      t = t.slice(m[0].length);
+      out.push('ahora', clipManiobra(cuerpo()));
+    } else { out.push('m_otro'); break; }
+  }
+  return out;
+}
+function decirGrabado(texto, urgente) {
+  bajarVozGrabada();
+  sonar(clipsDe(texto).map(function (k) { return 'voz/' + k + '.wav'; }), urgente);
+}
 function hablar(texto, urgente) {
   if (!nav.voz || !texto) return;
+  if (voz.motor === 'grabada') { decirGrabado(texto, urgente); return; }
   texto = paraDecir(texto);
   sesionDeAudio();
   if (!hayVoz()) { avisarVozFalla(); return; }
@@ -3190,15 +3500,20 @@ function archivoPitido() {
 }
 function pitido() {
   sesionDeAudio();
-  try {
-    var a = new Audio(archivoPitido());
-    a.volume = 1;
-    var p = a.play();
-    if (p && p.catch) p.catch(function () { /* el navegador no dejó */ });
-    return true;
-  } catch (e) { return false; }
+  // en el reproductor de la voz grabada: así ese reproductor queda "habilitado" para sonar después sin tocar
+  try { sonar([archivoPitido()], true); return true; } catch (e) { return false; }
 }
 function probarVoz() {
+  if (voz.motor === 'grabada') {
+    pitido();
+    bajarVozGrabada();
+    sonar(['voz/prueba.wav']);
+    if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
+    mostrarMensaje('🔊 Tiene que sonar un pitido y después "Hola, soy la voz del mapa para camiones". Si no escuchás nada, ' +
+                   'subí el volumen con los botones del costado del teléfono (con el silencio puesto también tiene que sonar).');
+    setTimeout(ocultarMensaje, 12000);
+    return;
+  }
   var hubo = pitido();
   if (!hayVoz()) { mostrarMensaje('🔇 ' + textoSinVoz(), true); return; }
   var voces = vocesDelTelefono(), es = voces.filter(function (x) { return /^es/i.test(x.lang); });
@@ -3411,6 +3726,8 @@ function seguirNavegacion(pos) {
   if (falta < NAV.LLEGADA_M) {
     hablar('Llegaste a destino.', true);
     terminarNavegacion('Llegaste a destino.');
+    borrarRuta();   // al llegar, la ruta ya no hace falta
+    actualizarTrayecto();
     return;
   }
   // Próxima indicación
@@ -3545,7 +3862,11 @@ function ponerVozBoton() {
   b.setAttribute('aria-label', nav.voz ? 'Apagar la voz' : 'Prender la voz');
 }
 if (document.getElementById('nav-cartel')) {
-  document.getElementById('nav-terminar').addEventListener('click', function () { terminarNavegacion('Navegación terminada.'); });
+  // "Salir": termina la navegación y vuelve a la tarjeta de la ruta (ahí está "▶ Ir" y "✕ Cancelar ruta")
+  document.getElementById('nav-terminar').addEventListener('click', function () {
+    terminarNavegacion('Navegación terminada. Para sacar la ruta, tocá ✕ Cancelar.');
+    if (ruta.opciones) { abrirPanelRuta(true); modoResultado(true); }
+  });
   if (document.getElementById('nav-rumbo')) {
     document.getElementById('nav-rumbo').addEventListener('click', function () { cambiarRumbo(!nav.rumbo); });
   }
@@ -3566,6 +3887,12 @@ if (document.getElementById('nav-cartel')) {
   document.getElementById('btn-ayuda').addEventListener('click', function () { abrirPanel(false); abrirPanelRuta(false); abrir(true); });
   var bVoz = document.getElementById('btn-probar-voz');
   if (bVoz) bVoz.addEventListener('click', function () { abrirPanel(false); probarVoz(); });
+  // qué voz usar: la grabada (suena con el iPhone en silencio) o la del teléfono (dice los nombres de las calles)
+  var selMotor = document.getElementById('voz-motor');
+  if (selMotor) {
+    selMotor.value = voz.motor;
+    selMotor.addEventListener('change', function () { voz.motor = selMotor.value; guardar('mapa-camiones:voz-motor', voz.motor); });
+  }
   document.getElementById('cerrar-ayuda').addEventListener('click', function () { abrir(false); });
   ventanaAyuda.addEventListener('click', function (ev) { if (ev.target === ventanaAyuda) abrir(false); });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') abrir(false); });
@@ -3626,11 +3953,14 @@ gl.on('click', function (e) {
   }
   // las zonas prohibidas (polígonos) van al final: si no, adentro de una zona cualquier toque abría la zona
   // y no se podían abrir las calles ni los puntos que hay adentro
-  var r = buscar(['r-puntos', 'r-sin-salida', 'r-rojo', 'r-amarillo', 'r-amarillo-punteado', 'r-gris'], 14);
+  var r = buscar(['r-puntos', 'r-sin-salida', 'r-rojo', 'r-rojo-ag', 'r-amarillo', 'r-amarillo-punteado', 'r-gris'], 14);
   if (!r.length) r = buscar(['r-zona-borde'], 14);
   // tocar adentro de la zona (sin nada más cerca) abre la zona, salvo que haya un cartel abierto: ese toque es para cerrarlo
-  if (!r.length && !habiaCartel) r = buscar(['r-zona'], 2);
+  if (!r.length && !habiaCartel) r = buscar(['r-zona', 'r-agrupada'], 2);
   if (!r.length) { cerrarCartel(); return; }   // tocar donde no hay nada: cierra el cartel abierto
+  var normales = r.filter(function (f) { return f.properties.zg == null; });
+  if (!normales.length) { abrirCartelAgrupada(r[0].properties.zg, aLatLng(e.lngLat)); return; }
+  r = normales;
   var orden = { no: 0, sin_dato: 1, si: 2, aviso: 3 };
   r.sort(function (a, b) {
     return (orden[a.properties.e] - orden[b.properties.e]) || ((a.layer.type === 'circle' ? 0 : 1) - (b.layer.type === 'circle' ? 0 : 1));

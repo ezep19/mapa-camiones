@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 58;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 59;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1957,7 +1957,8 @@ var ruta = {
   linea: null, borde: null,
   tocando: null,                       // 'desde' | 'hasta' mientras se espera un toque en el mapa
   esperandoUbicacion: false,
-  config: null
+  config: null,
+  paradas: []                          // "Pasar por": ids 'p1', 'p2'... en orden; ruta[id] = { latlng, nombre }
 };
 var CAMION_ANCHO = 2.6;   // ancho legal; el formulario no lo pide
 
@@ -2012,8 +2013,10 @@ if (window.ResizeObserver && panelRuta) {
 window.addEventListener('resize', medirHoja);
 function actualizarTrayecto() {
   var b = document.getElementById('ruta-trayecto');
+  var nums = '';
+  ruta.paradas.forEach(function (c, i) { if (ruta[c]) nums += '<i class="ruta-marca parada">' + (i + 1) + '</i>'; });
   if (b) b.innerHTML = '<span class="ruta-marca desde">A</span><span>' + esc(ruta.desde ? ruta.desde.nombre : '¿Desde?') +
-    '</span><span class="ruta-marca hasta">B</span><span>' + esc(ruta.hasta ? ruta.hasta.nombre : '¿Hasta?') + '</span>';
+    '</span>' + nums + '<span class="ruta-marca hasta">B</span><span>' + esc(ruta.hasta ? ruta.hasta.nombre : '¿Hasta?') + '</span>';
   var t = document.getElementById('buscador-texto'), campo = document.getElementById('btn-buscar');
   if (t) t.textContent = ruta.hasta ? ruta.hasta.nombre : '¿A dónde vas?';
   if (campo) campo.classList.toggle('con-destino', !!ruta.hasta);
@@ -2050,6 +2053,7 @@ function elegirPunto(cual, latlng, nombre) {
   // si elegiste otra salida mientras el GPS buscaba, cuando aparezca el GPS ya no la reemplaza
   if (cual === 'desde' && nombre !== 'Mi ubicación') ruta.esperandoUbicacion = false;
   ponerPunto(cual, latlng, nombre);
+  ruta.paradas.forEach(function (c) { if (ruta[c]) ruta[c].pasada = false; });   // cambio a mano: vuelven a contar
   if (cual === 'hasta' && nombre && !/^Punto en el mapa/.test(nombre)) guardarReciente(nombre, latlng);
   if (ruta.desde && ruta.hasta) {
     if (panelRuta.hidden) abrirPanelRuta(true);
@@ -2123,8 +2127,9 @@ function ponerPunto(cual, latlng, nombre) {
   if (lista) { lista.hidden = true; lista.innerHTML = ''; }
   if (ruta.marcas[cual]) ruta.marcas[cual].remove();
   var el = document.createElement('span');
-  el.className = 'ruta-marca ' + cual;
-  el.textContent = cual === 'desde' ? 'A' : 'B';
+  var esParada = cual !== 'desde' && cual !== 'hasta';
+  el.className = 'ruta-marca ' + (esParada ? 'parada' : cual);
+  el.textContent = cual === 'desde' ? 'A' : cual === 'hasta' ? 'B' : String(ruta.paradas.indexOf(cual) + 1);
   ruta.marcas[cual] = new maplibregl.Marker({ element: el }).setLngLat([ruta[cual].latlng.lng, ruta[cual].latlng.lat]).addTo(gl);
 }
 
@@ -2263,6 +2268,85 @@ function buscarNominatim(cual, texto) {
 }
 function buscarDireccion(cual) { sugerir(cual, true); }
 
+function prepararCampo(cual) {
+  var campo = document.getElementById('ruta-' + cual);
+  campo.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); buscarDireccion(cual); }
+  });
+  campo.addEventListener('input', function () { sugerir(cual, false); });
+  // al tocar el campo: elegir todo (para escribir encima) y, si "Hasta" está vacío, mostrar los recientes
+  campo.addEventListener('focus', function () {
+    if (/^Mi ubicación$|^Punto en el mapa/.test(campo.value)) campo.select();
+    if (cual === 'hasta' && !campo.value.trim()) mostrarRecientes();
+  });
+}
+
+// --- "Pasar por" (20/11/2026, pedido del chofer: "yo voy por ruta 2, la 7, la 51, la 9 hasta Córdoba y la 60") ---
+// Hasta 5 lugares entre A y B. La ruta se arma por partes (A → 1 → 2 → ... → B), cada parte con el mismo cálculo
+// de siempre (esquiva lo rojo, viajes largos por partes) y después se revisa entera.
+var MAX_PARADAS = 5, numeroParada = 0;
+function agregarParada() {
+  if (ruta.paradas.length >= MAX_PARADAS) return;
+  var cual = 'p' + (++numeroParada);
+  ruta.paradas.push(cual);
+  var fila = document.createElement('div');
+  fila.className = 'ruta-fila ruta-fila-parada';
+  fila.id = 'fila-' + cual;
+  fila.innerHTML = '<span class="ruta-marca parada" aria-hidden="true"></span>' +
+    '<input id="ruta-' + cual + '" type="search" placeholder="Pasar por (ciudad, pueblo...)" aria-label="Pasar por" ' +
+    'enterkeyhint="search" autocomplete="off">' +
+    '<button type="button" class="boton-icono" aria-label="Sacar este lugar">✕</button>';
+  var lista = document.createElement('ul');
+  lista.id = 'resultados-' + cual;
+  lista.className = 'ruta-resultados';
+  lista.hidden = true;
+  var cont = document.getElementById('ruta-paradas');
+  cont.appendChild(fila);
+  cont.appendChild(lista);
+  fila.querySelector('button').addEventListener('click', function () { sacarParada(cual); });
+  prepararCampo(cual);
+  numerarParadas();
+  document.getElementById('agregar-parada').hidden = ruta.paradas.length >= MAX_PARADAS;
+  if (panelRuta.classList.contains('con-resultado')) modoResultado(false);
+  document.getElementById('ruta-' + cual).focus();
+}
+function sacarParada(cual, sinCalcular) {
+  var habia = !!ruta[cual];
+  ruta.paradas = ruta.paradas.filter(function (c) { return c !== cual; });
+  if (ruta.marcas[cual]) ruta.marcas[cual].remove();
+  delete ruta.marcas[cual];
+  delete ruta[cual];
+  ['fila-', 'resultados-'].forEach(function (pre) { var e = document.getElementById(pre + cual); if (e) e.remove(); });
+  numerarParadas();
+  var boton = document.getElementById('agregar-parada');
+  if (boton) boton.hidden = false;
+  actualizarTrayecto();
+  if (habia && !sinCalcular && ruta.desde && ruta.hasta) calcularRuta();
+}
+function numerarParadas() {
+  ruta.paradas.forEach(function (c, i) {
+    var f = document.getElementById('fila-' + c);
+    if (f) f.querySelector('.ruta-marca').textContent = i + 1;
+    if (ruta.marcas[c]) ruta.marcas[c].getElement().textContent = i + 1;
+  });
+}
+// las que tienen lugar elegido y todavía no se pasaron (navegando)
+function paradasElegidas() {
+  return ruta.paradas.filter(function (c) { return ruta[c] && !ruta[c].pasada; }).map(function (c) { return ruta[c]; });
+}
+// Navegando, al recalcular: las paradas que quedaron atrás (más cerca del comienzo de la ruta que vos) no se repiten
+function marcarParadasPasadas(pos) {
+  var r = ruta.linea;
+  if (!r || !ruta.paradas.length) return;
+  function indice(ll) {
+    var mejor = 0, d = Infinity;
+    for (var i = 0; i < r.puntos.length; i++) { var x = ll.distanceTo(r.puntos[i]); if (x < d) { d = x; mejor = i; } }
+    return mejor;
+  }
+  var yo = indice(L.latLng(pos));
+  ruta.paradas.forEach(function (c) { if (ruta[c] && indice(ruta[c].latlng) <= yo) ruta[c].pasada = true; });
+}
+
 if (panelRuta) {
   document.getElementById('cerrar-ruta').addEventListener('click', function () { abrirPanelRuta(false); });
   document.getElementById('desde-ubicacion').addEventListener('click', usarMiUbicacion);
@@ -2270,17 +2354,9 @@ if (panelRuta) {
     var bBuscar = document.querySelector('[data-buscar="' + cual + '"]'), bTocar = document.querySelector('[data-tocar="' + cual + '"]');
     if (bBuscar) bBuscar.addEventListener('click', function () { buscarDireccion(cual); });
     if (bTocar) bTocar.addEventListener('click', function () { empezarATocar(cual); });
-    var campo = document.getElementById('ruta-' + cual);
-    campo.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Enter') { ev.preventDefault(); buscarDireccion(cual); }
-    });
-    campo.addEventListener('input', function () { sugerir(cual, false); });
-    // al tocar el campo: elegir todo (para escribir encima) y, si "Hasta" está vacío, mostrar los recientes
-    campo.addEventListener('focus', function () {
-      if (/^Mi ubicación$|^Punto en el mapa/.test(campo.value)) campo.select();
-      if (cual === 'hasta' && !campo.value.trim()) mostrarRecientes();
-    });
+    prepararCampo(cual);
   });
+  if (document.getElementById('agregar-parada')) document.getElementById('agregar-parada').addEventListener('click', agregarParada);
   var bCalcular = document.getElementById('calcular-ruta');
   if (bCalcular) bCalcular.addEventListener('click', calcularRuta);
   document.getElementById('borrar-ruta').addEventListener('click', cancelarRuta);
@@ -2323,13 +2399,15 @@ function calcularRuta() {
   var numero = ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;
   var desde = ruta.desde.latlng, hasta = ruta.hasta.latlng;
   var largo = desde.distanceTo(hasta) / 1000 > VIAJE_LARGO_KM;
+  var paradas = paradasElegidas();
 
-  (largo ? cargarZonasEnRutas([[[desde.lat, desde.lng]], [[hasta.lat, hasta.lng]]])
-         : cargarZonasEn(L.latLngBounds([desde, hasta]).pad(0.1)))
+  (paradas.length ? calcularConParadas([ruta.desde].concat(paradas, [ruta.hasta]), salida)
+   : (largo ? cargarZonasEnRutas([[[desde.lat, desde.lng]], [[hasta.lat, hasta.lng]]])
+            : cargarZonasEn(L.latLngBounds([desde, hasta]).pad(0.1)))
     .then(function () {
       if (!largo) return calcularTramo(desde, hasta, salida, true);
       return calcularViajeLargo(desde, hasta, salida);
-    })
+    }))
     .then(function (caminos) {
       if (numero !== ruta.numeroCalculo) return;   // hay un cálculo más nuevo: este ya no sirve
       ruta.opciones = elegirOpciones(caminos);
@@ -2347,6 +2425,59 @@ function calcularRuta() {
     ruta.alTerminarCalculo = null;
     if (f) f(ok);
   }
+}
+
+// Ruta que pasa por lugares elegidos: una parte por vez (así no se le pide todo junto al servicio de rutas)
+function calcularConParadas(puntos, salida) {
+  var partes = [], n = puntos.length - 1, cadena = Promise.resolve();
+  puntos.slice(0, -1).forEach(function (a, k) {
+    var b = puntos[k + 1];
+    cadena = cadena.then(function () {
+      var titulo = 'Parte ' + (k + 1) + ' de ' + n + ': ' + a.nombre.split(',')[0] + ' → ' + b.nombre.split(',')[0];
+      // los mensajes de cada parte ("Viaje largo: ...") van debajo del título
+      var sub = { set innerHTML(h) { salida.innerHTML = '<p class="ruta-cargando"><b>' + esc(titulo) + '</b></p>' + h; } };
+      sub.innerHTML = '<p class="ruta-cargando">Buscando el camino...</p>';
+      return mejorCaminoEntre(a.latlng, b.latlng, sub).then(function (c) { partes.push(c); });
+    });
+  });
+  return cadena.then(function () { return [unirPartes(partes)]; });
+}
+function mejorCaminoEntre(a, b, salida) {
+  if (a.distanceTo(b) / 1000 > VIAJE_LARGO_KM) {
+    return cargarZonasEnRutas([[[a.lat, a.lng]], [[b.lat, b.lng]]])
+      .then(function () { return calcularViajeLargo(a, b, salida); })
+      .then(function (cs) { return cs[0]; });
+  }
+  return cargarZonasEn(L.latLngBounds([a, b]).pad(0.1))
+    .then(function () { return calcularTramo(a, b, salida, false); })
+    .then(function (cs) { return elegirOpciones(cs)[0]; });
+}
+function unirPartes(partes) {
+  var c = { puntos: [], pasos: [], km: 0, segundos: 0, vueltas: 0, kmChicas: 0, esquivados: 0, servicio: '', largo: true };
+  partes.forEach(function (p, k) {
+    var base = c.puntos.length;
+    // sin el "llegaste" de cada lugar intermedio; la parte siguiente no "sale", sigue
+    var pasos = k === partes.length - 1 ? p.pasos : p.pasos.slice(0, -1);
+    pasos.forEach(function (s, j) {
+      c.pasos.push(Object.assign({}, s, {
+        ini: s.ini == null ? null : s.ini + base,
+        texto: k > 0 && j === 0 ? String(s.texto).replace(/^Sal[ií] /, 'Seguí ') : s.texto
+      }));
+    });
+    c.puntos = c.puntos.concat(p.puntos);
+    c.km += p.km;
+    c.segundos += p.segundos;
+    c.vueltas += p.vueltas || 0;
+    c.kmChicas = c.kmChicas == null || p.kmChicas == null ? null : c.kmChicas + p.kmChicas;
+    c.esquivados += p.esquivados || 0;
+    String(p.servicio || '').split(' y ').forEach(function (sv) {
+      if (sv && c.servicio.indexOf(sv) === -1) c.servicio += (c.servicio ? ' y ' : '') + sv;
+    });
+  });
+  c.avisos = revisarRuta(c.puntos, c.pasos);
+  c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
+  c.sinRevisar = zonasSinCargarEnRutas([c.puntos]);
+  return c;
 }
 
 // Pide el camino entre a y b (hasta 3 opciones)
@@ -2751,6 +2882,7 @@ function anularRutaCalculada() {
 function borrarRuta() {
   quitarLineasRuta();
   ruta.opciones = null;
+  ruta.paradas.slice().forEach(function (c) { sacarParada(c, true); });
   ['desde', 'hasta'].forEach(function (cual) {
     if (ruta.marcas[cual]) ruta.marcas[cual].remove();
     ruta.marcas[cual] = null; ruta[cual] = null;
@@ -3844,6 +3976,7 @@ function recalcularDesde(pos) {
   nav.ultimoRecalculo = Date.now();
   mostrarCartelNav('Recalculando...', 'Te saliste de la ruta. Busco otra desde donde estás.');
   hablar('Recalculando la ruta.', true);
+  marcarParadasPasadas(pos);
   ponerPunto('desde', pos, 'Mi ubicación');
   ruta.alTerminarCalculo = function (ok) {
     nav.recalculando = false;

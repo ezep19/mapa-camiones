@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v7';
+var VERSION = 'v8';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;
@@ -59,7 +59,10 @@ function primeroInternet(pedido) {
   return new Promise(function (resolver) {
     var listo = false;
     function dar(r) { if (!listo && r) { listo = true; resolver(r); } }
-    var red = fetch(pedido).then(function (resp) {
+    // cache: 'no-cache' = preguntar siempre al servidor si hay algo nuevo (GitHub Pages deja guardar la página
+    // 10 minutos: sin esto, después de publicar, el celular seguía mostrando la versión anterior un rato)
+    var red = fetch(pedido.mode === 'navigate' ? new Request(pedido.url, { cache: 'no-cache', credentials: 'same-origin' })
+                                               : new Request(pedido, { cache: 'no-cache' })).then(function (resp) {
       if (resp && resp.ok) {
         var copia = resp.clone();
         caches.open(CACHE_APP).then(function (c) { c.put(pedido, copia); });

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 49;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 50;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -100,6 +100,15 @@ var gl = new maplibregl.Map({
   pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
 });
 gl.touchZoomRotate.enable();   // dos dedos: acercar y girar (lo de MapLibre, como Google Maps)
+// Si cambia el tamaño de la pantalla (la barra del iPhone que aparece y desaparece, girar el teléfono), el mapa se
+// acomoda (MapLibre lo hace solo, pero en algunos casos quedaba una franja vacía abajo)
+(function () {
+  var t = null;
+  function acomodar() { clearTimeout(t); t = setTimeout(function () { gl.resize(); }, 60); }
+  window.addEventListener('resize', acomodar);
+  window.addEventListener('orientationchange', acomodar);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', acomodar);
+})();
 var PUEDE_GIRAR = true;
 var fondo = { tipo: null };
 
@@ -3154,6 +3163,7 @@ function empezarNavegacion(rutaElegida) {
                             (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
   });
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
+  volverACentrar(false);
   abrirPanelRuta(false);
   abrirPanel(false);
   document.getElementById('nav-cartel').hidden = false;
@@ -3177,6 +3187,7 @@ function empezarNavegacion(rutaElegida) {
 }
 
 function terminarNavegacion(mensaje) {
+  volverACentrar(false);
   nav.activo = false;
   girarA(0);   // al terminar, el norte vuelve arriba
   ponerBrujula();
@@ -3315,9 +3326,11 @@ function seguirNavegacion(pos) {
 // La cámara sigue al camión: en un solo movimiento suave se corre y (con "rumbo arriba") gira hacia donde vas.
 // El camión queda más abajo del centro, así se ve más de lo que viene (como Google Maps).
 function seguirConCamara(pos) {
+  if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")
   var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; },
             offset: [0, Math.round(gl.getContainer().clientHeight * 0.18)] };
   if (nav.rumbo && nav.ultimoRumbo != null) o.bearing = nav.ultimoRumbo;
+  if (gl.getZoom() < 15) o.zoom = 16;   // manejando, de cerca (como Google Maps); si acercaste más, queda así
   gl.easeTo(o);
 }
 
@@ -3485,4 +3498,37 @@ gl.on('click', function (e) {
   });
   var l = restrPorId[r[0].properties.id];
   if (l) abrirCartelRestriccion(l, l.getLatLng ? l.getLatLng() : aLatLng(e.lngLat));
+});
+
+// ===== Navegando: si el chofer mueve el mapa con el dedo, deja de seguirlo y aparece "Centrar" (como Google Maps).
+// Tocarlo (o esperar 12 s sin tocar el mapa) vuelve a seguir al camión.
+var botonCentrar = document.createElement('button');
+botonCentrar.type = 'button';
+botonCentrar.className = 'boton-centrar';
+botonCentrar.hidden = true;
+botonCentrar.innerHTML = '<span aria-hidden="true">➤</span> Centrar';
+document.body.appendChild(botonCentrar);
+botonCentrar.addEventListener('click', function () { volverACentrar(true); });
+function volverACentrar(mover) {
+  clearTimeout(nav.timerLibre);
+  nav.libre = false;
+  botonCentrar.hidden = true;
+  if (mover && nav.activo && nav.ultimaPos) seguirConCamara(nav.ultimaPos);
+}
+function soltarCamara(e) {
+  if (!nav.activo || !e || !e.originalEvent) return;   // solo si lo movió el chofer (no la cámara sola)
+  nav.libre = true;
+  botonCentrar.hidden = false;
+  clearTimeout(nav.timerLibre);
+  nav.timerLibre = setTimeout(function () { volverACentrar(true); }, 12000);
+}
+gl.on('dragstart', soltarCamara);
+gl.on('zoomstart', soltarCamara);
+gl.on('rotatestart', soltarCamara);
+// mientras sigue tocando el mapa, se corre la espera
+gl.on('moveend', function (e) {
+  if (nav.libre && e && e.originalEvent) {
+    clearTimeout(nav.timerLibre);
+    nav.timerLibre = setTimeout(function () { volverACentrar(true); }, 12000);
+  }
 });

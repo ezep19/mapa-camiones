@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 47;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 48;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3042,20 +3042,44 @@ function hablar(texto, urgente) {
   decirFrase(texto, urgente, function (ok, detalle) { if (!ok) avisarVozFalla(detalle); });
 }
 // Botón "Probar la voz": habla y muestra qué pasó (sirve para saber por qué no habla en un teléfono)
+// Un pitido corto: si se escucha el pitido pero no la voz, el sonido anda y lo que falla es la voz del teléfono
+function pitido() {
+  try {
+    var C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return false;
+    var ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.5, ctx.currentTime + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + 0.55);
+    setTimeout(function () { try { ctx.close(); } catch (e) { /* nada */ } }, 1200);
+    return true;
+  } catch (e) { return false; }
+}
 function probarVoz() {
+  var hubo = pitido();
   if (!hayVoz()) { mostrarMensaje('🔇 ' + textoSinVoz(), true); return; }
   var voces = vocesDelTelefono(), es = voces.filter(function (x) { return /^es/i.test(x.lang); });
-  mostrarMensaje('🔊 Probando la voz...');
+  mostrarMensaje('🔊 Primero suena un pitido y después habla la voz...');
+  setTimeout(function () { probarVoz2(voces, es, hubo); }, 900);
+}
+function probarVoz2(voces, es, hubo) {
   decirFrase('Hola. Soy la voz del mapa para camiones. Si me escuchás, la voz anda bien.', true, function (ok, detalle) {
-    var datos = ' (voces en español: ' + es.length + ' de ' + voces.length + (detalle && ok ? '; modo ' + detalle : '') + ')';
+    var datos = ' (voces en español: ' + es.length + ' de ' + voces.length + (detalle && ok ? '; modo ' + detalle : '') +
+                (hubo ? '' : '; sin pitido') + ')';
     if (ok) {
-      mostrarMensaje('✓ El teléfono está hablando. Si no escuchaste nada, subí el volumen "multimedia" (el de la música).' + datos);
+      mostrarMensaje('✓ El teléfono dice que está hablando' + datos + '. ¿Escuchaste el pitido? Si no escuchaste NADA: subí el ' +
+                     'volumen "multimedia" y fijate si el sonido se va a un parlante Bluetooth (el del camión o auriculares). ' +
+                     'Si escuchaste el pitido pero no la voz: Ajustes del teléfono → "Texto a voz" → elegí ' +
+                     '"Servicios de voz de Google" e instalá Español.');
       if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
     } else {
       mostrarMensaje('🔇 El teléfono no habló' + (detalle ? ' (error: ' + detalle + ')' : '') + datos +
                      '. Revisá en Ajustes del teléfono → "Texto a voz" que haya una voz en español instalada.', true);
     }
-    setTimeout(ocultarMensaje, 15000);
+    setTimeout(ocultarMensaje, 30000);
   });
 }
 

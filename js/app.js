@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 66;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 67;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -98,7 +98,7 @@ var ESTILO_RESPALDO = { version: 8, sources: { osm: { type: 'raster', tiles: ['h
 var gl = new maplibregl.Map({
   container: 'mapa', style: ESTILO_VACIO,
   center: [inicioMapa[1], inicioMapa[0]], zoom: zoomInicio - 1, minZoom: 3, maxZoom: 18,
-  maxPitch: 0, pitchWithRotate: false, touchPitch: false, dragRotate: true,
+  maxPitch: 60, pitchWithRotate: false, touchPitch: false, dragRotate: true,
   attributionControl: false, fadeDuration: 0,
   // pantallas de 3x: se dibuja a 2x (casi igual de nítido y mucho menos trabajo para el teléfono)
   pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
@@ -2155,7 +2155,8 @@ mapa.on('locationfound', function (e) {
   if (!ubicacion.punto) {
     var el = document.createElement('div');
     el.className = 'punto-ubicacion';
-    ubicacion.punto = new maplibregl.Marker({ element: el }).setLngLat([e.latlng.lng, e.latlng.lat]).addTo(gl);
+    ubicacion.punto = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
+      .setLngLat([e.latlng.lng, e.latlng.lat]).addTo(gl);
   } else ubicacion.punto.setLngLat([e.latlng.lng, e.latlng.lat]);
   ponerDatos('precision', e.accuracy ? [circuloGeo(e.latlng, e.accuracy)] : []);
   if (primera) {
@@ -2184,6 +2185,7 @@ mapa.on('locationfound', function (e) {
   var kmh = v * 3.6;
   if (kmh > 200) return;   // salto del GPS
   if (kmh < 3) kmh = 0;
+  velocidad.kmh = kmh;
   el.querySelector('b').textContent = Math.round(kmh);
   el.classList.toggle('rapido', kmh > 80.5);
   el.hidden = false;
@@ -3661,18 +3663,26 @@ var NAV = {
 
 try { nav.voz = leerGuardado('mapa-camiones:voz') !== false; } catch (e) { /* sin guardar */ }
 // "Rumbo arriba": al manejar, el mapa gira para que lo de adelante quede arriba (como los GPS)
-nav.rumbo = PUEDE_GIRAR && leerGuardado('mapa-camiones:rumbo') !== false;
+// v67: "rumbo2" = de nuevo girando hacia donde vas para todos (como Google Maps); el botón 🧭 lo cambia
+nav.rumbo = PUEDE_GIRAR && leerGuardado('mapa-camiones:rumbo2') !== false;
 
 // Hacia dónde va la ruta en este punto (grados desde el norte), mirando ~40 m hacia adelante
 function rumboEnRuta(u) {
-  var pts = nav.r.puntos, a = L.latLng(pts[u.idx]), j = u.idx + 1;
-  while (j < pts.length - 1 && a.distanceTo(pts[j]) < 40) j++;
-  var b = L.latLng(pts[Math.min(j, pts.length - 1)]);
+  // desde donde estás sobre la ruta (no desde el principio del tramo: justo en una esquina miraba para atrás)
+  var a = puntoEnRuta(u.recorrido != null ? u.recorrido : nav.acum[u.idx]), b = puntoEnRuta((u.recorrido != null ? u.recorrido : nav.acum[u.idx]) + 40);
   return Math.atan2((b.lng - a.lng) * Math.cos(a.lat * Math.PI / 180), b.lat - a.lat) * 180 / Math.PI;
+}
+// El punto de la ruta a tantos metros de la salida
+function puntoEnRuta(m) {
+  var pts = nav.r.puntos, ac = nav.acum, i = 1;
+  if (m <= 0) return L.latLng(pts[0]);
+  while (i < pts.length - 1 && ac[i] < m) i++;
+  var t = Math.max(0, Math.min(1, (m - ac[i - 1]) / ((ac[i] - ac[i - 1]) || 1)));
+  return L.latLng(pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t);
 }
 function cambiarRumbo(prender) {
   nav.rumbo = PUEDE_GIRAR && prender;
-  guardar('mapa-camiones:rumbo', nav.rumbo);
+  guardar('mapa-camiones:rumbo2', nav.rumbo);
   ponerRumboBoton();
   if (!nav.rumbo) girarA(0);
   else if (nav.activo && nav.ultimaPos) { nav.ultimoRumbo = null; seguirNavegacion(nav.ultimaPos); }
@@ -4079,6 +4089,7 @@ function empezarNavegacion(rutaElegida) {
                             (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
   });
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
+  nav.primeraCamara = !ruta.esRecalculo;
   volverACentrar(false);
   abrirPanelRuta(false);
   abrirPanel(false);
@@ -4104,13 +4115,22 @@ function empezarNavegacion(rutaElegida) {
   // si el GPS ya estaba andando, la cámara de navegación se acomoda sola (antes tocarUbicacion() la cortaba:
   // quedaba con el norte arriba y más lejos); si no, se prende el GPS
   if (ubicacion.ultima) seguirNavegacion(ubicacion.ultima);
-  else tocarUbicacion();
+  else {
+    // sin GPS todavía: la cámara de viaje se pone en la salida, mirando hacia donde arranca la ruta
+    if (nav.primeraCamara && r.puntos.length > 1) {
+      nav.ultimoRumbo = rumboEnRuta({ idx: 0 });
+      seguirConCamara(L.latLng(r.puntos[0]));
+      nav.primeraCamara = true;   // cuando llegue el GPS, se vuelve a acomodar suave
+    }
+    tocarUbicacion();
+  }
 }
 
 function terminarNavegacion(mensaje) {
   volverACentrar(false);
   nav.activo = false;
-  girarA(0);   // al terminar, el norte vuelve arriba
+  gl.easeTo({ bearing: 0, pitch: 0, duration: 600 });   // al terminar: mapa derecho y el norte arriba
+  if (ubicacion.punto) ubicacion.punto.setRotation(0);
   ponerBrujula();
   nav.recalculando = false;
   ruta.alTerminarCalculo = null;   // si estaba recalculando, al terminar no vuelve a arrancar sola
@@ -4195,13 +4215,13 @@ function seguirNavegacion(pos) {
     if (nav.fuera >= NAV.FUERA_VECES && Date.now() - nav.ultimoRecalculo > NAV.RECALCULO_CADA_S * 1000) recalcularDesde(pos);
     else mostrarCartelNav('Fuera de la ruta', 'Volvé a la ruta azul o esperá: la recalculo en unos segundos.', txtP);
     // fuera de la ruta el mapa sigue al camión, mirando hacia donde va (según el GPS)
-    if (nav.rumbo && rumboGps != null) nav.ultimoRumbo = rumboGps;
+    if (rumboGps != null) nav.ultimoRumbo = rumboGps;
     seguirConCamara(pos);
     return;
   }
   nav.fuera = 0;
   nav.idx = u.idx;
-  if (nav.rumbo) {
+  if (true) {
     var rumbo = rumboEnRuta(u);
     // solo si cambió algo (si no, el mapa tiembla con cada lectura del GPS)
     if (nav.ultimoRumbo == null || Math.abs((((rumbo - nav.ultimoRumbo) % 360) + 540) % 360 - 180) > 4) {
@@ -4264,13 +4284,30 @@ function seguirNavegacion(pos) {
 
 // La cámara sigue al camión: en un solo movimiento suave se corre y (con "rumbo arriba") gira hacia donde vas.
 // El camión queda más abajo del centro, así se ve más de lo que viene (como Google Maps).
+// "Modo viaje" (pedido del chofer, 20/11/2026: "que se acerque y se ponga como navegador, como hace Maps"):
+// mapa inclinado (VIAJE.inclinacion), de cerca, girando hacia donde vas y con una flecha en vez del punto azul.
+// El zoom depende de la velocidad: en la ciudad más cerca, en la ruta un poco más lejos para ver lo que viene.
+var VIAJE = { inclinacion: 50 };
+function zoomDeViaje() {
+  var kmh = velocidad.kmh;
+  if (kmh == null || kmh < 35) return 17;
+  return kmh < 70 ? 16.4 : 15.8;
+}
 function seguirConCamara(pos) {
+  if (ubicacion.punto && nav.ultimoRumbo != null) ubicacion.punto.setRotation(nav.ultimoRumbo);   // la flecha
   if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")
-  var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; },
-            offset: [0, Math.round(gl.getContainer().clientHeight * 0.18)] };
+  var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; }, pitch: VIAJE.inclinacion,
+            offset: [0, Math.round(gl.getContainer().clientHeight * 0.22)] };
   // siempre se dice el giro: con "rumbo arriba" apagado, 0 (si no, un giro al norte a medias quedaba torcido)
   o.bearing = nav.rumbo ? (nav.ultimoRumbo != null ? nav.ultimoRumbo : gl.getBearing()) : 0;
-  if (gl.getZoom() < 15) o.zoom = 16;   // manejando, de cerca (como Google Maps); si acercaste más, queda así
+  var z = zoomDeViaje();
+  if (Math.abs(gl.getZoom() - z) > 0.25) o.zoom = z;
+  if (nav.primeraCamara) {   // al tocar "Ir": se acerca de a poco (como Google Maps)
+    nav.primeraCamara = false;
+    o.duration = 1600;
+    delete o.easing;
+    o.zoom = z;
+  }
   gl.easeTo(o);
 }
 

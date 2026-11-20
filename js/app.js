@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 51;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 52;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -261,11 +261,21 @@ function cerrarCartel() { if (cartel) { var c = cartel; cartel = null; c.remove(
 function abrirCartel(latlng, contenido) {
   cerrarCartel();
   latlng = L.latLng(latlng);
-  var c = new maplibregl.Popup({ maxWidth: '300px', focusAfterOpen: false, offset: 10 }).setLngLat([latlng.lng, latlng.lat]);
+  // closeOnClick: false = el cartel lo cierra nuestro manejador de toques (al final del archivo). Si lo cerraba
+  // MapLibre solo, en el iPhone el menú del dedo apretado se podía cerrar apenas se levantaba el dedo.
+  var c = new maplibregl.Popup({ maxWidth: '300px', focusAfterOpen: false, offset: 10, closeOnClick: false }).setLngLat([latlng.lng, latlng.lat]);
   if (typeof contenido === 'string') c.setHTML(contenido); else c.setDOMContent(contenido);
   c.on('close', function () { if (cartel === c) cartel = null; });
   cartel = c;
   c.addTo(gl);
+  // como Leaflet: si el cartel queda tapado arriba (barra de búsqueda) o se sale por abajo, se corre el mapa
+  setTimeout(function () {
+    if (cartel !== c || !c.getElement()) return;
+    var r = c.getElement().getBoundingClientRect(), alto = gl.getContainer().clientHeight, arriba = 76, abajo = 16, dy = 0;
+    if (r.bottom > alto - abajo) dy = r.bottom - (alto - abajo);
+    if (r.top - dy < arriba) dy = r.top - arriba;
+    if (Math.abs(dy) > 4) gl.panBy([0, dy], { duration: 250 });
+  }, 0);
   return c;
 }
 
@@ -3256,8 +3266,10 @@ function empezarNavegacion(rutaElegida) {
   } else if (!ruta.esRecalculo && !hayVoz()) avisarVozFalla();
   ruta.esRecalculo = false;
   pedirPantallaPrendida();
+  // si el GPS ya estaba andando, la cámara de navegación se acomoda sola (antes tocarUbicacion() la cortaba:
+  // quedaba con el norte arriba y más lejos); si no, se prende el GPS
   if (ubicacion.ultima) seguirNavegacion(ubicacion.ultima);
-  tocarUbicacion();   // empieza a seguir el GPS (si ya estaba, centra)
+  else tocarUbicacion();
 }
 
 function terminarNavegacion(mensaje) {
@@ -3313,7 +3325,9 @@ function ubicarEnRuta(pos) {
 }
 
 function seguirNavegacion(pos) {
-  if (!nav.activo || nav.recalculando) return;
+  if (!nav.activo) return;
+  // mientras se recalcula, el mapa sigue al camión igual (si no, se iba de la pantalla justo cuando te perdiste)
+  if (nav.recalculando) { nav.ultimaPos = pos; seguirConCamara(pos); return; }
   nav.ultimaPos = pos;
   var u = ubicarEnRuta(pos);
   // ¿Te saliste de la ruta?
@@ -3335,6 +3349,9 @@ function seguirNavegacion(pos) {
     }
     if (nav.fuera >= NAV.FUERA_VECES && Date.now() - nav.ultimoRecalculo > NAV.RECALCULO_CADA_S * 1000) recalcularDesde(pos);
     else mostrarCartelNav('Fuera de la ruta', 'Volvé a la ruta azul o esperá: la recalculo en unos segundos.', txtP);
+    // fuera de la ruta el mapa sigue al camión, mirando hacia donde va (según el GPS)
+    if (nav.rumbo && rumboGps != null) nav.ultimoRumbo = rumboGps;
+    seguirConCamara(pos);
     return;
   }
   nav.fuera = 0;
@@ -3403,7 +3420,8 @@ function seguirConCamara(pos) {
   if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")
   var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; },
             offset: [0, Math.round(gl.getContainer().clientHeight * 0.18)] };
-  if (nav.rumbo && nav.ultimoRumbo != null) o.bearing = nav.ultimoRumbo;
+  // siempre se dice el giro: con "rumbo arriba" apagado, 0 (si no, un giro al norte a medias quedaba torcido)
+  o.bearing = nav.rumbo ? (nav.ultimoRumbo != null ? nav.ultimoRumbo : gl.getBearing()) : 0;
   if (gl.getZoom() < 15) o.zoom = 16;   // manejando, de cerca (como Google Maps); si acercaste más, queda así
   gl.easeTo(o);
 }
@@ -3551,6 +3569,7 @@ window.addEventListener('online', function () {
 gl.on('click', function (e) {
   if (Date.now() - menuToque.ultimo < 800) return;   // fue un dedo apretado: ya se abrió su cartel
   if (e._l && e._l.tomado) return;
+  var habiaCartel = !!cartel;
   var pt = e.point;
   function buscar(capas, t) {
     var hay = capas.filter(function (id) { return gl.getLayer(id); });
@@ -3564,8 +3583,13 @@ gl.on('click', function (e) {
     else if (q.k === 'r' && reportePorId[q.id]) abrirCartel(reportePorId[q.id].getLatLng(), armarCartelReporte(reportePorId[q.id].feature.properties));
     return;
   }
-  var r = buscar(['r-puntos', 'r-sin-salida', 'r-rojo', 'r-amarillo', 'r-amarillo-punteado', 'r-gris', 'r-zona-borde', 'r-zona'], 14);
-  if (!r.length) return;
+  // las zonas prohibidas (polígonos) van al final: si no, adentro de una zona cualquier toque abría la zona
+  // y no se podían abrir las calles ni los puntos que hay adentro
+  var r = buscar(['r-puntos', 'r-sin-salida', 'r-rojo', 'r-amarillo', 'r-amarillo-punteado', 'r-gris'], 14);
+  if (!r.length) r = buscar(['r-zona-borde'], 14);
+  // tocar adentro de la zona (sin nada más cerca) abre la zona, salvo que haya un cartel abierto: ese toque es para cerrarlo
+  if (!r.length && !habiaCartel) r = buscar(['r-zona'], 2);
+  if (!r.length) { cerrarCartel(); return; }   // tocar donde no hay nada: cierra el cartel abierto
   var orden = { no: 0, sin_dato: 1, si: 2, aviso: 3 };
   r.sort(function (a, b) {
     return (orden[a.properties.e] - orden[b.properties.e]) || ((a.layer.type === 'circle' ? 0 : 1) - (b.layer.type === 'circle' ? 0 : 1));

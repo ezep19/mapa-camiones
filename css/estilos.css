@@ -710,3 +710,6 @@ body.navegando .boton-zoom { display: none; }
 
 /* Con el panel de ruta arriba (escribiendo), los mensajes van abajo para no tapar los casilleros */
 body.ruta-escribiendo .mensaje { top: auto; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 12px); }
+
+/* Carteles largos (zona prohibida, lugares con muchos datos): no más altos que la pantalla, se desplazan adentro */
+.maplibregl-popup-content { max-height: calc(100vh - 110px); max-height: calc(100dvh - 110px); overflow-y: auto; -webkit-overflow-scrolling: touch; }

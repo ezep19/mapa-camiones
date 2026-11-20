@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 62;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 63;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2278,7 +2278,7 @@ function sugerir(cual, inmediato) {
     if (cual === 'hasta' && !texto) mostrarRecientes(); else lista.hidden = true;
     return;
   }
-  sugerencia.timer = setTimeout(function () { buscarPhoton(cual, texto, inmediato); }, inmediato ? 0 : 350);
+  sugerencia.timer = setTimeout(function () { buscarPhoton(cual, texto, inmediato); }, inmediato ? 0 : 250);
 }
 
 function etiquetaPhoton(p) {
@@ -2523,18 +2523,22 @@ function calcularRuta() {
 
 // Ruta que pasa por lugares elegidos: una parte por vez (así no se le pide todo junto al servicio de rutas)
 function calcularConParadas(puntos, salida) {
-  var partes = [], n = puntos.length - 1, cadena = Promise.resolve();
-  puntos.slice(0, -1).forEach(function (a, k) {
-    var b = puntos[k + 1];
-    cadena = cadena.then(function () {
-      var titulo = 'Parte ' + (k + 1) + ' de ' + n + ': ' + a.nombre.split(',')[0] + ' → ' + b.nombre.split(',')[0];
-      // los mensajes de cada parte ("Viaje largo: ...") van debajo del título
-      var sub = { set innerHTML(h) { salida.innerHTML = '<p class="ruta-cargando"><b>' + esc(titulo) + '</b></p>' + h; } };
-      sub.innerHTML = '<p class="ruta-cargando">Buscando el camino...</p>';
-      return mejorCaminoEntre(a.latlng, b.latlng, sub).then(function (c) { partes.push(c); });
+  var n = puntos.length - 1, listas = 0;
+  salida.innerHTML = '<p class="ruta-cargando">Buscando el camino (' + n + ' partes)...</p>';
+  // de a 2 partes a la vez (antes, una por una: tardaba mucho más; todas juntas pasan el límite de pedidos por
+  // minuto de OpenRouteService y caen al servicio de respaldo, que elige peor)
+  var partes = [], siguiente = 0;
+  function trabajar() {
+    var k = siguiente++;
+    if (k >= n) return Promise.resolve();
+    return mejorCaminoEntre(puntos[k].latlng, puntos[k + 1].latlng, {}).then(function (c) {
+      partes[k] = c;
+      listas++;
+      salida.innerHTML = '<p class="ruta-cargando">Buscando el camino: ' + listas + ' de ' + n + ' partes listas...</p>';
+      return trabajar();
     });
-  });
-  return cadena.then(function () { return [unirPartes(partes)]; });
+  }
+  return Promise.all([trabajar(), trabajar()]).then(function () { return [unirPartes(partes)]; });
 }
 function mejorCaminoEntre(a, b, salida) {
   if (a.distanceTo(b) / 1000 > VIAJE_LARGO_KM) {
@@ -2611,12 +2615,10 @@ function zonasProhibidasEntre(a, b) {
 function calcularTramo(a, b, salida, conAlternativas) {
   var MAX_VUELTAS = 4;
   var inicio = zonasProhibidasEntre(a, b);
-  function vuelta(n, evitar, claves, anteriores) {
-    return pedirCaminos(a, b, evitar, conAlternativas).then(function (caminos) {
-      var listas = caminos.map(function (c) { return c.puntos; });
-      return Promise.all([cargarZonasEnRutas(listas), cargarCortesEn(listas), cargarPaisEnRutas(listas)])
-        .then(function () { return caminos; });
-    }).then(function (caminos) {
+  var ultimoEvitar = inicio.zonas;
+  function revisarCaminos(caminos) {
+    var listas = caminos.map(function (c) { return c.puntos; });
+    return Promise.all([cargarZonasEnRutas(listas), cargarCortesEn(listas), cargarPaisEnRutas(listas)]).then(function () {
       caminos.forEach(function (c) {
         c.avisos = revisarRuta(c.puntos, c.pasos);
         c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
@@ -2626,6 +2628,29 @@ function calcularTramo(a, b, salida, conAlternativas) {
         }).length;
         c.sinRevisar = zonasSinCargarEnRutas([c.puntos]);
       });
+      return caminos;
+    });
+  }
+  // Pedido del chofer (20/11/2026): "no mandar por calles de adentro, un camión grande no puede ir por ahí".
+  // Si el mejor camino usa calles de barrio en el MEDIO del viaje (no al salir ni al llegar, donde a veces no queda
+  // otra), se pide otra vez prohibiendo esas calles; queda el que tenga mejor puntaje (las calles de barrio pesan mucho).
+  function salirDeLosBarrios(caminos, vueltas) {
+    var mejor = elegirOpciones(caminos.slice())[0];
+    var cuadros = cuadradosCallesChicas(mejor);
+    if (!cuadros.length || vueltas >= 2) return caminos;
+    if (salida) salida.innerHTML = '<p class="ruta-cargando">El camino entraba por calles de barrio. Buscando uno por avenidas y rutas...</p>';
+    var clave = ruta.config && ruta.config.ors_clave;
+    if (!clave || (ruta.orsHasta && Date.now() < ruta.orsHasta)) return caminos;   // solo OpenRouteService dice qué calles son de barrio
+    ultimoEvitar = ultimoEvitar.concat(cuadros);
+    return rutaORS(clave, ultimoEvitar, !conAlternativas, a, b).then(function (nuevos) {
+      nuevos = nuevos.filter(function (c) { return c.chicas; });   // solo los que dicen por qué calles van
+      if (!nuevos.length) return caminos;
+      return revisarCaminos(nuevos).then(function (nuevos) { return salirDeLosBarrios(caminos.concat(nuevos), vueltas + 1); });
+    }, function () { return caminos; });
+  }
+  function vuelta(n, evitar, claves, anteriores) {
+    ultimoEvitar = evitar;
+    return pedirCaminos(a, b, evitar, conAlternativas).then(revisarCaminos).then(function (caminos) {
       var limpios = caminos.filter(function (c) { return !c.avisos.some(function (x) { return x.zonas && x.zonas.length; }); });
       if (limpios.length || n >= MAX_VUELTAS) return caminos;
       var nuevas = 0;
@@ -2650,7 +2675,7 @@ function calcularTramo(a, b, salida, conAlternativas) {
     });
   }
   var lugares = {};   // lugares (no zonas de ordenanza) que se pidió esquivar
-  return vuelta(1, inicio.zonas, inicio.claves, null);
+  return vuelta(1, inicio.zonas, inicio.claves, null).then(function (caminos) { return salirDeLosBarrios(caminos, 0); });
 }
 
 function calcularViajeLargo(desde, hasta, salida) {
@@ -2779,11 +2804,36 @@ function empalmar(c, iA, iB, nuevo, kmViejo) {
 // --- Elegir el camino más fácil para un camión ---
 // Puntaje en "minutos equivalentes" (más bajo = mejor):
 //   minutos del servicio
-//   + 3 por cada km por calles chicas (de barrio)
+//   + 12 por cada km por calles chicas (de barrio): 1 km por adentro "cuesta" como 12 minutos más de viaje
 //   + 0,7 por cada vuelta (giro a la derecha o a la izquierda)
 //   + 2 por cada km FUERA de la red de tránsito pesado, solo en las zonas que la tienen cargada
 //   + 1000 por cada lugar rojo que no se pudo esquivar
-var PUNTAJE = { kmCallesChicas: 3, vuelta: 0.7, kmFueraDeRed: 2, rojo: 1000 };
+var PUNTAJE = { kmCallesChicas: 12, vuelta: 0.7, kmFueraDeRed: 2, rojo: 1000 };
+
+// Cuadraditos para prohibir las calles de barrio del medio del camino (no los primeros ni los últimos 600 m).
+// Uno cada 100 m de calle, lejos de las puntas del tramo (ahí se cruza con la avenida, que no hay que tapar).
+function cuadradosCallesChicas(c) {
+  if (!c || !c.chicas || !c.chicas.length) return [];
+  var acum = [0];
+  for (var i = 1; i < c.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(c.puntos[i - 1]).distanceTo(c.puntos[i]));
+  var total = acum[acum.length - 1], res = [], metros = 0;
+  c.chicas.forEach(function (r) {
+    var ini = acum[r[0]], fin = acum[r[1]];
+    // la calle de barrio por la que se sale o se llega no se toca (a veces es la única: un puerto, un depósito)
+    if (ini < 600 || fin > total - 600) return;
+    var desde = ini, hasta = fin;
+    if (hasta - desde < 60) return;
+    metros += hasta - desde;
+    for (var d = desde + 35; d <= hasta - 35; d += 100) {
+      var j = r[0];
+      while (j < r[1] && acum[j + 1] < d) j++;
+      var t = (d - acum[j]) / ((acum[j + 1] - acum[j]) || 1);
+      var p = L.latLng(c.puntos[j][0] + (c.puntos[j + 1][0] - c.puntos[j][0]) * t, c.puntos[j][1] + (c.puntos[j + 1][1] - c.puntos[j][1]) * t);
+      res.push(cuadrado(p, 12));
+    }
+  });
+  return metros >= 200 ? res.slice(0, 60) : [];
+}
 
 function elegirOpciones(caminos) {
   caminos.forEach(function (c) {
@@ -2868,17 +2918,18 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
             if (esVuelta) vueltas++;
           });
         });
-        var c = f.geometry.coordinates, kmChicas = 0;
+        var c = f.geometry.coordinates, kmChicas = 0, chicas = [];
         var tipos = f.properties.extras && f.properties.extras.waytype;
         if (tipos) tipos.values.forEach(function (v) {   // [desde, hasta, tipo]; tipo 3 = "Street" (calle de barrio)
           if (v[2] !== 3) return;
+          chicas.push([v[0], v[1]]);
           for (var i = v[0] + 1; i <= v[1]; i++) kmChicas += L.latLng(c[i - 1][1], c[i - 1][0]).distanceTo([c[i][1], c[i][0]]) / 1000;
         });
         return {
           servicio: 'OpenRouteService',
           puntos: c.map(function (p) { return [p[1], p[0]]; }),
           km: f.properties.summary.distance, segundos: f.properties.summary.duration,
-          pasos: pasos, vueltas: vueltas, kmChicas: kmChicas
+          pasos: pasos, vueltas: vueltas, kmChicas: kmChicas, chicas: tipos ? chicas : null
         };
       });
     });
@@ -3259,7 +3310,7 @@ function revisarRuta(puntosRuta, pasos) {
         if (primero < 0) return;
         var extremoAdentro = [desde, hasta].some(function (x) { return x && dentroDeAnillo([x.lng, x.lat], anillo); });
         var clave = 'zona#' + L.stamp(l);
-        agregar({ texto: texto + (extremoAdentro ? ' (tu salida o llegada está adentro: necesitás permiso municipal)' : ''),
+        agregar({ texto: texto + (extremoAdentro ? (p.largo_desde ? ' (tu salida o llegada está adentro: con tu camión no entrás, buscá dónde dejarlo afuera)' : ' (tu salida o llegada está adentro: necesitás permiso municipal)') : ''),
                   latlng: L.latLng(puntosRuta[primero]), orden: primero,   // donde la ruta ENTRA a la zona
                   clave: clave, zonas: esquivar && !extremoAdentro ? [anillo] : null, zonasClaves: [clave] });
         return;

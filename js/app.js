@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 77;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 78;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -161,18 +161,22 @@ function esDeNoche() {
   return !deDia;
 }
 function ponerFondo() {
-  var listo = false, oscuro = esDeNoche();
+  var listo = false, oscuro = esDeNoche(), pedido = fondo.pedido = (fondo.pedido || 0) + 1;
+  function vigente() { return !listo && pedido === fondo.pedido; }   // si se pidió otro después, este no va
   function respaldo() {
-    if (listo) return; listo = true;
+    if (!vigente()) return; listo = true;
     if (fondo.tipo === 'vectorial') return;   // ya había un mapa: queda ese
     fondo.tipo = 'osm'; gl.setStyle(ESTILO_RESPALDO);
   }
+  function bajar(url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error('estilo ' + r.status); return r.json(); }); }
   var espera = setTimeout(respaldo, 10000);
-  fetch(oscuro ? ESTILO_NOCHE : ESTILO_FONDO).then(function (r) {
-    if (!r.ok) throw new Error('estilo ' + r.status);
-    return r.json();
+  // de noche sin señal (el estilo oscuro nunca se guardó): el claro, que sí está guardado
+  bajar(oscuro ? ESTILO_NOCHE : ESTILO_FONDO).catch(function (e) {
+    if (!oscuro) throw e;
+    oscuro = false;
+    return bajar(ESTILO_FONDO);
   }).then(function (est) {
-    if (listo) return;
+    if (!vigente()) return;
     listo = true;
     clearTimeout(espera);
     fondo.tipo = 'vectorial';
@@ -184,7 +188,8 @@ function ponerFondo() {
 ponerFondo();
 // cada 5 minutos (y al cambiar la opción) se fija si hay que pasar de día a noche o al revés
 function revisarNoche() {
-  if (fondo.tipo !== 'vectorial' || !!fondo.oscuro === esDeNoche()) return;
+  // (si quedó el mapa de respaldo de OSM, se vuelve a probar el vectorial)
+  if (fondo.tipo === 'vectorial' && !!fondo.oscuro === esDeNoche()) return;
   ponerFondo();
 }
 setInterval(revisarNoche, 5 * 60 * 1000);
@@ -2824,10 +2829,19 @@ function calcularRuta() {
       ruta.opciones = elegirOpciones(caminos);
       mostrarRuta(0, !!ruta.alTerminarCalculo);
       terminoCalculo(true);
+      // v78: los lugares de las ciudades del camino llegan después (para no demorar la ruta) y se rearma la lista
+      var elegida = ruta.opciones[0], faltan = zonasEnRutas([elegida.puntos]).filter(function (z) { return !zonasExtras[z.id]; });
+      if (faltan.length) Promise.all(faltan.map(cargarZona)).then(function () {
+        if (numero === ruta.numeroCalculo && !nav.activo && ruta.opciones && ruta.opciones[ruta.elegida || 0]) mostrarRuta(ruta.elegida || 0, true);
+      });
     })
     .catch(function (e) {
       if (numero !== ruta.numeroCalculo) return;
       console.error(e);
+      // no queda dibujado un borrador sin revisar: navegando, la ruta que se sigue; si no, nada
+      if (nav.activo && nav.r) ponerDatos('ruta', [{ type: 'Feature', properties: { t: 'p' },
+        geometry: { type: 'LineString', coordinates: nav.r.puntos.map(function (q) { return [q[1], q[0]]; }) } }]);
+      else quitarLineasRuta();
       salida.innerHTML = '<p class="ruta-aviso">' + esc(e.mensaje || 'No pude calcular la ruta. Revisá la conexión y probá de nuevo en un rato.') + '</p>';
       terminoCalculo(false);
     });
@@ -3022,8 +3036,10 @@ function calcularTramo(a, b, salida, conAlternativas) {
 
 // El camino de un viaje largo se dibuja apenas llega (en 1 o 2 segundos) mientras se revisa que el camión pase:
 // el chofer ve enseguida por dónde va (pedido del chofer, 20/11/2026: "tarda mucho en cargar la ruta").
-function mostrarBorrador(c, salida) {
+function mostrarBorrador(c, salida, nCalculo) {
   if (!salida || !salida.nodeType) return;   // partes de "Pasar por" o pedazos internos: no se dibujan
+  // un cálculo viejo, navegando o recalculando (el mapa no se mueve en pleno manejo): no se dibuja
+  if (nCalculo !== ruta.numeroCalculo || nav.activo || ruta.alTerminarCalculo) return;
   ponerDatos('ruta', [{ type: 'Feature', properties: { t: 'p' },
                         geometry: { type: 'LineString', coordinates: c.puntos.map(function (q) { return [q[1], q[0]]; }) } }]);
   var lim = L.latLngBounds(c.puntos);
@@ -3034,9 +3050,10 @@ function mostrarBorrador(c, salida) {
 }
 function calcularViajeLargo(desde, hasta, salida) {
   salida.innerHTML = '<p class="ruta-cargando">Viaje largo: buscando el recorrido...</p>';
+  var nCalculo = ruta.numeroCalculo;   // (no "numero": así se llama la función que escribe los números)
   return pedirCaminos(desde, hasta, [], false).then(function (caminos) {
     var base = caminos[0];
-    mostrarBorrador(base, salida);
+    mostrarBorrador(base, salida, nCalculo);
     // distancia acumulada a lo largo del recorrido
     var acum = [0];
     for (var i = 1; i < base.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(base.puntos[i - 1]).distanceTo(base.puntos[i]) / 1000);
@@ -3105,7 +3122,7 @@ function arreglarMedio(c, m0, m1, salida, margen, vez) {
   var grupos2 = [];
   rojos.forEach(function (x) {
     var g = grupos2[grupos2.length - 1];
-    if (g && acum[x.orden] - acum[g.fin] < 60) g.fin = x.orden; else grupos2.push({ ini: x.orden, fin: x.orden });
+    if (g && acum[x.orden] - acum[g.fin] < Math.max(60, 2 * margen + 5)) g.fin = x.orden; else grupos2.push({ ini: x.orden, fin: x.orden });
   });
   grupos2 = grupos2.slice(0, 3);
   function indiceEn(km) { var j = acum.findIndex(function (d) { return d >= km; }); return j < 0 ? acum.length - 1 : j; }
@@ -3118,7 +3135,7 @@ function arreglarMedio(c, m0, m1, salida, margen, vez) {
       if (acum[iB] - acum[iA] > 140) {   // muy largo para pedirlo esquivando: se achica alrededor de los rojos
         iA = indiceEn(Math.max(0, acum[g.ini] - 20)); iB = indiceEn(Math.min(total, acum[g.fin] + 20));
       }
-      if (iB - iA < 2 || acum[iB] - acum[iA] > 140) return actual;
+      if (iB - iA < 2 || acum[iB] - acum[iA] > 140 || iB >= actual.puntos.length) return actual;
       if (salida) salida.innerHTML = '<p class="ruta-cargando">Viaje largo: en el camino hay lugares donde no pasás. ' +
         'Buscando cómo esquivarlos...</p>';
       return calcularTramo(L.latLng(actual.puntos[iA]), L.latLng(actual.puntos[iB]), null, false).then(function (caminos) {
@@ -3383,7 +3400,9 @@ function rutaValhalla(evitar, a, b) {
 var VUELTAS_TOMTOM = { TURN_LEFT: 1, TURN_RIGHT: 1, SHARP_LEFT: 1, SHARP_RIGHT: 1, MAKE_UTURN: 1 };
 function rectangulosTomTom(evitar) {
   var cajas = [];
-  (evitar || []).slice().reverse().forEach(function (anillo) {   // los más nuevos primero
+  var lista = (evitar || []).filter(function (a) { return a.length > 5; })
+    .concat((evitar || []).filter(function (a) { return a.length <= 5; }).reverse());
+  lista.forEach(function (anillo) {   // primero las zonas; después los lugares, los más nuevos primero
     var b = L.latLngBounds(anillo.map(function (q) { return [q[1], q[0]]; }));
     var junto = cajas.filter(function (c) { return c.pad(0.0).getCenter().distanceTo(b.getCenter()) < 300 && anillo.length <= 5; })[0];
     if (junto) junto.extend(b); else cajas.push(b);
@@ -3462,6 +3481,7 @@ function anularRutaCalculada() {
 }
 
 function borrarRuta() {
+  ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;   // un cálculo que todavía no terminó ya no se muestra
   quitarLineasRuta();
   ruta.opciones = null;
   ruta.paradas.slice().forEach(function (c) { sacarParada(c, true); });
@@ -4344,6 +4364,8 @@ function empezarNavegacion(rutaElegida) {
   });
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
   nav.primeraCamara = !ruta.esRecalculo;
+  nav.recorrido = 0;
+  nav.sesion = (nav.sesion || 0) + 1;   // un recálculo viejo no pisa una navegación nueva
   volverACentrar(false);
   abrirPanelRuta(false);
   abrirPanel(false);
@@ -4640,11 +4662,11 @@ function volverALaRuta(pos) {
     var c = {
       servicio: t.servicio, largo: r.largo,
       puntos: t.puntos.concat(r.puntos.slice(j + 1)),
-      pasos: t.pasos.slice(0, -1).concat(r.pasos.filter(function (p) { return p.ini != null && p.ini > j; })
+      pasos: t.pasos.slice(0, -1).concat(r.pasos.filter(function (p) { return p.ini != null && p.ini >= j; })
         .map(function (p) { return Object.assign({}, p, { ini: p.ini + corrida }); })),
       km: t.km + (total - nav.acum[j]) / 1000,
       segundos: t.segundos + (r.segundos || 0) * (total - nav.acum[j]) / total,
-      vueltas: t.vueltas + r.pasos.filter(function (p) { return p.ini != null && p.ini > j && p.vuelta; }).length,
+      vueltas: t.vueltas + r.pasos.filter(function (p) { return p.ini != null && p.ini >= j && p.vuelta; }).length,
       kmChicas: null, esquivados: (r.esquivados || 0) + (t.esquivados || 0)
     };
     c.avisos = revisarRuta(c.puntos, c.pasos);
@@ -4661,8 +4683,9 @@ function recalcularDesde(pos) {
   hablar('Recalculando la ruta.', true);
   marcarParadasPasadas(pos);
   ponerPunto('desde', pos, 'Mi ubicación');
+  var sesion = nav.sesion;
   volverALaRuta(pos).then(function (c) {
-    if (!nav.activo) { nav.recalculando = false; return; }
+    if (!nav.activo || nav.sesion !== sesion) { nav.recalculando = false; return; }
     if (c.rojos > (nav.r.rojos || 0)) throw new Error('quedó peor');
     nav.recalculando = false;
     ruta.opciones = [c];
@@ -4670,7 +4693,7 @@ function recalcularDesde(pos) {
     ruta.esRecalculo = true;
     empezarNavegacion(c);
   }).catch(function (e) {
-    if (!nav.activo) { nav.recalculando = false; return; }
+    if (!nav.activo || nav.sesion !== sesion) { nav.recalculando = false; return; }
     console.warn('Recalculo rápido no:', e.message);
     recalcularTodo();
   });

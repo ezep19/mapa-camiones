@@ -1078,5 +1078,5 @@ body.navegando .punto-ubicacion {
 .ayuda-credito { font-size: 0.75rem; color: #6b7480; margin-top: 10px; }
 
 /* v77: "Evitar peajes" en el panel de la ruta */
-.ruta-opcion { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 4px 2px; font-size: 1rem; cursor: pointer; }
-.ruta-opcion input { width: 22px; height: 22px; accent-color: var(--primario, #1668f2); }
+.ruta-check { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 4px 2px; font-size: 1rem; cursor: pointer; }
+.ruta-check input { width: 22px; height: 22px; accent-color: var(--primario, #1668f2); }

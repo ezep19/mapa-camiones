@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Mapa para camiones</title>
   <meta name="description" content="Por dónde no pasa un camión: pasos bajos, límites de peso, calles prohibidas y sin salida.">
-  <meta name="theme-color" content="#1f2a36">
+  <meta name="theme-color" content="#0f1b2d">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="iconos/favicon-32.png">
   <link rel="apple-touch-icon" href="iconos/apple-touch-icon.png">
@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
         integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=52">
+  <link rel="stylesheet" href="css/estilos.css?v=55">
 </head>
 <body>
   <main id="mapa" aria-label="Mapa"></main>
@@ -102,7 +102,7 @@
     <form id="form-camion" class="ventana" novalidate role="dialog" aria-modal="true" aria-labelledby="titulo-camion">
       <h2 id="titulo-camion">Medidas de tu camión</h2>
       <p class="ventana-ayuda">Con estas medidas el mapa te marca en rojo por dónde no pasás.
-        Se guardan en este teléfono; las podés cambiar cuando quieras con el botón "Mi camión".</p>
+        Se guardan en este teléfono; las podés cambiar cuando quieras tocando el 🚛 de arriba.</p>
 
       <label class="campo" for="c-altura">Altura total, con la carga (metros)</label>
       <input id="c-altura" name="altura" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 4,10">
@@ -131,11 +131,19 @@
         <div id="nav-distancia" class="nav-distancia"></div>
         <div id="nav-texto" class="nav-texto"></div>
       </div>
-      <button id="nav-rumbo" class="nav-boton" type="button" aria-label="El mapa gira hacia donde vas">🧭</button>
-      <button id="nav-voz" class="nav-boton" type="button" aria-label="Apagar la voz">🔊</button>
-      <button id="nav-terminar" class="nav-boton" type="button" aria-label="Terminar la navegación">✕</button>
     </div>
     <div id="nav-peligro" class="nav-peligro" hidden></div>
+  </section>
+
+  <!-- Abajo, navegando (como Google Maps): llegada, lo que falta y los botones -->
+  <section id="nav-abajo" class="nav-abajo" hidden aria-label="Viaje">
+    <button id="nav-rumbo" class="nav-boton-abajo" type="button" aria-label="El mapa gira hacia donde vas">🧭</button>
+    <div class="nav-resumen">
+      <b id="nav-falta-tiempo"></b>
+      <span id="nav-falta-resto"></span>
+    </div>
+    <button id="nav-voz" class="nav-boton-abajo" type="button" aria-label="Apagar la voz">🔊</button>
+    <button id="nav-terminar" class="nav-salir" type="button" aria-label="Terminar la navegación">Salir</button>
   </section>
 
   <div class="atribucion"><a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> · © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a><span id="pie-tomtom" hidden> · <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a></span></div>
@@ -153,6 +161,6 @@
   <!-- MapLibre dibuja todo el mapa (como Google Maps) -->
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
           integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin=""></script>
-  <script src="js/app.js?v=52"></script>
+  <script src="js/app.js?v=55"></script>
 </body>
 </html>

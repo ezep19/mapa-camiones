@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 52;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 55;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -271,10 +271,14 @@ function abrirCartel(latlng, contenido) {
   // como Leaflet: si el cartel queda tapado arriba (barra de búsqueda) o se sale por abajo, se corre el mapa
   setTimeout(function () {
     if (cartel !== c || !c.getElement()) return;
-    var r = c.getElement().getBoundingClientRect(), alto = gl.getContainer().clientHeight, arriba = 76, abajo = 16, dy = 0;
+    var r = c.getElement().getBoundingClientRect(), alto = gl.getContainer().clientHeight, ancho = gl.getContainer().clientWidth;
+    var arriba = 76, abajo = 16, costado = 10, dy = 0, dx = 0;
     if (r.bottom > alto - abajo) dy = r.bottom - (alto - abajo);
     if (r.top - dy < arriba) dy = r.top - arriba;
-    if (Math.abs(dy) > 4) gl.panBy([0, dy], { duration: 250 });
+    // en celulares angostos el cartel (300 px) puede salirse por un costado
+    if (r.left < costado) dx = r.left - costado;
+    else if (r.right > ancho - costado) dx = r.right - (ancho - costado);
+    if (Math.abs(dy) > 4 || Math.abs(dx) > 4) gl.panBy([dx, dy], { duration: 250 });
   }, 0);
   return c;
 }
@@ -337,7 +341,9 @@ function camionValido(c) {
 
 function mostrarResumenCamion() {
   var el = document.getElementById('camion-resumen');
-  if (camion) el.innerHTML = esc(metros(camion.altura) + ' · ' + toneladas(camion.peso)) + '<span class="menos"> · ' + esc(metros(camion.largo)) + '</span>';
+  // en celulares angostos (estilos.css) el peso va abajo de la altura, más chico, para dejarle lugar al buscador
+  if (camion) el.innerHTML = '<span class="c-alto">' + esc(metros(camion.altura)) + '</span><span class="c-sep"> · </span>' +
+    '<span class="c-peso">' + esc(toneladas(camion.peso)) + '</span><span class="menos"> · ' + esc(metros(camion.largo)) + '</span>';
   else el.textContent = 'Medidas';
   var chip = document.getElementById('btn-camion');
   if (chip) chip.classList.toggle('falta', !camion);
@@ -1818,7 +1824,24 @@ function modoResultado(si) {
 // body.ruta-escribiendo = panel de ruta arriba: los mensajes van abajo (ver estilos.css)
 function marcarEscribiendo() {
   document.body.classList.toggle('ruta-escribiendo', !!panelRuta && !panelRuta.hidden && !panelRuta.classList.contains('con-resultado'));
+  medirHoja();
 }
+// Con la tarjeta de la ruta abajo (celular), los botones redondos (brújula, ubicación) y el crédito suben y quedan
+// arriba de la tarjeta, como en Google Maps (antes quedaban tapados). --alto-hoja = alto de la tarjeta.
+function medirHoja() {
+  var alto = 0, barra = document.getElementById('nav-abajo');
+  if (panelRuta && !panelRuta.hidden && panelRuta.classList.contains('con-resultado') && window.innerWidth <= 600) {
+    alto = Math.round(panelRuta.getBoundingClientRect().height);
+  }
+  if (barra && !barra.hidden && window.innerWidth <= 600) alto = Math.round(barra.getBoundingClientRect().height);
+  document.documentElement.style.setProperty('--alto-hoja', alto + 'px');
+}
+if (window.ResizeObserver && panelRuta) {
+  var obsHoja = new ResizeObserver(medirHoja);
+  obsHoja.observe(panelRuta);
+  if (document.getElementById('nav-abajo')) obsHoja.observe(document.getElementById('nav-abajo'));
+}
+window.addEventListener('resize', medirHoja);
 function actualizarTrayecto() {
   var b = document.getElementById('ruta-trayecto');
   if (b) b.innerHTML = '<span class="ruta-marca desde">A</span><span>' + esc(ruta.desde ? ruta.desde.nombre : '¿Desde?') +
@@ -1844,6 +1867,8 @@ function prepararRuta() {
 
 // Elegir un punto desde la pantalla (sugerencia, mapa, ubicación, recientes): si ya están los dos, calcula
 function elegirPunto(cual, latlng, nombre) {
+  // si elegiste otra salida mientras el GPS buscaba, cuando aparezca el GPS ya no la reemplaza
+  if (cual === 'desde' && nombre !== 'Mi ubicación') ruta.esperandoUbicacion = false;
   ponerPunto(cual, latlng, nombre);
   if (cual === 'hasta' && nombre && !/^Punto en el mapa/.test(nombre)) guardarReciente(nombre, latlng);
   if (ruta.desde && ruta.hasta) {
@@ -1941,6 +1966,7 @@ mapa.on('locationerror', function () {
 mapa.on('locationfound', function (e) {
   if (!ruta.esperandoUbicacion) return;
   ruta.esperandoUbicacion = false;
+  if (nav.activo) return;   // ya está manejando: no se toca la ruta
   document.getElementById('ruta-desde').placeholder = 'Calle y número, ciudad';
   elegirPunto('desde', e.latlng, 'Mi ubicación');
 });
@@ -2601,7 +2627,8 @@ function mostrarRuta(indice, sinMoverMapa) {
     html += '</div>';
   }
   // Lo demás, escondido
-  html += '<details class="ruta-mas"' + (r.rojos || avisos.length ? ' open' : '') + '><summary>Ver detalles</summary>';
+  // abierto solo si hay lugares donde NO pasás (si no, la tarjeta tapaba medio mapa; lo demás se ve al tocar)
+  html += '<details class="ruta-mas"' + (r.rojos ? ' open' : '') + '><summary>Ver detalles</summary>';
   if (avisos.length) {
     html += '<ul class="ruta-lista">';
     avisos.forEach(function (a, i) {
@@ -3219,7 +3246,7 @@ function empezarNavegacion(rutaElegida) {
   for (var i = 1; i < r.puntos.length; i++) nav.acum.push(nav.acum[i - 1] + L.latLng(r.puntos[i - 1]).distanceTo(r.puntos[i]));
   nav.maniobras = r.pasos.map(function (p, n) {
     var idx = p.ini == null ? null : Math.min(p.ini, r.puntos.length - 1);
-    var llegada = /^(Llegar|Su destino|Has llegado|Llegaste)/i.test(p.texto || '');
+    var llegada = /^(Llegar|Su destino|Tu destino|Has llegado|Llegaste|Lleg[óo])/i.test(p.texto || '');
     var lado = /izquierda/i.test(p.texto) ? ', a la izquierda' : /derecha/i.test(p.texto) ? ', a la derecha' : '';
     return { n: n, texto: llegada ? 'Llegás a destino' + lado : p.texto, llegada: llegada,
              idx: idx, dist: idx == null ? null : nav.acum[idx] };
@@ -3251,6 +3278,9 @@ function empezarNavegacion(rutaElegida) {
   abrirPanelRuta(false);
   abrirPanel(false);
   document.getElementById('nav-cartel').hidden = false;
+  document.getElementById('nav-abajo').hidden = false;
+  resumenNav(nav.acum[nav.acum.length - 1]);
+  medirHoja();
   document.body.classList.add('navegando');
   ponerVozBoton();
   ponerRumboBoton();
@@ -3261,7 +3291,7 @@ function empezarNavegacion(rutaElegida) {
   if (!ruta.esRecalculo) hablar('Vamos. Seguí la ruta azul.', true);
   // si la voz quedó apagada (botón 🔇) o el navegador no habla, se dice en pantalla (antes no avisaba nada)
   if (!ruta.esRecalculo && !nav.voz) {
-    mostrarMensaje('🔇 La voz está apagada. Tocá 🔇 en el cartel verde de arriba para prenderla.');
+    mostrarMensaje('🔇 La voz está apagada. Tocá 🔇 abajo para prenderla.');
     setTimeout(ocultarMensaje, 10000);
   } else if (!ruta.esRecalculo && !hayVoz()) avisarVozFalla();
   ruta.esRecalculo = false;
@@ -3280,6 +3310,8 @@ function terminarNavegacion(mensaje) {
   nav.recalculando = false;
   ruta.alTerminarCalculo = null;   // si estaba recalculando, al terminar no vuelve a arrancar sola
   document.getElementById('nav-cartel').hidden = true;
+  document.getElementById('nav-abajo').hidden = true;
+  medirHoja();
   document.body.classList.remove('navegando');
   if (nav.wake) { try { nav.wake.release(); } catch (e) { /* nada */ } nav.wake = null; }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
@@ -3297,6 +3329,14 @@ document.addEventListener('visibilitychange', function () {
   if (nav.activo && document.visibilityState === 'visible') pedirPantallaPrendida();
 });
 
+// Barra de abajo: "14:35 llegada" y "12 min · 7,4 km". El tiempo es el de la ruta (de auto), en proporción a lo que falta.
+function resumenNav(faltaM) {
+  var total = nav.acum[nav.acum.length - 1] || 1, seg = (nav.r && nav.r.segundos || 0) * Math.max(0, faltaM) / total;
+  var llega = new Date(Date.now() + seg * 1000);
+  document.getElementById('nav-falta-tiempo').textContent = duracion(seg);
+  document.getElementById('nav-falta-resto').textContent = textoDistancia(faltaM) + ' · llegás ' +
+    ('0' + llega.getHours()).slice(-2) + ':' + ('0' + llega.getMinutes()).slice(-2);
+}
 function mostrarCartelNav(distancia, texto, peligro) {
   document.getElementById('nav-distancia').textContent = distancia;
   document.getElementById('nav-texto').textContent = texto;
@@ -3366,6 +3406,7 @@ function seguirNavegacion(pos) {
   nav.primera = false;
   var total = nav.acum[nav.acum.length - 1];
   var falta = total - u.recorrido;
+  resumenNav(falta);
   // ¿Llegaste?
   if (falta < NAV.LLEGADA_M) {
     hablar('Llegaste a destino.', true);

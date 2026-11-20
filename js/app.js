@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 60;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 61;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -415,7 +415,9 @@ function evaluar(p) {
   if (p.capa === 'prohibido') {
     // ordenanzas como "prohibido camiones de más de 6 t": un camión liviano sí puede pasar
     if (p.peso_desde && camion && camion.peso <= p.peso_desde) return { estado: 'si', norma: true };
-    return { estado: 'no', norma: !!p.peso_desde };
+    // zonas imposibles para camiones largos (semis): con uno corto no es rojo, pero hay que verificar
+    if (p.largo_desde && camion && camion.largo <= p.largo_desde) return { estado: 'sin_dato', norma: true };
+    return { estado: 'no', norma: !!(p.peso_desde || p.largo_desde) };
   }
   if (p.capa === 'sin_salida') return { estado: 'aviso' };
   // pilotes y bloques cortan el paso; un portón puede estar abierto o cerrado
@@ -995,9 +997,14 @@ function veredicto(p) {
   if (p.capa === 'prohibido' && e.estado === 'si') {
     titulo = 'PASÁS';
     nota = 'La prohibición es para camiones de más de ' + toneladas(p.peso_desde) + ' y el tuyo pesa ' + toneladas(camion.peso) + '.';
+  } else if (p.capa === 'prohibido' && e.estado === 'sin_dato') {
+    titulo = 'OJO: muy difícil para camiones';
+    nota = 'Es imposible para camiones de más de ' + metros(p.largo_desde) + '. El tuyo mide ' + metros(camion.largo) +
+           ': puede ser que pases, verificá antes de entrar.';
   } else if (p.capa === 'prohibido') {
-    titulo = 'NO PODÉS CIRCULAR: prohibido para camiones';
+    titulo = p.largo_desde ? 'NO PASÁS: imposible para tu camión' : 'NO PODÉS CIRCULAR: prohibido para camiones';
     if (p.peso_desde && camion) nota = 'Es para camiones de más de ' + toneladas(p.peso_desde) + ' y el tuyo pesa ' + toneladas(camion.peso) + '.';
+    if (p.largo_desde && camion) nota = 'Es para camiones de más de ' + metros(p.largo_desde) + ' y el tuyo mide ' + metros(camion.largo) + '.';
   } else if (p.capa === 'barrera') {
     titulo = e.estado === 'no' ? 'NO PASÁS: la calle está cortada para vehículos' : 'OJO: puede estar cerrado';
     nota = e.estado === 'no' ? 'Según el mapa hay ' + String(p.titulo || 'una barrera').toLowerCase() + ' en la calle: no pasan autos ni camiones.'
@@ -1053,6 +1060,7 @@ function textoValor(p) {
       return p.limite != null ? 'Peso máximo ' + toneladas(p.limite) : sinDato(p.limite_texto, 'peso');
     case 'prohibido':
       if (p.peso_desde) return 'Prohibido camiones de más de ' + toneladas(p.peso_desde);
+      if (p.largo_desde) return 'Imposible para camiones de más de ' + metros(p.largo_desde);
       return 'Prohibido el paso de camiones';
     case 'verificar':
     case 'verificar_autopista':

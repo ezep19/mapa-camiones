@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 63;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 64;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2809,6 +2809,9 @@ function empalmar(c, iA, iB, nuevo, kmViejo) {
 //   + 2 por cada km FUERA de la red de tránsito pesado, solo en las zonas que la tienen cargada
 //   + 1000 por cada lugar rojo que no se pudo esquivar
 var PUNTAJE = { kmCallesChicas: 12, vuelta: 0.7, kmFueraDeRed: 2, rojo: 1000 };
+// Nombres de calles grandes (si el servicio dice que es una calle "común" y el nombre no tiene nada de esto,
+// se la trata como calle de barrio)
+var NOMBRE_DE_AVENIDA = /(^|[^a-záéíóúñ])(av(da)?\.?|avenida|ruta|r[pn] ?\d|autopista|autov[ií]a|acceso|camino|colectora|bulevar|boulevard|bv\.?|costanera|circunvalaci[oó]n|diagonal|paseo|ruta|variante|traza|puente|t[uú]nel|rotonda)([^a-záéíóúñ]|$)/i;
 
 // Cuadraditos para prohibir las calles de barrio del medio del camino (no los primeros ni los últimos 600 m).
 // Uno cada 100 m de calle, lejos de las puntas del tramo (ahí se cruza con la avenida, que no hay que tapar).
@@ -2819,9 +2822,9 @@ function cuadradosCallesChicas(c) {
   var total = acum[acum.length - 1], res = [], metros = 0;
   c.chicas.forEach(function (r) {
     var ini = acum[r[0]], fin = acum[r[1]];
-    // la calle de barrio por la que se sale o se llega no se toca (a veces es la única: un puerto, un depósito)
-    if (ini < 600 || fin > total - 600) return;
-    var desde = ini, hasta = fin;
+    // los primeros y los últimos 600 m no se tocan (para salir o llegar a veces no hay otra: un puerto, un depósito);
+    // si la calle de barrio sigue más allá, ese pedazo sí (antes se perdonaba entera y la ruta podía ir km por adentro)
+    var desde = Math.max(ini, 600), hasta = Math.min(fin, total - 600);
     if (hasta - desde < 60) return;
     metros += hasta - desde;
     for (var d = desde + 35; d <= hasta - 35; d += 100) {
@@ -2908,9 +2911,10 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
     if (!r.ok) throw new Error('OpenRouteService ' + r.status);
     return r.json().then(function (d) {
       return d.features.map(function (f) {
-        var pasos = [], vueltas = 0;
+        var pasos = [], vueltas = 0, sinAvenida = [];
         (f.properties.segments || []).forEach(function (s) {
           (s.steps || []).forEach(function (p) {
+            if (p.way_points && p.name && p.name !== '-' && !NOMBRE_DE_AVENIDA.test(p.name)) sinAvenida.push(p.way_points);
             // OpenRouteService a veces dice "Camina hacia..." aunque sea en camión
             var esVuelta = p.type >= 0 && p.type <= 3;   // izquierda, derecha, cerrada a la izq./der.
             pasos.push({ texto: aCastellano(String(p.instruction).replace(/^Camin[ae] /, 'Salí ')), km: p.distance,
@@ -2920,10 +2924,20 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
         });
         var c = f.geometry.coordinates, kmChicas = 0, chicas = [];
         var tipos = f.properties.extras && f.properties.extras.waytype;
+        function sumar(d, h) {
+          chicas.push([d, h]);
+          for (var i = d + 1; i <= h; i++) kmChicas += L.latLng(c[i - 1][1], c[i - 1][0]).distanceTo([c[i][1], c[i][0]]) / 1000;
+        }
         if (tipos) tipos.values.forEach(function (v) {   // [desde, hasta, tipo]; tipo 3 = "Street" (calle de barrio)
-          if (v[2] !== 3) return;
-          chicas.push([v[0], v[1]]);
-          for (var i = v[0] + 1; i <= v[1]; i++) kmChicas += L.latLng(c[i - 1][1], c[i - 1][0]).distanceTo([c[i][1], c[i][0]]) / 1000;
+          if (v[2] === 3) return sumar(v[0], v[1]);
+          // tipo 2 = "Road": avenidas, pero también calles comunes cargadas como "terciarias" (ej. Alem en Playa Grande,
+          // Mar del Plata: la ruta dejaba Juan B. Justo para cortar por ahí). Si el nombre no dice avenida / ruta /
+          // bulevar..., cuenta como calle de barrio.
+          if (v[2] !== 2) return;
+          sinAvenida.forEach(function (w) {
+            var d = Math.max(v[0], w[0]), h = Math.min(v[1], w[1]);
+            if (h > d) sumar(d, h);
+          });
         });
         return {
           servicio: 'OpenRouteService',
@@ -3606,6 +3620,7 @@ var A_CASTELLANO = [
   ['conduzca', 'andá'],
   ['incorpórese', 'incorporate'],
   ['haga un cambio de sentido', 'pegá la vuelta'],
+  ['haga', 'hacé'],
   ['dé la vuelta', 'pegá la vuelta'],
   ['su destino', 'tu destino'],
   ['ha llegado', 'llegaste']

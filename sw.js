@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v5';
+var VERSION = 'v6';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;
@@ -27,7 +27,7 @@ var BASICO = [
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
   'https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css',
   'https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js',
-  'https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js'
+  'https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js'
 ];
 
 self.addEventListener('install', function (ev) {

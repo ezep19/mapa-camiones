@@ -82,8 +82,9 @@ var mapa = L.map('mapa', {
   maxZoom: 19,
   attributionControl: false,  // el crédito de OpenStreetMap está siempre visible en la esquina
   zoomControl: false,         // en el celular se usan los dedos; en la PC va abajo a la derecha (más abajo)
-  // (el agregado para girar el mapa se sacó el 19/11/2026: giraba sin querer al mover o acercar con dos dedos y
-  // hacía más lento el mapa; el código de giro queda, pero no se usa porque PUEDE_GIRAR da false)
+  // girar con dos dedos (agregado leaflet-rotate). El gesto está corregido más abajo para que NO gire sin querer
+  // al acercar o mover: gira solo si los dedos giran claramente antes de separarse/juntarse
+  rotate: true, touchRotate: true, bearing: 0, rotateControl: false
 });
 var PUEDE_GIRAR = typeof mapa.setBearing === 'function';
 if (!L.Browser.mobile) L.control.zoom({ position: 'bottomright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(mapa);   // si el agregado no cargó, el mapa anda igual sin girar
@@ -93,31 +94,55 @@ function crearPane(nombre) {
   return mapa.createPane(nombre, (PUEDE_GIRAR && mapa.getPane('rotatePane')) || undefined);
 }
 
-// Para que no gire sin querer al hacer zoom con dos dedos: recién empieza a girar si los dedos giran más de 20°
-var UMBRAL_GIRO = 20;
+// Gesto de dos dedos (reemplaza el del agregado, que giraba con cualquier torcida y redibujaba en cada movimiento):
+// - al empezar, se mira qué hace primero el chofer: si gira los dedos 18° o más sin acercarlos/separarlos mucho,
+//   es GIRAR (y desde ahí gira y acerca a la vez, como Google Maps); si primero acerca/aleja, es ZOOM y en ese
+//   gesto no gira nunca. Para girar después de acercar: levantar los dedos y girar.
+// - el giro se aplica una vez por cuadro (no en cada movimiento de los dedos).
+var UMBRAL_GIRO = 18;
 if (PUEDE_GIRAR && L.Map.TouchGestures) {
-  var gestoMover = L.Map.TouchGestures.prototype._onTouchMove;
   L.Map.TouchGestures.prototype._onTouchMove = function (e) {
-    // gesto nuevo (todavía no se movió): vuelve a exigir el umbral. Se hace acá y no en _onTouchStart
-    // porque el agregado ya registró su _onTouchStart original al crear el mapa.
-    if (!this._moved) { this._giroLibre = false; this._angInicio = null; }
-    if (this._rotating && !this._giroLibre && e.touches && e.touches.length === 2) {
-      var m = this._map;
-      var v = m.mouseEventToContainerPoint(e.touches[0]).subtract(m.mouseEventToContainerPoint(e.touches[1]));
-      var ang = Math.atan2(v.y, v.x) * 180 / Math.PI;
-      if (this._angInicio == null) this._angInicio = ang;
-      var dif = Math.abs((((ang - this._angInicio) % 360) + 540) % 360 - 180);
-      if (dif < UMBRAL_GIRO) {   // todavía no: solo zoom y movimiento
-        this._rotating = false;
-        try { gestoMover.call(this, e); } finally { this._rotating = true; }
-        return;
-      }
-      // pasó el umbral: empieza a girar desde acá (sin salto)
-      this._giroLibre = true;
-      this._startTheta = Math.atan(v.x / v.y);
-      this._startBearing = m.getBearing() + (v.y < 0 ? 180 : 0);
+    if (!e.touches || e.touches.length !== 2 || !(this._zooming || this._rotating)) return;
+    var map = this._map,
+        p1 = map.mouseEventToContainerPoint(e.touches[0]),
+        p2 = map.mouseEventToContainerPoint(e.touches[1]),
+        v = p1.subtract(p2), dist = p1.distanceTo(p2), ang = Math.atan2(v.y, v.x) * 180 / Math.PI;
+    if (!this._moved) { this._modo = null; this._ang0 = ang; this._dist0 = dist || 1; }
+    var giro = ((((ang - this._ang0) % 360) + 540) % 360) - 180;
+    var escala = Math.abs(Math.log((dist || 1) / this._dist0));
+    if (!this._modo) {
+      if (this._rotating && Math.abs(giro) >= UMBRAL_GIRO && escala < Math.log(1.3)) {
+        this._modo = 'girar'; this._angGiro = ang; this._rumboGiro = map.getBearing();
+      } else if (escala > Math.log(1.12)) this._modo = 'zoom';
     }
-    return gestoMover.call(this, e);
+    var rumbo = null;
+    if (this._modo === 'girar') rumbo = this._rumboGiro + (((((ang - this._angGiro) % 360) + 540) % 360) - 180);
+    if (this._zooming) {
+      var scale = dist / this._startDist;
+      this._zoom = map.getScaleZoom(scale, this._startZoom);
+      if (!map.options.bounceAtZoomLimits && ((this._zoom < map.getMinZoom() && scale < 1) || (this._zoom > map.getMaxZoom() && scale > 1))) {
+        this._zoom = map._limitZoom(this._zoom);
+      }
+      var delta = p1.add(p2)._divideBy(2)._subtract(this._centerPoint);
+      var alpha = -(rumbo != null ? rumbo : map.getBearing()) * L.DomUtil.DEG_TO_RAD;
+      this._center = map.unproject(map.project(this._pinchStartLatLng).subtract(delta.rotate(alpha)));
+    }
+    if (!this._moved) { map._moveStart(true, false); this._moved = true; }
+    L.Util.cancelAnimFrame(this._animRequest);
+    var self = this;
+    this._rumboPendiente = rumbo;
+    this._animRequest = L.Util.requestAnimFrame(function () {
+      if (rumbo != null) map.setBearing(rumbo);
+      self._rumboPendiente = null;
+      if (self._zooming && self._center) map._move(self._center, self._zoom, { pinch: true, round: false });
+    }, this, true);
+    L.DomEvent.preventDefault(e);
+  };
+  // al levantar los dedos el agregado cancela el último cuadro: el giro pendiente se aplica igual
+  var finGesto = L.Map.TouchGestures.prototype._onTouchEnd;
+  L.Map.TouchGestures.prototype._onTouchEnd = function () {
+    if (this._rumboPendiente != null) { this._map.setBearing(this._rumboPendiente); this._rumboPendiente = null; }
+    return finGesto.apply(this, arguments);
   };
 }
 
@@ -148,8 +173,12 @@ var ControlBrujula = L.Control.extend({
       '<text x="12" y="10.6" text-anchor="middle" font-size="5.5" font-weight="700" fill="#fff" font-family="sans-serif">N</text></svg>';
     L.DomEvent.disableClickPropagation(b);
     L.DomEvent.on(b, 'click', function () {
-      if (typeof nav !== 'undefined' && nav.activo && nav.rumbo) cambiarRumbo(false);
-      else girarA(0);
+      // manejando: prende/apaga "el mapa gira hacia donde vas". Si no: norte arriba (o explica cómo girar)
+      if (typeof nav !== 'undefined' && nav.activo) { cambiarRumbo(!nav.rumbo); return; }
+      if (b.classList.contains('al-norte')) {
+        mostrarMensaje('Para girar el mapa, girá dos dedos sobre el mapa. Tocá la brújula para volver al norte.');
+        setTimeout(ocultarMensaje, 3500);
+      } else girarA(0);
     });
     this.boton = b;
     return b;
@@ -169,10 +198,80 @@ function fondoComun() {
 // Mapa de fondo "vectorial" (como Google Maps): se dibuja en el teléfono, así se ve nítido en cualquier pantalla
 // y al acercar no queda pixelado. Sale de OpenFreeMap (gratis, sin cuenta, datos de OpenStreetMap) con MapLibre.
 // Si el teléfono no puede (sin WebGL, o MapLibre / el estilo no cargan), queda el mapa común de OpenStreetMap.
+// Capa del mapa de fondo vectorial. Va en un panel propio que NO gira con el resto: MapLibre dibuja el mapa ya
+// girado (así los nombres de las calles quedan derechos) y cubre toda la pantalla aunque el mapa esté girado.
+// El panel se mueve junto con el mapa al arrastrar; cada 50 ms (y al soltar) se vuelve a dibujar en su lugar.
+// Al acercar con animación (doble toque, botones) MapLibre hace la misma animación, sin estirar la imagen.
+var FondoGL = L.Layer.extend({
+  initialize: function (opciones) {
+    this._op = opciones;
+    this._lento = L.Util.throttle(this._actualizar, 50, this);
+  },
+  onAdd: function (map) {
+    var pane = map.getPane('fondo');
+    if (!pane) {
+      pane = map.createPane('fondo', map.getPane('mapPane'));
+      pane.style.zIndex = 150;   // debajo de todo lo demás
+      pane.parentNode.insertBefore(pane, pane.parentNode.firstChild);
+    }
+    this._div = L.DomUtil.create('div', 'fondo-gl', pane);
+    this._medir();
+    var c = map.getCenter();
+    this._gl = new maplibregl.Map(L.extend({
+      container: this._div, interactive: false, attributionControl: false,
+      center: [c.lng, c.lat], zoom: map.getZoom() - 1, bearing: this._rumbo()
+    }, this._op));
+    this._actualizar();
+  },
+  onRemove: function () {
+    this._gl.remove();
+    L.DomUtil.remove(this._div);
+  },
+  getEvents: function () {
+    return { move: this._lento, moveend: this._actualizar, zoom: this._seguir, rotate: this._seguir,
+             zoomanim: this._animar, zoomend: this._finAnim, viewreset: this._actualizar, resize: this._cambioTamano };
+  },
+  getMaplibreMap: function () { return this._gl; },
+  getContainer: function () { return this._div; },
+  _rumbo: function () { return this._map.getBearing ? -this._map.getBearing() : 0; },
+  _medir: function () {
+    var t = this._map.getSize();
+    this._margen = t.multiplyBy(0.15).round();
+    this._div.style.width = (t.x + 2 * this._margen.x) + 'px';
+    this._div.style.height = (t.y + 2 * this._margen.y) + 'px';
+  },
+  _actualizar: function () {
+    if (!this._map || this._animando) return;
+    L.DomUtil.setPosition(this._div, this._map._getMapPanePos().multiplyBy(-1).subtract(this._margen));
+    this._seguir();
+  },
+  _seguir: function () {
+    if (!this._map || this._animando) return;
+    var c = this._map.getCenter();
+    this._gl.jumpTo({ center: [c.lng, c.lat], zoom: this._map.getZoom() - 1, bearing: this._rumbo() });
+  },
+  _animar: function (e) {
+    if (e.noUpdate) return;   // fin de un pellizco: ya está casi en su lugar, se acomoda al terminar
+    this._animando = true;
+    this._gl.easeTo({ center: [e.center.lng, e.center.lat], zoom: e.zoom - 1, bearing: this._rumbo(),
+                      duration: 250, easing: function (t) { return 1 - Math.pow(1 - t, 3); } });
+  },
+  _finAnim: function () {
+    this._animando = false;
+    this._gl.stop();
+    this._actualizar();
+  },
+  _cambioTamano: function () {
+    this._medir();
+    this._gl.resize();
+    this._actualizar();
+  }
+});
+
 var ESTILO_FONDO = 'https://tiles.openfreemap.org/styles/liberty';
 var fondo = { tipo: null, gl: null };
 function puedeVectorial() {
-  if (!window.maplibregl || !L.maplibreGL) return false;
+  if (!window.maplibregl) return false;
   try {
     var c = document.createElement('canvas');
     return !!(c.getContext('webgl2') || c.getContext('webgl'));
@@ -206,14 +305,11 @@ function ponerFondo() {
     listo = true;
     clearTimeout(espera);
     fondo.tipo = 'vectorial';
-    fondo.gl = L.maplibreGL({
+    fondo.gl = new FondoGL({
       style: estiloLiviano(est),
       // pantallas de 3x: se dibuja a 2x (casi igual de nítido y mucho menos trabajo para el teléfono)
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-      fadeDuration: 0,
-      // al arrastrar se redibuja cada 50 ms (no en cada movimiento) con un 15% de margen alrededor de la pantalla
-      updateInterval: 50,
-      padding: 0.15
+      fadeDuration: 0
     }).addTo(mapa);
     var gl = fondo.gl.getMaplibreMap();
     gl.on('error', function (ev) { if (window.console) console.warn('Mapa de fondo:', ev && ev.error); });
@@ -1680,13 +1776,14 @@ var ControlUbicacion = L.Control.extend({
   }
 });
 var controlUbicacion = new ControlUbicacion().addTo(mapa);
-// la brújula va arriba del botón de ubicación, y solo se ve con el mapa girado (o manejando)
+// la brújula va arriba del botón de ubicación
 var controlBrujula = PUEDE_GIRAR ? new ControlBrujula().addTo(mapa) : null;
 function ponerBrujula() {
   if (!controlBrujula) return;
   var g = mapa.getBearing();
   var girado = Math.abs(((g % 360) + 360) % 360) > 0.5 && Math.abs(((g % 360) + 360) % 360 - 360) > 0.5;
-  controlBrujula.boton.hidden = !girado && !(typeof nav !== 'undefined' && nav.activo);
+  controlBrujula.boton.hidden = false;   // siempre a la vista (así se sabe que el mapa se puede girar)
+  controlBrujula.boton.classList.toggle('al-norte', !girado);
   controlBrujula.boton.firstChild.style.transform = 'rotate(' + g + 'deg)';
 }
 if (controlBrujula) { mapa.on('rotate', ponerBrujula); ponerBrujula(); }
@@ -2962,19 +3059,61 @@ function ponerRumboBoton() {
   b.title = nav.rumbo ? 'El mapa gira hacia donde vas (tocá para norte arriba)' : 'Norte arriba (tocá para que gire hacia donde vas)';
 }
 
+// Voz. Cuidados por fallas de Chrome en Android (el 20/11/2026 el chofer probó en la calle y no habló nada):
+// - "cancel()" seguido enseguida de "speak()" a veces se traga la frase nueva: si había algo hablando, se corta
+//   y la frase nueva sale 150 ms después; si no había nada, no se llama a cancel().
+// - la frase se guarda en una variable (si no, el navegador puede tirarla antes de decirla y no suena).
+// - si quedó en pausa (la app estuvo en segundo plano), se reanuda.
+// - si a los 5 s de la primera frase no empezó a hablar, o da error, se avisa en pantalla qué revisar.
+var voz = { frases: [], probada: false, avisada: false };
+if (window.speechSynthesis) {
+  try {
+    window.speechSynthesis.getVoices();   // en Android la lista llega después: se pide al abrir
+    window.speechSynthesis.addEventListener('voiceschanged', function () { window.speechSynthesis.getVoices(); });
+  } catch (e) { /* nada */ }
+}
+function vozEnEspanol() {
+  var voces = [];
+  try { voces = window.speechSynthesis.getVoices() || []; } catch (e) { /* nada */ }
+  return voces.filter(function (x) { return /^es(-|_)(AR|419|US|MX)/i.test(x.lang); })[0] ||
+         voces.filter(function (x) { return /^es/i.test(x.lang); })[0] || null;
+}
+function avisarVozFalla(motivo) {
+  if (voz.avisada || !nav.activo) return;
+  voz.avisada = true;
+  mostrarMensaje('🔇 El teléfono no está hablando' + (motivo ? ' (' + motivo + ')' : '') + '. Subí el volumen ' +
+                 '"multimedia" y revisá que tenga instalada la voz en español (Ajustes → Texto a voz). ' +
+                 'Las indicaciones siguen en el cartel verde.', true);
+  setTimeout(ocultarMensaje, 12000);
+}
 function hablar(texto, urgente) {
   if (!nav.voz || !window.speechSynthesis || !texto) return;
+  var s = window.speechSynthesis;
   try {
-    if (urgente) window.speechSynthesis.cancel();
+    var ocupado = s.speaking || s.pending;
+    if (urgente && ocupado) s.cancel();
+    if (s.paused) s.resume();
     var u = new SpeechSynthesisUtterance(texto);
     u.lang = 'es-AR';
-    var voces = window.speechSynthesis.getVoices();
-    var v = voces.filter(function (x) { return /^es(-|_)AR/i.test(x.lang); })[0] ||
-            voces.filter(function (x) { return /^es/i.test(x.lang); })[0];
-    if (v) u.voice = v;
+    var v = vozEnEspanol();
+    if (v) { u.voice = v; u.lang = v.lang; }
     u.rate = 1;
-    window.speechSynthesis.speak(u);
-  } catch (e) { /* el teléfono no habla: queda el cartel */ }
+    u.volume = 1;
+    voz.frases.push(u);
+    if (voz.frases.length > 6) voz.frases.shift();
+    u.onstart = function () { voz.probada = true; };
+    u.onend = function () { voz.probada = true; };
+    u.onerror = function (ev) {
+      var err = ev && ev.error;
+      if (err === 'interrupted' || err === 'canceled') return;   // la cortó otra frase: normal
+      avisarVozFalla(err === 'not-allowed' ? 'el navegador no lo dejó: apagá y prendé la voz con el botón 🔊' : err);
+    };
+    if (!voz.probada) {
+      setTimeout(function () { if (!voz.probada && nav.voz && nav.activo) avisarVozFalla(); }, 5000);
+    }
+    if (urgente && ocupado) setTimeout(function () { s.speak(u); }, 150);
+    else s.speak(u);
+  } catch (e) { avisarVozFalla(); }
 }
 
 function textoDistancia(m) {

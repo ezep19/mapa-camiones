@@ -3059,7 +3059,7 @@ function ponerRumboBoton() {
   b.title = nav.rumbo ? 'El mapa gira hacia donde vas (tocá para norte arriba)' : 'Norte arriba (tocá para que gire hacia donde vas)';
 }
 
-// Voz. Cuidados por fallas de Chrome en Android (el 20/11/2026 el chofer probó en la calle y no habló nada):
+// Voz. Cuidados por fallas de Chrome en Android (el 19/11/2026 el chofer probó en la calle y no habló nada):
 // - "cancel()" seguido enseguida de "speak()" a veces se traga la frase nueva: si había algo hablando, se corta
 //   y la frase nueva sale 150 ms después; si no había nada, no se llama a cancel().
 // - la frase se guarda en una variable (si no, el navegador puede tirarla antes de decirla y no suena).

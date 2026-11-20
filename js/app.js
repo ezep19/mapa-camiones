@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 48;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 49;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3038,23 +3038,43 @@ function decirFrase(texto, urgente, alFin) {
 }
 function hablar(texto, urgente) {
   if (!nav.voz || !texto) return;
+  sesionDeAudio();
   if (!hayVoz()) { avisarVozFalla(); return; }
   decirFrase(texto, urgente, function (ok, detalle) { if (!ok) avisarVozFalla(detalle); });
 }
 // Botón "Probar la voz": habla y muestra qué pasó (sirve para saber por qué no habla en un teléfono)
-// Un pitido corto: si se escucha el pitido pero no la voz, el sonido anda y lo que falla es la voz del teléfono
+// iPhone: con el teléfono en silencio las páginas web no suenan. Se pide sonar "como una app de música"
+// (navigator.audioSession, iOS 16.4 o más nuevo), que suena aunque esté en silencio.
+function sesionDeAudio() {
+  try { if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; } catch (e) { /* nada */ }
+}
+sesionDeAudio();
+// Un pitido corto (un archivo de sonido armado acá, no Web Audio: en el iPhone suena aunque esté en silencio y
+// además "despierta" el sonido de la página). Si se escucha el pitido pero no la voz, lo que falla es la voz.
+var sonidoPitido = null;
+function archivoPitido() {
+  if (sonidoPitido) return sonidoPitido;
+  var hz = 8000, n = Math.round(hz * 0.35), b = new Uint8Array(44 + n), v = new DataView(b.buffer);
+  function txt(o, t) { for (var k = 0; k < t.length; k++) b[o + k] = t.charCodeAt(k); }
+  txt(0, 'RIFF'); v.setUint32(4, 36 + n, true); txt(8, 'WAVE'); txt(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, hz, true);
+  v.setUint32(28, hz, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); txt(36, 'data'); v.setUint32(40, n, true);
+  for (var i = 0; i < n; i++) {
+    var env = Math.min(1, i / 200, (n - i) / 400);
+    b[44 + i] = 128 + Math.round(100 * env * Math.sin(2 * Math.PI * 880 * i / hz));
+  }
+  var bin = '';
+  for (var q = 0; q < b.length; q++) bin += String.fromCharCode(b[q]);
+  sonidoPitido = 'data:audio/wav;base64,' + btoa(bin);
+  return sonidoPitido;
+}
 function pitido() {
+  sesionDeAudio();
   try {
-    var C = window.AudioContext || window.webkitAudioContext;
-    if (!C) return false;
-    var ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.value = 880;
-    g.gain.setValueAtTime(0.0001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.5, ctx.currentTime + 0.03);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
-    o.connect(g); g.connect(ctx.destination);
-    o.start(); o.stop(ctx.currentTime + 0.55);
-    setTimeout(function () { try { ctx.close(); } catch (e) { /* nada */ } }, 1200);
+    var a = new Audio(archivoPitido());
+    a.volume = 1;
+    var p = a.play();
+    if (p && p.catch) p.catch(function () { /* el navegador no dejó */ });
     return true;
   } catch (e) { return false; }
 }
@@ -3143,6 +3163,7 @@ function empezarNavegacion(rutaElegida) {
   nav.ultimoRumbo = null;
   ponerBrujula();
   mostrarCartelNav('Buscando tu ubicación...', '');
+  if (!ruta.esRecalculo && nav.voz) pitido();
   if (!ruta.esRecalculo) hablar('Vamos. Seguí la ruta azul.', true);
   // si la voz quedó apagada (botón 🔇) o el navegador no habla, se dice en pantalla (antes no avisaba nada)
   if (!ruta.esRecalculo && !nav.voz) {

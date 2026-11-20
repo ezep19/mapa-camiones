@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 68;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 69;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -423,6 +423,7 @@ formCamion.addEventListener('submit', function (ev) {
   mostrarResumenCamion();
   cerrarVentanaCamion();
   repintar();
+  if (typeof ponerControles === 'function' && controles.lista.length) ponerControles();
   if (zonasIndice.length) armarPanel();   // "no pasás en N" cambia con las medidas
 });
 botonCancelar.addEventListener('click', cerrarVentanaCamion);
@@ -1640,11 +1641,18 @@ var CONTROLES = {
   camara:        { nombre: 'Cámara de semáforo',      icono: '🚦', radar: true }
 };
 function esRadar(p) { return !!(CONTROLES[p.tipo] && CONTROLES[p.tipo].radar); }
+// Los camiones tienen su propia máxima (80 km/h, lo marcó el chofer el 20/11/2026): aunque el cartel del radar diga
+// 100 o 110, para el camión es 80. Solo para camiones de más de 3,5 t (o si no cargó el peso).
+var MAXIMA_CAMION = 80;
+function maximaCamion(m) {
+  if (!m) return null;
+  return (!camion || !camion.peso || camion.peso > 3.5) ? Math.min(m, MAXIMA_CAMION) : m;
+}
 var ZOOM_CONTROLES = 9;
 var controles = { lista: [], actualizado: null, policiales: [], radares: [], radaresActualizado: null };
 
 function iconoControl(p) {
-  if (p.tipo === 'radar' && p.maxima) return 'ic-r-' + p.maxima;
+  if (p.tipo === 'radar' && p.maxima) return 'ic-r-' + maximaCamion(p.maxima);
   return 'ic-c-' + (CONTROLES[p.tipo] ? p.tipo : 'policial');
 }
 function ponerControles() {
@@ -1681,16 +1689,18 @@ function mostrarControles() { /* (antes ponía y sacaba marcas según la vista; 
 function armarCartelRadar(p) {
   var tipo = CONTROLES[p.tipo];
   var html = '<div class="cartel-tipo">' + tipo.icono + ' ' + esc(tipo.nombre) + '</div>';
+  var mc = maximaCamion(p.maxima);
   if (p.tipo === 'radar') {
-    html += '<div class="cartel-valor">' + (p.maxima ? 'Máxima ' + p.maxima + ' km/h' : 'Radar (no figura la máxima)') + '</div>';
+    html += '<div class="cartel-valor">' + (mc ? 'Máxima ' + mc + ' km/h para tu camión' : 'Radar (no figura la máxima)') + '</div>';
+    if (mc && mc < p.maxima) html += '<div class="cartel-linea">El cartel dice ' + p.maxima + ' km/h (para autos); ' +
+                                     'los camiones, ' + MAXIMA_CAMION + '.</div>';
   } else {
     html += '<div class="cartel-valor">Fotomulta por cruzar en rojo</div>';
-    if (p.maxima) html += '<div class="cartel-linea">También controla velocidad: máxima ' + p.maxima + ' km/h</div>';
+    if (mc) html += '<div class="cartel-linea">También controla velocidad: máxima ' + mc + ' km/h para tu camión</div>';
   }
   if (p.nombre) html += '<div class="cartel-calle">' + esc(p.nombre) + '</div>';
   if (p.ruta) html += '<div class="cartel-calle">' + esc(p.ruta) + '</div>';
   if (p.operador) html += '<div class="cartel-calle">' + esc(p.operador) + '</div>';
-  if (p.tipo === 'radar') html += '<div class="cartel-linea">Ojo: el camión tiene su propia máxima, que puede ser menor que la del cartel.</div>';
   html += '<div class="cartel-fuente">Figura en OpenStreetMap: puede no estar funcionando, haberse movido, o haber ' +
           'radares que no figuran.</div>';
   html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (controles.radaresActualizado ? ' (' + fecha(controles.radaresActualizado) + ')' : '') +
@@ -3352,7 +3362,7 @@ function mostrarRuta(indice, sinMoverMapa) {
     html += '<details class="ruta-pasos"><summary>👮📷 Controles y radares (' + r.controles.length + ')</summary><ul class="ruta-lista">';
     r.controles.forEach(function (c, i) {
       var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
-      var txt = tipo.nombre + (p.tipo === 'radar' && p.maxima ? ' (máx. ' + p.maxima + ' km/h)' : '') +
+      var txt = tipo.nombre + (p.tipo === 'radar' && p.maxima ? ' (máx. ' + maximaCamion(p.maxima) + ' km/h)' : '') +
                 (p.nombre && p.nombre !== tipo.nombre ? ': ' + p.nombre : '');
       html += '<li><button type="button" data-control="' + i + '"><span class="ruta-lista-icono">' + tipo.icono + '</span>' +
               esc(txt) + '</button></li>';
@@ -4152,7 +4162,7 @@ function empezarNavegacion(rutaElegida) {
                       radar: 'radar de velocidad', camara: 'cámara de semáforo' };
   (r.controles || controlesEnRuta(r.puntos)).forEach(function (c, k) {
     var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
-    var maxRadar = p.tipo === 'radar' && p.maxima ? p.maxima : null;
+    var maxRadar = p.tipo === 'radar' && p.maxima ? maximaCamion(p.maxima) : null;
     nav.avisos.push({ n: 'ctl' + k, texto: tipo.nombre + (maxRadar ? ', máxima ' + maxRadar + ' km/h' : ''),
                       voz: (VOZ_CONTROL[p.tipo] || 'control policial') + (maxRadar ? ', máxima ' + maxRadar + ' kilómetros por hora' : ''),
                       maxima: maxRadar, icono: tipo.icono + ' ', rojo: false,

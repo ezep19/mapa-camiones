@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mapa para camiones (prueba)</title>
+  <meta name="theme-color" content="#1f2a36">
+  <link rel="icon" type="image/png" sizes="32x32" href="iconos/favicon-32.png">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
+        integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="">
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #f2efe9;
+                 font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #mapa { position: fixed; inset: 0; }
+    .cartel-prueba { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 12px; right: 12px; z-index: 5;
+                     display: flex; gap: 8px; align-items: center; pointer-events: none; }
+    .cartel-prueba > * { pointer-events: auto; background: #fff; border-radius: 24px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+                         padding: 10px 14px; font-size: 15px; }
+    .cartel-prueba .texto { flex: 1; color: #333; }
+    .cartel-prueba a { color: #1a73e8; text-decoration: none; font-weight: 600; white-space: nowrap; }
+    .maplibregl-ctrl-group { border-radius: 50% !important; box-shadow: 0 2px 10px rgba(0,0,0,.3) !important; }
+    .maplibregl-ctrl-group button { width: 46px !important; height: 46px !important; }
+    .maplibregl-ctrl-bottom-right { margin-bottom: max(10px, env(safe-area-inset-bottom)); }
+    .maplibregl-popup-content { font-size: 15px; line-height: 1.35; padding: 12px 14px; border-radius: 10px; max-width: 260px; }
+    .maplibregl-popup-content b { display: block; font-size: 16px; margin-bottom: 4px; }
+    .veredicto { font-weight: 700; margin-top: 6px; }
+    .veredicto.no { color: #d50000; } .veredicto.si { color: #2e7d32; } .veredicto.sin_dato { color: #a07800; }
+    .atribucion { position: fixed; left: 4px; bottom: 2px; font-size: 10px; color: #555; background: rgba(255,255,255,.7);
+                  padding: 0 4px; border-radius: 3px; z-index: 5; }
+    .atribucion a { color: inherit; }
+  </style>
+</head>
+<body>
+  <div id="mapa"></div>
+  <div class="cartel-prueba">
+    <span class="texto" id="texto-prueba">Prueba del mapa nuevo: movelo, acercalo y giralo.</span>
+    <a href="./">Volver</a>
+  </div>
+  <div class="atribucion"><a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> · © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
+          integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin=""></script>
+  <script src="js/nueva.js?v=1"></script>
+</body>
+</html>

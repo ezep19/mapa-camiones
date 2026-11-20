@@ -181,7 +181,17 @@ function puedeVectorial() {
 function estiloLiviano(est) {
   // edificios planos (sin 3D, que pesa mucho en el celular) y sin los negocios chiquitos (ensucian el mapa)
   est.layers = est.layers.filter(function (l) { return l.id !== 'building-3d' && l.id !== 'poi_r20'; });
-  est.layers.forEach(function (l) { if (l.id === 'building') delete l.maxzoom; });
+  est.layers.forEach(function (l) {
+    if (l.id === 'building') delete l.maxzoom;
+    // calles en blanco y autopistas en gris azulado (como Google Maps): el amarillo y el naranja del estilo original
+    // se confundían con lo amarillo ("verificar") y lo rojo del camión
+    if (l.type !== 'line' || !l.paint || !l.paint['line-color'] || !/^(road|bridge|tunnel)_/.test(l.id)) return;
+    var auto = /motorway/.test(l.id), borde = /casing/.test(l.id);
+    var c = JSON.stringify(l.paint['line-color']);
+    if (auto && /#fc8|#ffdaa6|hsl\(26/.test(c)) l.paint['line-color'] = '#d9e2ec';
+    else if (borde && /#e9ac77/.test(c)) l.paint['line-color'] = auto ? '#a7b4c2' : '#cdc9c3';
+    else if (/#fea|#fff4c6/.test(c)) l.paint['line-color'] = '#ffffff';
+  });
   return est;
 }
 function ponerFondo() {

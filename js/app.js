@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 75;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 76;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -4463,6 +4463,7 @@ function seguirNavegacion(pos) {
   }
   nav.fuera = 0;
   nav.idx = u.idx;
+  nav.recorrido = u.recorrido;   // metros hechos sobre la ruta (para volver a ella si te salís)
   if (true) {
     var rumbo = rumboEnRuta(u);
     // solo si cambió algo (si no, el mapa tiembla con cada lectura del GPS)
@@ -4609,6 +4610,37 @@ function rumboEntre(a, b) {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
+// v76: en un viaje largo, si te salís de la ruta no se recalcula todo el viaje (10–20 s): se busca cómo volver a la
+// ruta unos km más adelante (1–3 s) y se sigue con el resto como estaba. Si eso falla o pasa por algo rojo, todo.
+var VOLVER_A_LA_RUTA_M = 8000;
+function volverALaRuta(pos) {
+  var r = nav.r, total = nav.acum[nav.acum.length - 1], hecho = nav.recorrido || 0;
+  if (!r || total - hecho < 40000) return Promise.reject(new Error('corto'));
+  var j = nav.acum.findIndex(function (d) { return d >= hecho + VOLVER_A_LA_RUTA_M; });
+  if (j < 1 || j >= r.puntos.length - 2) return Promise.reject(new Error('cerca del final'));
+  var destino = L.latLng(r.puntos[j]);
+  return cargarZonasEn(L.latLngBounds([L.latLng(pos), destino]).pad(0.2)).then(function () {
+    return calcularTramo(L.latLng(pos), destino, null, false);
+  }).then(function (caminos) {
+    var t = elegirOpciones(caminos)[0];
+    if (!t || t.rojos) throw new Error('el camino para volver pasa por algo rojo');
+    var corrida = t.puntos.length - (j + 1);
+    var c = {
+      servicio: t.servicio, largo: r.largo,
+      puntos: t.puntos.concat(r.puntos.slice(j + 1)),
+      pasos: t.pasos.slice(0, -1).concat(r.pasos.filter(function (p) { return p.ini != null && p.ini > j; })
+        .map(function (p) { return Object.assign({}, p, { ini: p.ini + corrida }); })),
+      km: t.km + (total - nav.acum[j]) / 1000,
+      segundos: t.segundos + (r.segundos || 0) * (total - nav.acum[j]) / total,
+      vueltas: t.vueltas + r.pasos.filter(function (p) { return p.ini != null && p.ini > j && p.vuelta; }).length,
+      kmChicas: null, esquivados: (r.esquivados || 0) + (t.esquivados || 0)
+    };
+    c.avisos = revisarRuta(c.puntos, c.pasos);
+    c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
+    c.sinRevisar = zonasSinCargarEnRutas([c.puntos]);
+    return c;
+  });
+}
 function recalcularDesde(pos) {
   if (!ruta.hasta) return;
   nav.recalculando = true;
@@ -4617,6 +4649,21 @@ function recalcularDesde(pos) {
   hablar('Recalculando la ruta.', true);
   marcarParadasPasadas(pos);
   ponerPunto('desde', pos, 'Mi ubicación');
+  volverALaRuta(pos).then(function (c) {
+    if (!nav.activo) { nav.recalculando = false; return; }
+    if (c.rojos > (nav.r.rojos || 0)) throw new Error('quedó peor');
+    nav.recalculando = false;
+    ruta.opciones = [c];
+    mostrarRuta(0, true);
+    ruta.esRecalculo = true;
+    empezarNavegacion(c);
+  }).catch(function (e) {
+    if (!nav.activo) { nav.recalculando = false; return; }
+    console.warn('Recalculo rápido no:', e.message);
+    recalcularTodo();
+  });
+}
+function recalcularTodo() {
   ruta.alTerminarCalculo = function (ok) {
     nav.recalculando = false;
     if (!nav.activo) return;   // el chofer terminó la navegación mientras recalculaba

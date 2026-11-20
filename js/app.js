@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 74;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 75;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -132,11 +132,43 @@ function estiloLiviano(est) {
   });
   return est;
 }
-(function ponerFondo() {
-  var listo = false;
-  function respaldo() { if (listo) return; listo = true; fondo.tipo = 'osm'; gl.setStyle(ESTILO_RESPALDO); }
+// --- Mapa de noche (v75): de noche el mapa oscuro de OpenFreeMap (no encandila manejando), como Google Maps y Waze.
+// "auto" = según la salida y la puesta del sol donde estás; se puede fijar claro u oscuro en Qué mostrar.
+var ESTILO_NOCHE = 'https://tiles.openfreemap.org/styles/dark';
+var CLAVE_NOCHE = 'mapa-camiones:noche';
+var modoNoche = (function () { try { return JSON.parse(localStorage.getItem(CLAVE_NOCHE)) || 'auto'; } catch (e) { return 'auto'; } })();
+// Salida y puesta del sol (minutos del día en hora UTC), fórmula de la NOAA (alcanza con unos minutos de error)
+function horasDeSol(lat, lng, d) {
+  var dia = Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(d.getUTCFullYear(), 0, 0)) / 864e5);
+  var g = 2 * Math.PI / 365 * (dia - 1), rad = Math.PI / 180;
+  var decl = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) +
+             0.000907 * Math.sin(2 * g) - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+  var eqt = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+  var x = Math.cos(90.833 * rad) / (Math.cos(lat * rad) * Math.cos(decl)) - Math.tan(lat * rad) * Math.tan(decl);
+  var ha = Math.acos(Math.max(-1, Math.min(1, x))) / rad;
+  var mediodia = 720 - 4 * lng - eqt;
+  return { sale: mediodia - 4 * ha, pone: mediodia + 4 * ha };
+}
+function esDeNoche() {
+  if (modoNoche === 'oscuro') return true;
+  if (modoNoche === 'claro') return false;
+  var c = (typeof ubicacion !== 'undefined' && ubicacion.ultima) || gl.getCenter();
+  var lat = c.lat, lng = c.lng != null ? c.lng : c.lon, ahora = new Date();
+  var sol = horasDeSol(lat, lng, ahora), m = ahora.getUTCHours() * 60 + ahora.getUTCMinutes();
+  // de día: desde 15 minutos antes de que salga el sol hasta 20 minutos después de que se pone
+  var desde = ((sol.sale - 15) % 1440 + 1440) % 1440, hasta = ((sol.pone + 20) % 1440 + 1440) % 1440;
+  var deDia = desde < hasta ? (m >= desde && m < hasta) : (m >= desde || m < hasta);
+  return !deDia;
+}
+function ponerFondo() {
+  var listo = false, oscuro = esDeNoche();
+  function respaldo() {
+    if (listo) return; listo = true;
+    if (fondo.tipo === 'vectorial') return;   // ya había un mapa: queda ese
+    fondo.tipo = 'osm'; gl.setStyle(ESTILO_RESPALDO);
+  }
   var espera = setTimeout(respaldo, 10000);
-  fetch(ESTILO_FONDO).then(function (r) {
+  fetch(oscuro ? ESTILO_NOCHE : ESTILO_FONDO).then(function (r) {
     if (!r.ok) throw new Error('estilo ' + r.status);
     return r.json();
   }).then(function (est) {
@@ -144,9 +176,18 @@ function estiloLiviano(est) {
     listo = true;
     clearTimeout(espera);
     fondo.tipo = 'vectorial';
-    gl.setStyle(estiloLiviano(est));
+    fondo.oscuro = oscuro;
+    document.body.classList.toggle('mapa-noche', oscuro);
+    gl.setStyle(estiloLiviano(est), { diff: false });
   }).catch(function () { clearTimeout(espera); respaldo(); });
-})();
+}
+ponerFondo();
+// cada 5 minutos (y al cambiar la opción) se fija si hay que pasar de día a noche o al revés
+function revisarNoche() {
+  if (fondo.tipo !== 'vectorial' || !!fondo.oscuro === esDeNoche()) return;
+  ponerFondo();
+}
+setInterval(revisarNoche, 5 * 60 * 1000);
 gl.on('error', function (ev) { if (window.console) console.warn('Mapa:', ev && ev.error && ev.error.message); });
 
 // --- Íconos (gomerías, controles, reportes): se dibujan una vez en un lienzo y MapLibre los usa como imagen ---
@@ -4619,6 +4660,15 @@ if (document.getElementById('nav-cartel')) {
   var bVoz = document.getElementById('btn-probar-voz');
   if (bVoz) bVoz.addEventListener('click', function () { abrirPanel(false); probarVoz(); });
   // qué voz usar: la grabada (suena con el iPhone en silencio) o la del teléfono (dice los nombres de las calles)
+  var selNoche = document.getElementById('mapa-noche');
+  if (selNoche) {
+    selNoche.value = modoNoche;
+    selNoche.addEventListener('change', function () {
+      modoNoche = selNoche.value;
+      try { localStorage.setItem(CLAVE_NOCHE, JSON.stringify(modoNoche)); } catch (e) { /* sin lugar: no se recuerda */ }
+      revisarNoche();
+    });
+  }
   var selMotor = document.getElementById('voz-motor');
   if (selMotor) {
     selMotor.value = voz.motor;

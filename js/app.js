@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 65;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 66;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -269,8 +269,9 @@ function abrirCartel(latlng, contenido) {
   // MapLibre solo, en el iPhone el menú del dedo apretado se podía cerrar apenas se levantaba el dedo.
   var c = new maplibregl.Popup({ maxWidth: '300px', focusAfterOpen: false, offset: 10, closeOnClick: false }).setLngLat([latlng.lng, latlng.lat]);
   if (typeof contenido === 'string') c.setHTML(contenido); else c.setDOMContent(contenido);
-  c.on('close', function () { if (cartel === c) cartel = null; });
+  c.on('close', function () { if (cartel === c) cartel = null; if (!cartel) document.body.classList.remove('cartel-abierto'); });
   cartel = c;
+  document.body.classList.add('cartel-abierto');   // el velocímetro se hace transparente para no tapar el cartel
   c.addTo(gl);
   // como Leaflet: si el cartel queda tapado arriba (barra de búsqueda) o se sale por abajo, se corre el mapa
   setTimeout(function () {
@@ -1211,10 +1212,135 @@ function mostrarLugares() {
 }
 function abrirCartelLugar(l) {
   var f = l.feature, p = f.properties, tipo = LUGAR_POR_ID[p.tipo], ll = l.getLatLng();
-  abrirCartel(ll, armarCartelLugar(f) + botonReportar(ll, tipo.uno + (p.nombre ? ' ' + p.nombre : '') + ' (' + p.osm + ')'));
+  abrirCartel(ll, armarCartelLugar(f, l) + botonReportar(ll, tipo.uno + (p.nombre ? ' ' + p.nombre : '') + ' (' + p.osm + ')'));
+  completarDetalles(p.osm, p.tipo);
 }
 
-function armarCartelLugar(f) {
+// --- Más detalles de un lugar (pedido del chofer, 20/11/2026: "tocar donde dice gomería o YPF y que te dé detalles") ---
+// Lo que no viene en nuestros archivos (combustibles, servicios, formas de pago, página web...) se pide a OpenStreetMap
+// al abrir el cartel, de a un lugar por vez (y queda guardado mientras la página esté abierta).
+var detallesOSM = {};
+function bajarDetallesOSM(osm) {
+  if (!/^(node|way|relation)\/\d+$/.test(osm || '')) return Promise.resolve(null);
+  if (!detallesOSM[osm]) {
+    detallesOSM[osm] = conTiempoLimite('https://api.openstreetmap.org/api/0.6/' + osm + '.json', {}, 8)
+      .then(function (r) { if (!r.ok) throw new Error('OSM ' + r.status); return r.json(); })
+      .then(function (d) { var e = d.elements && d.elements[0]; return e ? { tags: e.tags || {}, fecha: e.timestamp } : null; })
+      .catch(function (e) { console.warn('Sin detalles de', osm, e); delete detallesOSM[osm]; return null; });
+  }
+  return detallesOSM[osm];
+}
+var COMBUSTIBLES = [
+  [['fuel:diesel', 'fuel:biodiesel'], 'Gasoil'], [['fuel:HGV_diesel'], 'Gasoil para camiones'],
+  [['fuel:GTL_diesel', 'fuel:diesel:premium', 'fuel:diesel:class2'], 'Gasoil premium'],
+  [['fuel:octane_91', 'fuel:octane_92', 'fuel:octane_93', 'fuel:octane_95'], 'Nafta súper'],
+  [['fuel:octane_97', 'fuel:octane_98', 'fuel:octane_100'], 'Nafta premium'],
+  [['fuel:cng'], 'GNC'], [['fuel:lpg'], 'GLP (gas)'], [['fuel:adblue', 'adblue'], 'AdBlue / urea']
+];
+var PAGOS = { cash: 'efectivo', debit_cards: 'débito', credit_cards: 'crédito', mercadopago: 'Mercado Pago',
+              fuel_cards: 'tarjetas de flota', contactless: 'sin contacto', cheque: 'cheque', visa: 'Visa',
+              mastercard: 'Mastercard', maestro: 'Maestro', american_express: 'American Express', cards: 'tarjeta' };
+function esSi(v) { return v === 'yes' || v === 'designated' || v === 'only'; }
+function detallesDeTags(t, tipo, nombre) {
+  var lineas = [];
+  var marca = t.brand || '';
+  if (marca && (!nombre || nombre.toLowerCase().indexOf(marca.toLowerCase()) === -1)) lineas.push(['Marca', marca]);
+  if (t.operator && t.operator !== marca && t.operator !== nombre) lineas.push(['Lo atiende', t.operator]);
+  var comb = [];
+  COMBUSTIBLES.forEach(function (c) { if (c[0].some(function (k) { return esSi(t[k]); }) && comb.indexOf(c[1]) === -1) comb.push(c[1]); });
+  if (comb.length) lineas.push(['Combustibles', comb.join(', ')]);
+  var serv = [];
+  function si(cond, texto) { if (cond && serv.indexOf(texto) === -1) serv.push(texto); }
+  si(/^(convenience|kiosk|supermarket)$/.test(t.shop || '') || esSi(t.convenience), 'tienda / minimercado');
+  si(esSi(t.food) || esSi(t.restaurant) || t.cuisine || /^(restaurant|fast_food|cafe)$/.test(t.amenity || ''), 'comida');
+  si(esSi(t.cafe), 'café');
+  si(esSi(t.toilets) || t.amenity === 'toilets' || t['toilets:access'] === 'customers', 'baños');
+  si(esSi(t.shower) && tipo !== 'ducha', 'duchas');
+  si(esSi(t.compressed_air), 'aire para las cubiertas');
+  si(esSi(t.car_wash) || esSi(t['hgv:wash']), 'lavadero');
+  si(t.internet_access === 'wlan' || esSi(t.internet_access), 'wifi');
+  si(esSi(t.atm), 'cajero automático');
+  si(esSi(t['service:vehicle:tyres']) || esSi(t['service:tyres']) || (t.shop === 'tyres' && tipo !== 'gomeria'), 'cubiertas');
+  si(esSi(t['service:vehicle:truck']) && tipo !== 'taller', 'arreglo de camiones');
+  si(esSi(t['service:vehicle:repair']) || esSi(t['service:vehicle:car_repair']), 'mecánica');
+  si(esSi(t['service:vehicle:oil_change']) || esSi(t['service:vehicle:oil']), 'cambio de aceite');
+  si(esSi(t['parking:hgv']) || esSi(t['hgv:parking']), 'estacionamiento para camiones');
+  if (serv.length) lineas.push(['Tiene', serv.join(', ')]);
+  if (t['capacity:hgv']) lineas.push(['Lugar para', t['capacity:hgv'] + ' camiones']);
+  if (esSi(t.hgv)) lineas.push(['Camiones', 'según el mapa, entra un camión']);
+  else if (t.hgv === 'no') lineas.push(['Camiones', 'según el mapa, NO entra un camión']);
+  var pago = [];
+  Object.keys(t).forEach(function (k) {
+    var m = /^payment:(.+)$/.exec(k);
+    if (m && esSi(t[k])) { var n = PAGOS[m[1]] || m[1].replace(/_/g, ' '); if (pago.indexOf(n) === -1) pago.push(n); }
+  });
+  if (pago.length) lineas.push(['Se paga con', pago.join(', ')]);
+  if (t.description) lineas.push(['Dice', t.description]);
+  return lineas;
+}
+function completarDetalles(osm, tipo) {
+  bajarDetallesOSM(osm).then(function (d) {
+    var caja = document.querySelector('.cartel-mas[data-osm="' + osm + '"]');
+    if (!caja) return;   // el cartel ya se cerró
+    if (!d) { caja.innerHTML = '<div class="cartel-fuente">Sin señal: no pude buscar más datos de este lugar.</div>'; return; }
+    var t = d.tags, html = '';
+    detallesDeTags(t, tipo, t.name || '').forEach(function (x) {
+      html += '<div class="cartel-dato"><b>' + esc(x[0]) + ':</b> ' + esc(x[1]) + '</div>';
+    });
+    var web = t.website || t['contact:website'] || t.url;
+    var wa = t['contact:whatsapp'] || t.whatsapp;
+    if (web && /^https?:\/\//.test(web)) html += '<div class="cartel-dato"><a href="' + esc(web) + '" target="_blank" rel="noopener">Página web</a></div>';
+    if (wa) html += '<div class="cartel-dato"><a href="https://wa.me/' + esc(String(wa).replace(/[^\d]/g, '')) +
+                    '" target="_blank" rel="noopener">WhatsApp: ' + esc(wa) + '</a></div>';
+    if (!html) html = '<div class="cartel-fuente">No hay más datos cargados de este lugar. Si lo conocés, contalo con "Reportar".</div>';
+    if (d.fecha) {
+      var f = new Date(d.fecha);
+      if (!isNaN(f)) html += '<div class="cartel-fuente">Dato revisado en el mapa: ' +
+        f.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' }) + '</div>';
+    }
+    caja.innerHTML = html;
+  });
+}
+
+// Lo que está alrededor: distancia a vos, kilómetro del viaje y otros lugares a menos de 300 m
+var cartelCerca = [];
+function armarCercania(l) {
+  var ll = l.getLatLng(), html = '';
+  function distancia(d) { return d < 1000 ? Math.max(10, Math.round(d / 10) * 10) + ' m' : numero(d / 1000, d < 10000 ? 1 : 0) + ' km'; }
+  if (ubicacion.ultima) html += '<div class="cartel-dato">📍 A ' + distancia(ubicacion.ultima.distanceTo(ll)) + ' de vos (en línea recta)</div>';
+  if (ruta.linea && ruta.linea.lugares) {
+    var x = ruta.linea.lugares.filter(function (y) { return y.l === l; })[0];
+    if (x) html += '<div class="cartel-dato">🛣️ En tu viaje: km ' + Math.round(x.km) + '</div>';
+  }
+  var cerca = [];
+  LUGARES.forEach(function (t) {
+    if (!gruposLugares[t.id]) return;
+    gruposLugares[t.id].eachLayer(function (o) {
+      if (o === l) return;
+      var d = o.getLatLng().distanceTo(ll);
+      if (d <= 300) cerca.push({ o: o, d: d, t: t });
+    });
+  });
+  cerca.sort(function (a, b) { return a.d - b.d; });
+  cartelCerca = cerca.slice(0, 5).map(function (c) { return c.o; });
+  if (cerca.length) {
+    html += '<div class="cartel-dato"><b>Al lado (a menos de 300 m):</b></div><div class="cartel-cerca">';
+    cerca.slice(0, 5).forEach(function (c, i) {
+      html += '<button type="button" data-cerca="' + i + '">' + c.t.icono + ' ' + esc(c.o.feature.properties.nombre || c.t.uno) +
+              ' <small>' + distancia(c.d) + '</small></button>';
+    });
+    html += '</div>';
+  }
+  return html;
+}
+document.addEventListener('click', function (ev) {
+  var b = ev.target.closest && ev.target.closest('[data-cerca]');
+  if (!b) return;
+  var o = cartelCerca[+b.getAttribute('data-cerca')];
+  if (o) abrirCartelLugar(o);
+});
+
+function armarCartelLugar(f, l) {
   var p = f.properties;
   var tipo = LUGAR_POR_ID[p.tipo];
   var html = '<div class="cartel-tipo">' + tipo.icono + ' ' + esc(tipo.uno) + '</div>';
@@ -1236,9 +1362,15 @@ function armarCartelLugar(f) {
     html += '<div class="cartel-linea">Teléfono: <a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">' + esc(tel) + '</a></div>';
   }
 
+  html += '<div class="cartel-mas" data-osm="' + esc(p.osm) + '"><div class="cartel-fuente">Buscando más datos...</div></div>';
+  if (l) html += armarCercania(l);
+
   var c = f.geometry.coordinates;   // [longitud, latitud]
   html += '<a class="cartel-boton" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&amp;destination=' +
           c[1] + ',' + c[0] + '">Cómo llegar (Google Maps)</a>';
+  // fotos, opiniones y horarios que la gente carga en Google (abre Google Maps buscando ese nombre en ese lugar)
+  html += '<a class="cartel-boton fotos" target="_blank" rel="noopener" href="https://www.google.com/maps/search/' +
+          encodeURIComponent(p.nombre || tipo.uno) + '/@' + c[1] + ',' + c[0] + ',17z">Ver fotos y opiniones (Google)</a>';
   html += '<div class="cartel-fuente">Google Maps no conoce las restricciones para camiones: mirá este mapa antes de salir.</div>';
   html += '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
           '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
@@ -2033,6 +2165,34 @@ mapa.on('locationfound', function (e) {
     ocultarMensaje();
     mapa.setView(e.latlng, Math.max(mapa.getZoom(), 16));
   }
+});
+
+// --- Velocímetro (pedido del chofer, 20/11/2026) ---
+// La velocidad la da el GPS del teléfono; si no la da, se calcula con las dos últimas ubicaciones.
+// Arriba de 80 km/h (la máxima para camiones en ruta, Ley 24.449) el número se pone naranja.
+var velocidad = { ult: null, timer: null };
+mapa.on('locationfound', function (e) {
+  var el = document.getElementById('velocimetro');
+  if (!el) return;   // index.html viejo guardado en el celular
+  var ahora = Date.now(), v = e.speed, u = velocidad.ult;
+  if (v == null || isNaN(v) || v < 0) {
+    v = null;
+    if (u && ahora - u.t >= 1000 && ahora - u.t < 15000 && (e.accuracy || 99) <= 35) v = u.ll.distanceTo(e.latlng) / ((ahora - u.t) / 1000);
+  }
+  if (!u || ahora - u.t >= 1000) velocidad.ult = { ll: e.latlng, t: ahora };
+  if (v == null) return;
+  var kmh = v * 3.6;
+  if (kmh > 200) return;   // salto del GPS
+  if (kmh < 3) kmh = 0;
+  el.querySelector('b').textContent = Math.round(kmh);
+  el.classList.toggle('rapido', kmh > 80.5);
+  el.hidden = false;
+  document.body.classList.add('con-velocimetro');
+  clearTimeout(velocidad.timer);
+  velocidad.timer = setTimeout(function () {   // sin datos del GPS hace rato: se esconde
+    el.hidden = true;
+    document.body.classList.remove('con-velocimetro');
+  }, 20000);
 });
 
 mapa.on('locationerror', function (e) {

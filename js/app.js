@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 72;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 73;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -488,17 +488,34 @@ function bajarJSON(archivo, obligatorio) {
   return obligatorio ? pedido : pedido.catch(function (e) { console.error(e); return { features: [] }; });
 }
 
+// Las restricciones de una zona (lo que hace falta para revisar una ruta). v73: los lugares y la red de tránsito
+// pesado van aparte (cargarZona): en un viaje largo se bajaban los de todas las ciudades del camino (varios MB).
+var zonasExtras = {};          // id de zona -> promesa de sus lugares y su red
 function cargarZona(z) {
+  if (!zonasExtras[z.id]) {
+    zonasExtras[z.id] = Promise.all([bajarJSON(z.lugares), bajarJSON(z.red)]).then(function (r) {
+      try { agregarExtrasZona({ zona: z, lugares: r[0], red: r[1] }); } catch (e) { console.error(e); }
+    });
+  }
+  return Promise.all([cargarRestriccionesZona(z), zonasExtras[z.id]]);
+}
+function agregarExtrasZona(r) {
+  r.lugares.features.forEach(agregarLugar);
+  agregarRedPesada(r);
+  mostrarLugares();
+  armarPanelLugares();
+}
+function cargarRestriccionesZona(z) {
   if (zonasPedidas[z.id]) return zonasPedidas[z.id];
   zonasCargando++;
   mostrarMensaje('Cargando ' + z.titulo + '...');
-  // Las restricciones son obligatorias; si fallan los lugares o la red, el mapa anda igual
-  zonasPedidas[z.id] = Promise.all([bajarJSON(z.archivo, true), bajarJSON(z.lugares), bajarJSON(z.red), bajarJSON(z.normas), bajarJSON(z.obstaculos)])
+  // Las restricciones son obligatorias; si fallan las normas o los obstáculos, el mapa anda igual
+  zonasPedidas[z.id] = Promise.all([bajarJSON(z.archivo, true), bajarJSON(z.normas), bajarJSON(z.obstaculos)])
     .then(function (r) {
       zonasCargando--;
       // las normas locales (ordenanzas) se suman a las restricciones de OpenStreetMap
       try {
-        agregarZona({ zona: z, datos: { features: r[0].features.concat(r[3].features, r[4].features) }, lugares: r[1], red: r[2] });
+        agregarZona({ zona: z, datos: { features: r[0].features.concat(r[1].features, r[2].features) }, lugares: { features: [] }, red: null });
         zonasOk[z.id] = true;
       } catch (e) { console.error(e); }
       if (!zonasCargando && /^Cargando /.test(document.getElementById('mensaje').textContent)) ocultarMensaje();
@@ -525,10 +542,7 @@ function agregarZona(r) {
     g.addData(f);
     cantidades[f.properties.capa]++;
   });
-  r.lugares.features.forEach(agregarLugar);
-  agregarRedPesada(r);
-  mostrarLugares();
-  // (los bordes de lo rojo nuevo se agregan solos: ver anotarNuevo)
+  // (los lugares y la red llegan aparte: agregarExtrasZona; los bordes de lo rojo nuevo se agregan solos: anotarNuevo)
   if (!panel.hidden) armarPanel();
   armarPanelLugares();
   revisarAvisoZona();
@@ -555,7 +569,7 @@ function zonasEnRutas(listas) {
   });
   return Object.keys(res).map(function (k) { return res[k]; });
 }
-function cargarZonasEnRutas(listas) { return Promise.all(zonasEnRutas(listas).map(cargarZona)); }
+function cargarZonasEnRutas(listas) { return Promise.all(zonasEnRutas(listas).map(cargarRestriccionesZona)); }
 function zonasSinCargarEnRutas(listas) {
   return zonasEnRutas(listas).filter(function (z) { return !zonasOk[z.id]; }).map(function (z) { return z.titulo; });
 }
@@ -2929,10 +2943,23 @@ function calcularTramo(a, b, salida, conAlternativas) {
   return vuelta(1, inicio.zonas, inicio.claves, null).then(function (caminos) { return salirDeLosBarrios(caminos, 0); });
 }
 
+// El camino de un viaje largo se dibuja apenas llega (en 1 o 2 segundos) mientras se revisa que el camión pase:
+// el chofer ve enseguida por dónde va (pedido del chofer, 20/11/2026: "tarda mucho en cargar la ruta").
+function mostrarBorrador(c, salida) {
+  if (!salida || !salida.nodeType) return;   // partes de "Pasar por" o pedazos internos: no se dibujan
+  ponerDatos('ruta', [{ type: 'Feature', properties: { t: 'p' },
+                        geometry: { type: 'LineString', coordinates: c.puntos.map(function (q) { return [q[1], q[0]]; }) } }]);
+  var lim = L.latLngBounds(c.puntos);
+  if (window.innerWidth <= 600) mapa.fitBounds(lim, { paddingTopLeft: [20, 30], paddingBottomRight: [20, (panelRuta.offsetHeight || 0) + 20] });
+  else mapa.fitBounds(lim, { paddingTopLeft: [(panelRuta.offsetWidth || 0) + 30, 30], paddingBottomRight: [30, 30] });
+  salida.innerHTML = '<p class="ruta-resumen"><b>' + esc(duracion(c.segundos)) + '</b> ' + esc(numero(c.km, 1)) + ' km</p>' +
+                     '<p class="ruta-cargando">Revisando que tu camión pase por todo el camino... (unos segundos)</p>';
+}
 function calcularViajeLargo(desde, hasta, salida) {
   salida.innerHTML = '<p class="ruta-cargando">Viaje largo: buscando el recorrido...</p>';
   return pedirCaminos(desde, hasta, [], false).then(function (caminos) {
     var base = caminos[0];
+    mostrarBorrador(base, salida);
     // distancia acumulada a lo largo del recorrido
     var acum = [0];
     for (var i = 1; i < base.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(base.puntos[i - 1]).distanceTo(base.puntos[i]) / 1000);
@@ -2941,11 +2968,10 @@ function calcularViajeLargo(desde, hasta, salida) {
     var i1 = acum.findIndex(function (d) { return d >= corte; });
     var i2 = acum.findIndex(function (d) { return d >= total - corte; });
     var p1 = L.latLng(base.puntos[i1]), p2 = L.latLng(base.puntos[i2]);
-    salida.innerHTML = '<p class="ruta-cargando">Viaje largo: revisando la salida y la llegada para tu camión...</p>';
-    // cargar las zonas de todo el recorrido (para revisar el tramo del medio)
-    return Promise.all([cargarZonasEnRutas([base.puntos]), cargarCortesEn([base.puntos]), cargarPaisEnRutas([base.puntos])]).then(function () {
-      return Promise.all([calcularTramo(desde, p1, null, true), calcularTramo(p2, hasta, null, true)]);
-    }).then(function (r) {
+    // las zonas de todo el recorrido (para revisar el tramo del medio) se bajan mientras se piden la salida y la
+    // llegada (antes, primero una cosa y después la otra)
+    var cargas = Promise.all([cargarZonasEnRutas([base.puntos]), cargarCortesEn([base.puntos]), cargarPaisEnRutas([base.puntos])]);
+    return Promise.all([calcularTramo(desde, p1, null, true), calcularTramo(p2, hasta, null, true), cargas]).then(function (r) {
       var salidaMejor = elegirOpciones(r[0])[0], llegadaMejor = elegirOpciones(r[1])[0];
       var medio = {
         puntos: base.puntos.slice(i1, i2 + 1),
@@ -2977,7 +3003,7 @@ function calcularViajeLargo(desde, hasta, salida) {
       c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
       c.esquivados = salidaMejor.esquivados + llegadaMejor.esquivados;
       var m0 = salidaMejor.puntos.length, m1 = m0 + medio.puntos.length;
-      return arreglarMedio(c, m0, m1, salida).then(function (c2) {
+      return arreglarMedio(c, m0, m1, salida && salida.nodeType ? null : salida).then(function (c2) {
         c2.sinRevisar = zonasSinCargarEnRutas([c2.puntos]);
         return [c2];
       });

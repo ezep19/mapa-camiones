@@ -1026,3 +1026,4 @@ body.navegando .mensaje { top: auto; left: var(--m-izq); right: 84px; transform:
 .ruta-agregar:active { background: #eef4ff; }
 .ruta-trayecto i.ruta-marca { font-style: normal; width: 20px; height: 20px; font-size: 0.7rem; border-width: 2px; flex: none; margin-left: -4px; }
 .ruta-trayecto i.ruta-marca:first-of-type { margin-left: 0; }
+.ruta-lugar-km { display: inline-block; min-width: 3.6em; font-weight: 700; color: var(--primario, #1668f2); font-variant-numeric: tabular-nums; }

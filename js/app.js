@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 61;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 62;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -502,12 +502,7 @@ function agregarZona(r) {
     g.addData(f);
     cantidades[f.properties.capa]++;
   });
-  r.lugares.features.forEach(function (f) {
-    var g = gruposLugares[f.properties.tipo];
-    if (!g) return;
-    g.addData(f);
-    cantidadesLugares[f.properties.tipo]++;
-  });
+  r.lugares.features.forEach(agregarLugar);
   agregarRedPesada(r);
   mostrarLugares();
   // (los bordes de lo rojo nuevo se agregan solos: ver anotarNuevo)
@@ -553,6 +548,7 @@ function cargarZonasVisibles() {
   }
   if (/^Acercá el mapa|^Todavía no hay datos|^Acá solo hay/.test(m.textContent)) ocultarMensaje();
   cargarPaisEn(mapa.getBounds().pad(0.2));
+  cargarLugaresVista();
   var visibles = zonasEn(mapa.getBounds().pad(0.2));
   if (!visibles.length && !zonasCargando) {
     // fuera de las ciudades descargadas: se avisa una vez qué hay y qué no
@@ -614,22 +610,107 @@ function cargarPaisEn(limites) {
     .map(cargarCeldaPais));
 }
 // Los cuadrados por donde pasan uno o varios recorridos (no el rectángulo entero: en un viaje en diagonal serían muchos)
-function cargarPaisEnRutas(listas) {
-  if (!pais.celdas.length) return Promise.resolve();
+function celdasEnRutas(celdas, listas) {
   var pedir = {};
+  if (!celdas.length) return [];
   listas.forEach(function (puntos) {
     for (var i = 0; i < puntos.length; i++) {
       var a = puntos[i], b = puntos[i + 1] || a;
       var n = Math.max(1, Math.ceil(L.latLng(a).distanceTo(b) / 20000));   // un punto cada 20 km como mínimo
       for (var k = 0; k < n; k++) {
         var lat = a[0] + (b[0] - a[0]) * k / n, lng = a[1] + (b[1] - a[1]) * k / n;
-        pais.celdas.forEach(function (c) {
+        celdas.forEach(function (c) {
           if (lat >= c.limites[0][0] && lat <= c.limites[1][0] && lng >= c.limites[0][1] && lng <= c.limites[1][1]) pedir[c.archivo] = c;
         });
       }
     }
   });
-  return Promise.all(Object.keys(pedir).map(function (k) { return cargarCeldaPais(pedir[k]); }));
+  return Object.keys(pedir).map(function (k) { return pedir[k]; });
+}
+// (también baja las estaciones de servicio, paradores y gomerías de esos cuadrados, para la lista de la ruta)
+function cargarPaisEnRutas(listas) {
+  return Promise.all(celdasEnRutas(pais.celdas, listas).map(cargarCeldaPais)
+    .concat(celdasEnRutas(paisLugares.celdas, listas).map(cargarCeldaLugares)));
+}
+
+// --- Lugares útiles del resto del país (estaciones de servicio, paradores, gomerías... en las rutas) ---
+// Los baja scripts/descargar_lugares_pais.py en cuadrados de 2° (datos/pais-lugares/*.geojson, índice
+// datos/pais-lugares.json). Se bajan los de lo que se ve (solo si los lugares están prendidos y el mapa cerca) y
+// los de por donde pasa una ruta (para "Dónde cargar y parar en el camino").
+var paisLugares = { celdas: [], pedidas: {}, timer: null };
+var lugarVisto = {};   // osm -> true: un lugar que viene en una zona y en el país va una sola vez
+fetch('datos/pais-lugares.json', { cache: 'no-cache' })
+  .then(function (r) { return r.ok ? r.json() : null; })
+  .then(function (d) {
+    if (!d || !d.celdas) return;
+    paisLugares.celdas = d.celdas;
+    cargarLugaresVista();
+  })
+  .catch(function (e) { console.warn('Sin lugares del resto del país:', e); });
+function agregarLugar(f) {
+  var k = f.properties.osm, g = gruposLugares[f.properties.tipo];
+  if (!g || (k && lugarVisto[k])) return false;
+  if (k) lugarVisto[k] = true;
+  g.addData(f);
+  cantidadesLugares[f.properties.tipo]++;
+  return true;
+}
+function cargarCeldaLugares(c) {
+  if (paisLugares.pedidas[c.archivo]) return paisLugares.pedidas[c.archivo];
+  paisLugares.pedidas[c.archivo] = bajarJSON(c.archivo, true).then(function (d) {
+    var n = 0;
+    d.features.forEach(function (f) { if (agregarLugar(f)) n++; });
+    if (!n) return;
+    clearTimeout(paisLugares.timer);   // varios cuadrados juntos: se redibuja una vez
+    paisLugares.timer = setTimeout(function () { mostrarLugares(); armarPanelLugares(); }, 250);
+  }, function (e) {
+    console.error(e);
+    delete paisLugares.pedidas[c.archivo];   // se puede volver a intentar
+  });
+  return paisLugares.pedidas[c.archivo];
+}
+function cargarLugaresVista() {
+  if (!paisLugares.celdas.length || mapa.getZoom() < ZOOM_LUGARES - 1) return;
+  if (!LUGARES.some(function (l) { return lugaresPrendidos[l.id]; })) return;
+  var lim = mapa.getBounds().pad(0.2);
+  paisLugares.celdas.forEach(function (c) { if (L.latLngBounds(c.limites).intersects(lim)) cargarCeldaLugares(c); });
+}
+
+// Lugares útiles a menos de 150 m de la ruta, con el kilómetro donde quedan (para la lista de la tarjeta)
+var TIPOS_EN_RUTA = { combustible: 1, parador: 1, gomeria: 1, taller: 1, estacionamiento: 1, balanza: 1 };
+function lugaresEnRuta(puntos) {
+  if (puntos.length < 2) return [];
+  var lat0 = puntos[0][0] * Math.PI / 180, kx = Math.cos(lat0) * 111320, ky = 110540, C = 500;   // cuadraditos de 500 m
+  var acum = [0], grilla = {};
+  for (var i = 1; i < puntos.length; i++) {
+    var ax = puntos[i - 1][1] * kx, ay = puntos[i - 1][0] * ky, bx = puntos[i][1] * kx, by = puntos[i][0] * ky;
+    acum.push(acum[i - 1] + Math.hypot(bx - ax, by - ay));
+    for (var gx = Math.floor(Math.min(ax, bx) / C); gx <= Math.floor(Math.max(ax, bx) / C); gx++) {
+      for (var gy = Math.floor(Math.min(ay, by) / C); gy <= Math.floor(Math.max(ay, by) / C); gy++) {
+        (grilla[gx + ',' + gy] || (grilla[gx + ',' + gy] = [])).push(i);
+      }
+    }
+  }
+  var res = [];
+  Object.keys(TIPOS_EN_RUTA).forEach(function (tipo) {
+    if (!gruposLugares[tipo]) return;
+    gruposLugares[tipo].eachLayer(function (l) {
+      var ll = l.getLatLng(), px = ll.lng * kx, py = ll.lat * ky, cx = Math.floor(px / C), cy = Math.floor(py / C);
+      var mejor = Infinity, km = 0, visto = {};
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+        (grilla[(cx + dx) + ',' + (cy + dy)] || []).forEach(function (j) {
+          if (visto[j]) return;
+          visto[j] = true;
+          var ax = puntos[j - 1][1] * kx, ay = puntos[j - 1][0] * ky, vx = puntos[j][1] * kx - ax, vy = puntos[j][0] * ky - ay;
+          var L2 = vx * vx + vy * vy, t = L2 ? Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / L2)) : 0;
+          var d = Math.hypot(ax + t * vx - px, ay + t * vy - py);
+          if (d < mejor) { mejor = d; km = (acum[j - 1] + t * Math.sqrt(L2)) / 1000; }
+        });
+      }
+      if (mejor <= 150) res.push({ l: l, km: km });
+    });
+  });
+  return res.sort(function (a, b) { return a.km - b.km; });
 }
 
 mostrarMensaje('Cargando restricciones...');
@@ -1183,6 +1264,7 @@ function armarPanelLugares() {
       if (ev.target.checked) lugaresPrendidos[l.id] = true; else delete lugaresPrendidos[l.id];
       guardar(CLAVE_LUGARES, lugaresPrendidos);
       mostrarLugares();
+      cargarLugaresVista();
       if (ev.target.checked && mapa.getZoom() < ZOOM_LUGARES) {
         mostrarMensaje('Acercá el mapa para ver los lugares.');
         setTimeout(ocultarMensaje, 3000);
@@ -1735,6 +1817,7 @@ function cambiarOpcion(o, prender) {
     LUGARES.forEach(function (l) { if (prender) lugaresPrendidos[l.id] = true; else delete lugaresPrendidos[l.id]; });
     guardar(CLAVE_LUGARES, lugaresPrendidos);
     mostrarLugares();
+    cargarLugaresVista();
     if (prender && mapa.getZoom() < ZOOM_LUGARES) { mostrarMensaje('Acercá el mapa para ver los lugares.'); setTimeout(ocultarMensaje, 3000); }
     return;
   }
@@ -2969,6 +3052,21 @@ function mostrarRuta(indice, sinMoverMapa) {
     });
     html += '</ul></details>';
   }
+  r.lugares = lugaresEnRuta(r.puntos).slice(0, 250);
+  if (r.lugares.length) {
+    html += '<details class="ruta-pasos"><summary>⛽ Dónde cargar y parar en el camino (' + r.lugares.length + ')</summary>' +
+            '<ul class="ruta-lista">';
+    r.lugares.forEach(function (x, i) {
+      var p = x.l.feature.properties, tipo = LUGAR_POR_ID[p.tipo];
+      var extra = [];
+      if (p.camiones) extra.push('para camiones');
+      if (p.extras && p.extras.indexOf('gasoil') !== -1) extra.push('gasoil');
+      html += '<li><button type="button" data-lugar="' + i + '"><span class="ruta-lista-icono">' + tipo.icono + '</span>' +
+              '<span class="ruta-lugar-km">km ' + Math.round(x.km) + '</span> ' +
+              esc(p.nombre || tipo.uno) + (extra.length ? ' <small>' + esc(extra.join(' · ')) + '</small>' : '') + '</button></li>';
+    });
+    html += '</ul></details>';
+  }
   if (r.pasos.length) {
     html += '<details class="ruta-pasos"><summary>Indicaciones (' + r.pasos.length + ')</summary><ol>';
     r.pasos.forEach(function (p) {
@@ -2992,6 +3090,14 @@ function mostrarRuta(indice, sinMoverMapa) {
       abrirPanelRuta(false);
       mapa.setView(a.latlng, Math.max(mapa.getZoom(), 17));
       if (a.capa) abrirCartelDeCapa(a.capa, a.latlng);
+    });
+  });
+  salida.querySelectorAll('[data-lugar]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var l = r.lugares[+b.getAttribute('data-lugar')].l;
+      abrirPanelRuta(false);
+      mapa.setView(l.getLatLng(), Math.max(mapa.getZoom(), 16));
+      abrirCartelLugar(l);
     });
   });
   salida.querySelectorAll('[data-control]').forEach(function (b) {

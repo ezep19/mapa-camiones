@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 73;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 74;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2850,15 +2850,25 @@ function pedirCaminos(a, b, evitar, conAlternativas) {
   // (403 = cupo del día o clave mala: 15 minutos; 429 = demasiados pedidos por minuto: 1 minuto; sin respuesta
   // legible —cuando se queda sin cupo contesta sin permiso CORS y el navegador lo ve como "Failed to fetch"—: 2 minutos)
   if (clave && ruta.orsHasta && Date.now() < ruta.orsHasta) clave = null;
+  // v74: si OpenRouteService no está (cupo del día gastado, caído), TomTom (también calcula para camión; 20.000
+  // rutas gratis por mes con la cuenta del chofer) y recién después Valhalla (el de respaldo, que respeta menos)
+  function respaldo() {
+    if (!claveTomTom() || (ruta.tomtomHasta && Date.now() < ruta.tomtomHasta)) return rutaValhalla(evitar, a, b);
+    return rutaTomTom(evitar, a, b, conAlternativas).catch(function (e) {
+      console.warn('TomTom falló:', e.message);
+      if (/ (403|429)$/.test(e.message)) ruta.tomtomHasta = Date.now() + 15 * 60 * 1000;
+      return rutaValhalla(evitar, a, b);
+    });
+  }
   return clave
     ? rutaORS(clave, evitar, !conAlternativas, a, b).catch(function (e) {
         console.warn('OpenRouteService falló:', e.message);
         if (/ 403$/.test(e.message)) ruta.orsHasta = Date.now() + 15 * 60 * 1000;
         if (/ 429$/.test(e.message)) ruta.orsHasta = Date.now() + 60 * 1000;
         if (e instanceof TypeError) ruta.orsHasta = Date.now() + 2 * 60 * 1000;
-        return rutaValhalla(evitar, a, b);
+        return respaldo();
       })
-    : rutaValhalla(evitar, a, b);
+    : respaldo();
 }
 
 // Zonas prohibidas (ordenanzas) para este camión, salvo las que tienen adentro la salida o la llegada
@@ -2917,7 +2927,25 @@ function calcularTramo(a, b, salida, conAlternativas) {
     ultimoEvitar = evitar;
     return pedirCaminos(a, b, evitar, conAlternativas).then(revisarCaminos).then(function (caminos) {
       var limpios = caminos.filter(function (c) { return !c.avisos.some(function (x) { return x.zonas && x.zonas.length; }); });
+      // v74: TomTom acepta solo 10 rectángulos para esquivar: si desde la 2.ª vuelta todavía no hay un camino limpio,
+      // se pide también a Valhalla (acepta 50 lugares) y se elige entre todos
+      if (!limpios.length && n >= 2 && /^TomTom/.test(caminos[0].servicio) && !caminos.conValhalla) {
+        return rutaValhalla(evitar, a, b).then(revisarCaminos).then(function (v) {
+          var todos = caminos.concat(v);
+          todos.conValhalla = true;
+          return todos;
+        }, function () { caminos.conValhalla = true; return caminos; }).then(function (todos) {
+          var ok = todos.filter(function (c) { return !c.avisos.some(function (x) { return x.zonas && x.zonas.length; }); });
+          return ok.length || n >= MAX_VUELTAS ? todos : seguir(todos);
+        });
+      }
       if (limpios.length || n >= MAX_VUELTAS) return caminos;
+      return seguir(caminos);
+    }, function (e) {
+      if (anteriores) return anteriores;   // no hay otros: se muestran los anteriores con el aviso
+      throw e;
+    });
+    function seguir(caminos) {
       var nuevas = 0;
       caminos.forEach(function (c) {
         c.avisos.forEach(function (x) {
@@ -2934,10 +2962,7 @@ function calcularTramo(a, b, salida, conAlternativas) {
       if (salida) salida.innerHTML = '<p class="ruta-cargando">Los caminos pasaban por ' + nuevas +
         (nuevas === 1 ? ' lugar' : ' lugares') + ' donde no pasás. Buscando otros que los esquiven...</p>';
       return vuelta(n + 1, evitar, claves, caminos);
-    }, function (e) {
-      if (anteriores) return anteriores;   // no hay otros: se muestran los anteriores con el aviso
-      throw e;
-    });
+    }
   }
   var lugares = {};   // lugares (no zonas de ordenanza) que se pidió esquivar
   return vuelta(1, inicio.zonas, inicio.claves, null).then(function (caminos) { return salirDeLosBarrios(caminos, 0); });
@@ -3296,6 +3321,57 @@ function rutaValhalla(evitar, a, b) {
       });
       return { servicio: 'Valhalla (servicio de respaldo, menos confiable)', puntos: puntos,
                km: trip.summary.length, segundos: trip.summary.time, pasos: pasos, vueltas: vueltas, kmChicas: null };
+    });
+  });
+}
+
+// TomTom Routing (travelMode=truck): medidas del camión en el pedido. Lo que hay que esquivar va como rectángulos
+// (TomTom acepta hasta 10): los cuadraditos cercanos se juntan en uno; las zonas de ordenanza, su rectángulo.
+var VUELTAS_TOMTOM = { TURN_LEFT: 1, TURN_RIGHT: 1, SHARP_LEFT: 1, SHARP_RIGHT: 1, MAKE_UTURN: 1 };
+function rectangulosTomTom(evitar) {
+  var cajas = [];
+  (evitar || []).slice().reverse().forEach(function (anillo) {   // los más nuevos primero
+    var b = L.latLngBounds(anillo.map(function (q) { return [q[1], q[0]]; }));
+    var junto = cajas.filter(function (c) { return c.pad(0.0).getCenter().distanceTo(b.getCenter()) < 300 && anillo.length <= 5; })[0];
+    if (junto) junto.extend(b); else cajas.push(b);
+  });
+  return cajas.slice(0, 10).map(function (b) {
+    return { southWestCorner: { latitude: b.getSouth(), longitude: b.getWest() },
+             northEastCorner: { latitude: b.getNorth(), longitude: b.getEast() } };
+  });
+}
+function rutaTomTom(evitar, a, b, conAlternativas) {
+  a = a || ruta.desde.latlng; b = b || ruta.hasta.latlng;
+  var q = 'key=' + encodeURIComponent(claveTomTom()) + '&travelMode=truck&vehicleCommercial=true' +
+          '&vehicleWeight=' + Math.round(camion.peso * 1000) + '&vehicleHeight=' + camion.altura +
+          '&vehicleLength=' + camion.largo + '&vehicleWidth=' + CAMION_ANCHO +
+          '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false' +
+          (conAlternativas ? '&maxAlternatives=2' : '');
+  var url = 'https://api.tomtom.com/routing/1/calculateRoute/' + a.lat.toFixed(6) + ',' + a.lng.toFixed(6) + ':' +
+            b.lat.toFixed(6) + ',' + b.lng.toFixed(6) + '/json?' + q;
+  var rect = rectangulosTomTom(evitar);
+  var op = rect.length ? { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                           body: JSON.stringify({ avoidAreas: { rectangles: rect } }) } : {};
+  return conTiempoLimite(url, op, 30).then(function (r) {
+    if (!r.ok) throw new Error('TomTom ' + r.status);
+    return r.json();
+  }).then(function (d) {
+    if (!d.routes || !d.routes.length) throw new Error('TomTom sin ruta');
+    return d.routes.map(function (rt) {
+      var puntos = [];
+      rt.legs.forEach(function (leg) { leg.points.forEach(function (p) { puntos.push([p.latitude, p.longitude]); }); });
+      var ins = (rt.guidance && rt.guidance.instructions) || [], pasos = [], vueltas = 0;
+      // a veces trae dos "Ha llegado" (uno antes de tiempo): queda solo el último
+      ins = ins.filter(function (it, k) { return !/^ARRIVE/.test(it.maneuver || '') || k === ins.length - 1; });
+      ins.forEach(function (it, k) {
+        var sig = ins[k + 1], esVuelta = !!VUELTAS_TOMTOM[it.maneuver];
+        if (esVuelta) vueltas++;
+        pasos.push({ texto: aCastellano(String(it.message || '').replace(/^Salga de /, 'Salí por ')),
+                     km: ((sig ? sig.routeOffsetInMeters : rt.summary.lengthInMeters) - (it.routeOffsetInMeters || 0)) / 1000,
+                     ini: it.pointIndex != null ? Math.min(it.pointIndex, puntos.length - 1) : null, vuelta: esVuelta });
+      });
+      return { servicio: 'TomTom (camión)', puntos: puntos, km: rt.summary.lengthInMeters / 1000,
+               segundos: rt.summary.travelTimeInSeconds, pasos: pasos, vueltas: vueltas, kmChicas: null };
     });
   });
 }

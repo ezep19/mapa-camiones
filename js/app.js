@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 71;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 72;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2986,10 +2986,14 @@ function calcularViajeLargo(desde, hasta, salida) {
 }
 
 // En un viaje largo el tramo del medio se pide sin esquivar nada (OpenRouteService no lo permite en más de
-// 150 km). Si en el medio hay algo ROJO para el camión, se vuelve a pedir solo ese pedazo (30 km antes y
+// 150 km). Si en el camino hay algo ROJO para el camión, se vuelve a pedir solo ese pedazo (30 km antes y
 // 30 km después) esquivándolo, y se empalma. Hasta 3 pedazos.
-function arreglarMedio(c, m0, m1, salida) {
-  var rojos = c.avisos.filter(function (x) { return x.rojo && x.zonas && x.zonas.length && x.orden >= m0 && x.orden < m1; });
+// v72 (el chofer, MdP → norte del conurbano: "me hace ir por donde no paso por la altura"): el pedazo ya no se corta
+// en el límite del tramo del medio (el corte había caído justo en General Paz y Libertador, al lado de los rojos, y
+// ningún camino podía esquivarlos); se revisan los rojos de TODO el viaje; y si quedan, otra vuelta con 60 km de margen.
+function arreglarMedio(c, m0, m1, salida, margen, vez) {
+  margen = margen || 30; vez = vez || 1;
+  var rojos = c.avisos.filter(function (x) { return x.rojo && x.zonas && x.zonas.length && x.orden != null; });
   if (!rojos.length) return Promise.resolve(c);
   var acum = [0];
   for (var i = 1; i < c.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(c.puntos[i - 1]).distanceTo(c.puntos[i]) / 1000);
@@ -3006,7 +3010,11 @@ function arreglarMedio(c, m0, m1, salida) {
   var cadena = Promise.resolve(c);
   grupos2.reverse().forEach(function (g) {
     cadena = cadena.then(function (actual) {
-      var iA = indiceEn(Math.max(acum[m0], acum[g.ini] - 30)), iB = indiceEn(Math.min(acum[m1 - 1], acum[g.fin] + 30));
+      var total = acum[acum.length - 1];
+      var iA = indiceEn(Math.max(0, acum[g.ini] - margen)), iB = indiceEn(Math.min(total, acum[g.fin] + margen));
+      if (acum[iB] - acum[iA] > 140) {   // muy largo para pedirlo esquivando: se achica alrededor de los rojos
+        iA = indiceEn(Math.max(0, acum[g.ini] - 20)); iB = indiceEn(Math.min(total, acum[g.fin] + 20));
+      }
       if (iB - iA < 2 || acum[iB] - acum[iA] > 140) return actual;
       if (salida) salida.innerHTML = '<p class="ruta-cargando">Viaje largo: en el camino hay lugares donde no pasás. ' +
         'Buscando cómo esquivarlos...</p>';
@@ -3022,6 +3030,10 @@ function arreglarMedio(c, m0, m1, salida) {
     if (final !== c) {
       final.avisos = revisarRuta(final.puntos, final.pasos);
       final.rojos = final.avisos.filter(function (x) { return x.rojo; }).length;
+    }
+    // ¿quedaron rojos? otra vuelta, con más margen (más lugar para dar la vuelta)
+    if (vez < 2 && final.avisos.some(function (x) { return x.rojo && x.zonas && x.zonas.length; })) {
+      return arreglarMedio(final, 0, final.puntos.length, salida, 60, vez + 1);
     }
     return final;
   });
@@ -3220,9 +3232,14 @@ function rutaValhalla(evitar, a, b) {
     var vertices = 0;
     cuerpo.exclude_polygons = grandes.filter(function (a) { vertices += a.length; return vertices <= 100; });
     if (!cuerpo.exclude_polygons.length) delete cuerpo.exclude_polygons;
-    if (chicos.length) cuerpo.exclude_locations = chicos.slice(-50).map(function (anillo) {
-      return { lat: (anillo[0][1] + anillo[2][1]) / 2, lon: (anillo[0][0] + anillo[2][0]) / 2 };
+    // v72: sin repetir (varios cuadraditos del mismo lugar, a menos de 40 m, son uno solo): antes se mandaban
+    // muchos casi iguales, se pasaba de 50 y se perdían los primeros (y el camino volvía a pasar por ahí)
+    var lugaresEvitar = [];
+    chicos.slice().reverse().forEach(function (anillo) {   // los más nuevos primero
+      var p = L.latLng((anillo[0][1] + anillo[2][1]) / 2, (anillo[0][0] + anillo[2][0]) / 2);
+      if (lugaresEvitar.length < 50 && !lugaresEvitar.some(function (q) { return q.distanceTo(p) < 40; })) lugaresEvitar.push(p);
     });
+    if (lugaresEvitar.length) cuerpo.exclude_locations = lugaresEvitar.map(function (p) { return { lat: p.lat, lon: p.lng }; });
   }
   return conTiempoLimite('https://valhalla1.openstreetmap.de/route', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo)

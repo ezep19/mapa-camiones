@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 67;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 68;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -153,6 +153,7 @@ gl.on('error', function (ev) { if (window.console) console.warn('Mapa:', ev && e
 function datosIcono(id) {
   var m;
   if ((m = /^ic-l-(.+)$/.exec(id)) && LUGAR_POR_ID[m[1]]) return [LUGAR_POR_ID[m[1]].icono, '#1565c0', '#ffffff'];
+  if ((m = /^ic-r-(\d+)$/.exec(id))) return ['#' + m[1]];
   if ((m = /^ic-c-(.+)$/.exec(id))) return [(CONTROLES[m[1]] || CONTROLES.policial).icono, '#263238', '#eceff1'];
   if (id === 'ic-reporte') return ['📣', '#e65100', '#ffffff'];
   return null;
@@ -171,10 +172,26 @@ function dibujarIcono(emoji, borde, relleno) {
   x.fillText(emoji, t / 2, t / 2 + k);
   return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
 }
+// Cartel de velocidad máxima: círculo blanco con borde rojo y el número (para los radares)
+function dibujarLimite(numero) {
+  var k = 2, t = 36 * k, c = document.createElement('canvas');
+  c.width = c.height = t;
+  var x = c.getContext('2d');
+  x.shadowColor = 'rgba(0,0,0,0.35)'; x.shadowBlur = 4 * k; x.shadowOffsetY = k;
+  x.beginPath(); x.arc(t / 2, t / 2, 15 * k, 0, 2 * Math.PI);
+  x.fillStyle = '#ffffff'; x.fill();
+  x.shadowColor = 'transparent';
+  x.lineWidth = 4 * k; x.strokeStyle = '#d50000'; x.beginPath(); x.arc(t / 2, t / 2, 13 * k, 0, 2 * Math.PI); x.stroke();
+  x.fillStyle = '#111'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.font = 'bold ' + ((String(numero).length > 2 ? 11 : 13) * k) + 'px Arial, sans-serif';
+  x.fillText(String(numero), t / 2, t / 2 + k);
+  return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
+}
 gl.on('styleimagemissing', function (ev) {
   if (gl.hasImage(ev.id)) return;
   var d = datosIcono(ev.id);
-  if (d) gl.addImage(ev.id, dibujarIcono(d[0], d[1], d[2]), { pixelRatio: 2 });
+  if (d && d.length === 1) gl.addImage(ev.id, dibujarLimite(d[0].slice(1)), { pixelRatio: 2 });
+  else if (d) gl.addImage(ev.id, dibujarIcono(d[0], d[1], d[2]), { pixelRatio: 2 });
   else gl.addImage(ev.id, { width: 1, height: 1, data: new Uint8Array(4) });   // íconos del fondo que no vienen
 });
 
@@ -1013,7 +1030,13 @@ function ponerCapasPropias() {
                 'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_LUGARES - 1, 1, 15, 1.15] } },
     { id: 'reportes', type: 'symbol', source: 'reportes',
       layout: { 'icon-image': 'ic-reporte', 'icon-allow-overlap': true, 'icon-ignore-placement': true } },
-    { id: 'controles', type: 'symbol', source: 'controles', minzoom: ZOOM_CONTROLES - 1,
+    { id: 'controles', type: 'symbol', source: 'controles', minzoom: ZOOM_CONTROLES - 1, filter: ['!=', ['get', 'r'], 1],
+      layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true } },
+    // radares y cámaras: en las ciudades hay muchos; de lejos se ven los que entran sin taparse
+    { id: 'radares-lejos', type: 'symbol', source: 'controles', minzoom: ZOOM_CONTROLES, maxzoom: 13, filter: ['==', ['get', 'r'], 1],
+      layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': false, 'icon-padding': 12,
+                'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_CONTROLES, 0.75, 13, 0.95] } },
+    { id: 'radares', type: 'symbol', source: 'controles', minzoom: 13, filter: ['==', ['get', 'r'], 1],
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true } }
   ].forEach(function (c) { gl.addLayer(c); });
   ponerVisibilidad();
@@ -1022,7 +1045,8 @@ gl.on('style.load', ponerCapasPropias);
 
 // Capas que se prenden y apagan enteras desde "Qué mostrar"
 function ponerVisibilidad() {
-  [['controles', 'controles'], ['reportes', 'reportes'], ['red-pesada', 'red_pesada']].forEach(function (x) {
+  [['controles', 'controles'], ['radares', 'controles'], ['radares-lejos', 'controles'], ['reportes', 'reportes'],
+   ['red-pesada', 'red_pesada']].forEach(function (x) {
     if (gl.getLayer(x[0])) gl.setLayoutProperty(x[0], 'visibility', apagadas[x[1]] ? 'none' : 'visible');
   });
 }
@@ -1610,26 +1634,43 @@ var CONTROLES = {
   policial:      { nombre: 'Control policial',        icono: '👮' },
   vial:          { nombre: 'Policía Caminera / Vial', icono: '🚓' },
   gendarmeria:   { nombre: 'Gendarmería',             icono: '🛂' },
-  fitosanitario: { nombre: 'Control fitosanitario',   icono: '🌾' }
+  fitosanitario: { nombre: 'Control fitosanitario',   icono: '🌾' },
+  // radares y cámaras (datos/radares.geojson, scripts/descargar_radares.py; pedido del chofer el 20/11/2026)
+  radar:         { nombre: 'Radar de velocidad',      icono: '📷', radar: true },
+  camara:        { nombre: 'Cámara de semáforo',      icono: '🚦', radar: true }
 };
+function esRadar(p) { return !!(CONTROLES[p.tipo] && CONTROLES[p.tipo].radar); }
 var ZOOM_CONTROLES = 9;
-var controles = { lista: [], actualizado: null };
+var controles = { lista: [], actualizado: null, policiales: [], radares: [], radaresActualizado: null };
 
-fetch('datos/controles.geojson', { cache: 'no-cache' })
-  .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-  .then(function (d) {
-    controles.actualizado = d.actualizado;
-    controles.lista = (d.features || []).map(function (f) {
-      var c = f.geometry.coordinates;
-      return { f: f, latlng: L.latLng(c[1], c[0]) };
-    });
-    // todos juntos en una capa de íconos (son pocos: MapLibre los dibuja sin problema)
-    ponerDatos('controles', controles.lista.map(function (it, i) {
-      return { type: 'Feature', geometry: it.f.geometry, properties: { k: 'c', i: i, ic: 'ic-c-' + (CONTROLES[it.f.properties.tipo] ? it.f.properties.tipo : 'policial') } };
-    }));
-    if (zonasIndice.length) armarPanel();
-  })
-  .catch(function (e) { console.warn('Sin controles policiales:', e); });
+function iconoControl(p) {
+  if (p.tipo === 'radar' && p.maxima) return 'ic-r-' + p.maxima;
+  return 'ic-c-' + (CONTROLES[p.tipo] ? p.tipo : 'policial');
+}
+function ponerControles() {
+  controles.lista = controles.policiales.concat(controles.radares);
+  // todos juntos en una fuente de íconos (r = 1: radar o cámara, van en sus propias capas)
+  ponerDatos('controles', controles.lista.map(function (it, i) {
+    var p = it.f.properties;
+    return { type: 'Feature', geometry: it.f.geometry, properties: { k: 'c', i: i, ic: iconoControl(p), r: esRadar(p) ? 1 : 0 } };
+  }));
+  if (zonasIndice.length) armarPanel();
+}
+function bajarControles(archivo, donde, fechaEn) {
+  fetch(archivo, { cache: 'no-cache' })
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (d) {
+      controles[fechaEn] = d.actualizado;
+      controles[donde] = (d.features || []).map(function (f) {
+        var c = f.geometry.coordinates;
+        return { f: f, latlng: L.latLng(c[1], c[0]) };
+      });
+      ponerControles();
+    })
+    .catch(function (e) { console.warn('Sin ' + archivo + ':', e); });
+}
+bajarControles('datos/controles.geojson', 'policiales', 'actualizado');
+bajarControles('datos/radares.geojson', 'radares', 'radaresActualizado');
 
 function abrirCartelControl(it) {
   var p = it.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
@@ -1637,7 +1678,27 @@ function abrirCartelControl(it) {
 }
 function mostrarControles() { /* (antes ponía y sacaba marcas según la vista; ahora lo hace MapLibre) */ }
 
+function armarCartelRadar(p) {
+  var tipo = CONTROLES[p.tipo];
+  var html = '<div class="cartel-tipo">' + tipo.icono + ' ' + esc(tipo.nombre) + '</div>';
+  if (p.tipo === 'radar') {
+    html += '<div class="cartel-valor">' + (p.maxima ? 'Máxima ' + p.maxima + ' km/h' : 'Radar (no figura la máxima)') + '</div>';
+  } else {
+    html += '<div class="cartel-valor">Fotomulta por cruzar en rojo</div>';
+    if (p.maxima) html += '<div class="cartel-linea">También controla velocidad: máxima ' + p.maxima + ' km/h</div>';
+  }
+  if (p.nombre) html += '<div class="cartel-calle">' + esc(p.nombre) + '</div>';
+  if (p.ruta) html += '<div class="cartel-calle">' + esc(p.ruta) + '</div>';
+  if (p.operador) html += '<div class="cartel-calle">' + esc(p.operador) + '</div>';
+  if (p.tipo === 'radar') html += '<div class="cartel-linea">Ojo: el camión tiene su propia máxima, que puede ser menor que la del cartel.</div>';
+  html += '<div class="cartel-fuente">Figura en OpenStreetMap: puede no estar funcionando, haberse movido, o haber ' +
+          'radares que no figuran.</div>';
+  html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (controles.radaresActualizado ? ' (' + fecha(controles.radaresActualizado) + ')' : '') +
+          ' · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) + '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
+  return html;
+}
 function armarCartelControl(p) {
+  if (esRadar(p)) return armarCartelRadar(p);
   var tipo = CONTROLES[p.tipo] || CONTROLES.policial;
   var html = '<div class="cartel-tipo">' + tipo.icono + ' ' + esc(tipo.nombre) + '</div>';
   html += '<div class="cartel-valor">' + esc(p.nombre || tipo.nombre) + '</div>';
@@ -1678,7 +1739,7 @@ function controlesEnRuta(puntosRuta) {
       var d = Math.hypot(ax + t * vx - px, ay + t * vy - py);
       if (d < mejor) { mejor = d; idx = i - 1; tMejor = t; }
     }
-    if (mejor <= 60) res.push({ item: it, orden: idx, t: tMejor });
+    if (mejor <= (esRadar(it.f.properties) ? 35 : 60)) res.push({ item: it, orden: idx, t: tMejor });
   });
   return res.sort(function (a, b) { return a.orden - b.orden; });
 }
@@ -1945,7 +2006,7 @@ var OPCIONES_MAPA = [
     hay: function () { return !!claveTomTom(); } },
   { id: 'sin_salida', icono: '🔚', nombre: 'Calles sin salida', detalle: 'Se ven de cerca', capas: ['sin_salida'] },
   { id: 'lugares', icono: '⛽', nombre: 'Lugares útiles', detalle: 'Gomerías, combustible, paradores, duchas', lugares: true },
-  { id: 'controles', icono: '👮', nombre: 'Controles policiales', clave: 'controles',
+  { id: 'controles', icono: '👮', nombre: 'Controles y radares', detalle: 'Policía, Gendarmería, radares y cámaras', clave: 'controles',
     hay: function () { return controles.lista.length > 0; } },
   { id: 'red_pesada', icono: '🟩', nombre: 'Calles para camiones', detalle: 'Red de tránsito pesado', clave: 'red_pesada',
     hay: function () { return !!redPesada.grupo; } },
@@ -2188,6 +2249,8 @@ mapa.on('locationfound', function (e) {
   velocidad.kmh = kmh;
   el.querySelector('b').textContent = Math.round(kmh);
   el.classList.toggle('rapido', kmh > 80.5);
+  // con un radar adelante (navegando): rojo si vas más rápido que su máxima
+  el.classList.toggle('pasado', !!(nav.activo && nav.limite && kmh > nav.limite + 1));
   el.hidden = false;
   document.body.classList.add('con-velocimetro');
   clearTimeout(velocidad.timer);
@@ -3286,11 +3349,13 @@ function mostrarRuta(indice, sinMoverMapa) {
   }
   r.controles = controlesEnRuta(r.puntos);
   if (r.controles.length) {
-    html += '<details class="ruta-pasos"><summary>👮 Controles policiales (' + r.controles.length + ')</summary><ul class="ruta-lista">';
+    html += '<details class="ruta-pasos"><summary>👮📷 Controles y radares (' + r.controles.length + ')</summary><ul class="ruta-lista">';
     r.controles.forEach(function (c, i) {
       var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
+      var txt = tipo.nombre + (p.tipo === 'radar' && p.maxima ? ' (máx. ' + p.maxima + ' km/h)' : '') +
+                (p.nombre && p.nombre !== tipo.nombre ? ': ' + p.nombre : '');
       html += '<li><button type="button" data-control="' + i + '"><span class="ruta-lista-icono">' + tipo.icono + '</span>' +
-              esc(tipo.nombre + (p.nombre && p.nombre !== tipo.nombre ? ': ' + p.nombre : '')) + '</button></li>';
+              esc(txt) + '</button></li>';
     });
     html += '</ul></details>';
   }
@@ -3901,6 +3966,9 @@ function clipDistancia(t) {
 // Qué peligro es, por las palabras de la frase
 function clipPeligro(t) {
   t = t.toLowerCase();
+  var vel = /máxima (\d+)/.exec(t), clipVel = vel && +vel[1] >= 20 && +vel[1] <= 130 && +vel[1] % 10 === 0 ? 'v_' + vel[1] : null;
+  if (/radar/.test(t)) return clipVel ? ['h_radar', clipVel] : ['h_radar'];
+  if (/cámara de semáforo|camara de semaforo/.test(t)) return ['h_camara'];
   var tipo = /caminera/.test(t) ? 'h_caminera' : /gendarmer/.test(t) ? 'h_gendarmeria' : /fitosanitari/.test(t) ? 'h_fito'
     : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona/.test(t) ? 'h_zona'
     : /paso bajo|altura|puente/.test(t) ? 'h_altura' : /peso/.test(t) ? 'h_peso' : /largo/.test(t) ? 'h_largo'
@@ -4080,11 +4148,14 @@ function empezarNavegacion(rutaElegida) {
   });
   // controles policiales: se avisan como un peligro, pero sin alarma
   var VOZ_CONTROL = { policial: 'control policial', vial: 'control de la policía caminera',
-                      gendarmeria: 'control de Gendarmería', fitosanitario: 'control fitosanitario' };
+                      gendarmeria: 'control de Gendarmería', fitosanitario: 'control fitosanitario',
+                      radar: 'radar de velocidad', camara: 'cámara de semáforo' };
   (r.controles || controlesEnRuta(r.puntos)).forEach(function (c, k) {
     var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
-    nav.avisos.push({ n: 'ctl' + k, texto: tipo.nombre, voz: VOZ_CONTROL[p.tipo] || 'control policial',
-                      icono: tipo.icono + ' ', rojo: false,
+    var maxRadar = p.tipo === 'radar' && p.maxima ? p.maxima : null;
+    nav.avisos.push({ n: 'ctl' + k, texto: tipo.nombre + (maxRadar ? ', máxima ' + maxRadar + ' km/h' : ''),
+                      voz: (VOZ_CONTROL[p.tipo] || 'control policial') + (maxRadar ? ', máxima ' + maxRadar + ' kilómetros por hora' : ''),
+                      maxima: maxRadar, icono: tipo.icono + ' ', rojo: false,
                       dist: nav.acum[Math.min(c.orden, nav.acum.length - 1)] +
                             (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
   });
@@ -4245,9 +4316,11 @@ function seguirNavegacion(pos) {
   var peligro = '';
   var decir = [];   // todo lo que hay que decir en esta posición, en una sola frase
   // Pasos bajos, prohibidos o reportes que vienen adelante
+  nav.limite = null;
   nav.avisos.forEach(function (a) {
     var hasta = a.dist - u.recorrido;
     if (hasta < -20 || hasta > NAV.AVISO_PELIGRO_M) return;
+    if (a.maxima && (nav.limite == null || a.maxima < nav.limite)) nav.limite = a.maxima;
     if (!peligro) peligro = (a.icono || (a.rojo ? '⛔ ' : '⚠ ')) + 'En ' + textoDistancia(Math.max(0, hasta)) + ': ' + a.texto;
     if (!nav.dichos['a' + a.n]) {
       nav.dichos['a' + a.n] = true;
@@ -4471,7 +4544,7 @@ gl.on('click', function (e) {
     var hay = capas.filter(function (id) { return gl.getLayer(id); });
     return hay.length ? gl.queryRenderedFeatures([[pt.x - t, pt.y - t], [pt.x + t, pt.y + t]], { layers: hay }) : [];
   }
-  var iconos = buscar(['reportes', 'controles', 'lugares', 'lugares-lejos'], 18);
+  var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos'], 18);
   if (iconos.length) {
     // el más cercano al dedo (antes ganaba siempre el control o el reporte aunque el lugar estuviera más cerca)
     var lejos = function (f) {

@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v8';
+var VERSION = 'v9';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;
@@ -66,8 +66,12 @@ function primeroInternet(pedido) {
       if (resp && resp.ok) {
         var copia = resp.clone();
         caches.open(CACHE_APP).then(function (c) { c.put(pedido, copia); });
+        dar(resp);
+      } else {
+        // el servidor contestó con error (página que ya no existe, GitHub caído un momento): si hay algo guardado,
+        // se muestra eso (para una página, el mapa guardado) en vez de la pantalla de error
+        guardado(pedido).then(function (r) { dar(r || resp); });
       }
-      dar(resp);
     }).catch(function () {
       guardado(pedido).then(function (r) { dar(r || Response.error()); });
     });

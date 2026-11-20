@@ -704,3 +704,9 @@ body.navegando .boton-zoom { display: none; }
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35); cursor: pointer;
 }
 .boton-centrar[hidden] { display: none; }
+
+/* "Buscar más" al final de las sugerencias */
+.ruta-resultados .ruta-buscar-mas { background: #fff; color: #1a73e8; font-weight: 600; }
+
+/* Con el panel de ruta arriba (escribiendo), los mensajes van abajo para no tapar los casilleros */
+body.ruta-escribiendo .mensaje { top: auto; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 12px); }

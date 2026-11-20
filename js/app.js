@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 50;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 51;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1637,6 +1637,8 @@ mapa.on('moveend', function () {
 // Se muestra una vez cada vez que se abre la página, al mirar esa zona.
 var avisosMostrados = {};
 function revisarAvisoZona() {
+  // con el panel de ruta arriba (escribiendo) el aviso lo taparía: se muestra después
+  if (panelRuta && !panelRuta.hidden && !panelRuta.classList.contains('con-resultado')) return;
   var c = mapa.getCenter();
   var m = document.getElementById('mensaje');
   zonasIndice.forEach(function (zi) {
@@ -1749,12 +1751,15 @@ mapa.on('locationerror', function (e) {
   controlUbicacion.boton.classList.remove('buscando');
   mapa.stopLocate();
   var texto = e.code === 1
-    ? 'No diste permiso para ver tu ubicación. Activalo en la configuración del navegador (ícono del candado, al lado de la dirección) y volvé a tocar el botón.'
+    ? (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+        ? 'No diste permiso para ver tu ubicación. En el iPhone: Ajustes → Privacidad y seguridad → Localización (que esté ' +
+          'activada) → Sitios web de Safari → "Al usar la app". Después volvé a tocar el botón.'
+        : 'No diste permiso para ver tu ubicación. Activalo en la configuración del navegador (ícono del candado, al lado de la dirección) y volvé a tocar el botón.')
     : e.code === 3
       ? 'Tardó demasiado en encontrar tu ubicación. Revisá que el GPS esté prendido y volvé a probar.'
       : 'No pude encontrar tu ubicación. Revisá que el GPS esté prendido y volvé a probar.';
   mostrarMensaje(texto, true);
-  setTimeout(ocultarMensaje, 8000);
+  setTimeout(ocultarMensaje, e.code === 1 ? 15000 : 8000);
 });
 
 // ===== 9b. Ruta para mi camión =====
@@ -1785,13 +1790,24 @@ function abrirPanelRuta(abrir) {
   if (abrir) abrirPanel(false);
   panelRuta.hidden = !abrir;
   document.body.classList.toggle('ruta-abierta', !!abrir);
-  if (abrir) prepararRuta();
+  marcarEscribiendo();
+  if (abrir) {
+    // el aviso de "casi no hay datos" va arriba y tapaba los casilleros A / B: se saca (ya está en Qué mostrar)
+    var m = document.getElementById('mensaje');
+    if (!m.hidden && zonasIndice.some(function (z) { return z.aviso && m.textContent.indexOf(z.aviso) !== -1; })) ocultarMensaje();
+    prepararRuta();
+  }
 }
 // Pasa el panel de ruta a "resultado" (tarjeta abajo, como Google Maps) o a "escribir" (arriba)
 function modoResultado(si) {
   if (!panelRuta) return;
   panelRuta.classList.toggle('con-resultado', !!si);
+  marcarEscribiendo();
   actualizarTrayecto();
+}
+// body.ruta-escribiendo = panel de ruta arriba: los mensajes van abajo (ver estilos.css)
+function marcarEscribiendo() {
+  document.body.classList.toggle('ruta-escribiendo', !!panelRuta && !panelRuta.hidden && !panelRuta.classList.contains('con-resultado'));
 }
 function actualizarTrayecto() {
   var b = document.getElementById('ruta-trayecto');
@@ -1991,6 +2007,14 @@ function buscarPhoton(cual, texto, conRespaldo) {
         return;
       }
       mostrarOpciones(cual, res);
+      // Photon a veces no conoce un lugar (ej. "Parque Industrial Mar del Plata"): opción de buscar con el otro buscador
+      var li = document.createElement('li'), mas = document.createElement('button');
+      mas.type = 'button';
+      mas.className = 'ruta-buscar-mas';
+      mas.textContent = '🔎 No está en la lista: buscar más';
+      mas.addEventListener('click', function () { buscarNominatim(cual, texto); });
+      li.appendChild(mas);
+      lista.appendChild(li);
     })
     .catch(function (e) {
       if (e && e.name === 'AbortError') return;
@@ -2003,7 +2027,7 @@ function buscarNominatim(cual, texto) {
   lista.hidden = false;
   lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>';
   var b = mapa.getBounds();
-  var url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=ar&accept-language=es' +
+  var url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&countrycodes=ar&accept-language=es' +
             '&viewbox=' + [b.getWest(), b.getNorth(), b.getEast(), b.getSouth()].map(function (n) { return n.toFixed(4); }).join(',') +
             '&q=' + encodeURIComponent(texto);
   fetch(url)
@@ -2013,9 +2037,11 @@ function buscarNominatim(cual, texto) {
         lista.innerHTML = '<li class="ruta-cargando">No encontré esa dirección. Probá con calle, número y ciudad, o tocá el lugar en el mapa.</li>';
         return;
       }
+      // lo más cerca de lo que se ve, primero (Nominatim da primero lo "más importante", aunque esté en otra provincia)
+      var centro = mapa.getCenter();
       mostrarOpciones(cual, res.map(function (r) {
         return { nombre: r.display_name.split(', ').slice(0, 4).join(', '), lat: parseFloat(r.lat), lng: parseFloat(r.lon) };
-      }));
+      }).sort(function (x, y) { return centro.distanceTo([x.lat, x.lng]) - centro.distanceTo([y.lat, y.lng]); }));
     })
     .catch(function () { lista.innerHTML = '<li class="ruta-cargando">No pude buscar. Revisá la conexión.</li>'; });
 }
@@ -2396,7 +2422,7 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
           (s.steps || []).forEach(function (p) {
             // OpenRouteService a veces dice "Camina hacia..." aunque sea en camión
             var esVuelta = p.type >= 0 && p.type <= 3;   // izquierda, derecha, cerrada a la izq./der.
-            pasos.push({ texto: String(p.instruction).replace(/^Camin[ae] /, 'Salí '), km: p.distance,
+            pasos.push({ texto: aCastellano(String(p.instruction).replace(/^Camin[ae] /, 'Salí ')), km: p.distance,
                          ini: p.way_points ? p.way_points[0] : null, vuelta: esVuelta });
             if (esVuelta) vueltas++;
           });
@@ -2464,7 +2490,7 @@ function rutaValhalla(evitar, a, b) {
         puntos = puntos.concat(decodificarPolilinea(leg.shape, 6));
         leg.maneuvers.forEach(function (m) {
           var esVuelta = [10, 11, 14, 15].indexOf(m.type) !== -1;   // derecha, cerrada der., cerrada izq., izquierda
-          pasos.push({ texto: m.instruction, km: m.length, ini: base + (m.begin_shape_index || 0), vuelta: esVuelta });
+          pasos.push({ texto: aCastellano(m.instruction), km: m.length, ini: base + (m.begin_shape_index || 0), vuelta: esVuelta });
           if (esVuelta) vueltas++;
         });
       });
@@ -3045,8 +3071,56 @@ function decirFrase(texto, urgente, alFin) {
   }
   intentar(voz.modo, voz.modo !== 'elegida');
 }
+// Indicaciones de los servicios de ruta: vienen "de usted" y con palabras de España ("Gire a la izquierda").
+// Se pasan a como se habla acá ("Doblá a la izquierda"). Se respeta la mayúscula inicial.
+// (las palabras se buscan enteras: antes y después no puede haber una letra, también con acento)
+var A_CASTELLANO = [
+  ['gire bruscamente', 'doblá cerrado'],
+  ['gire ligeramente', 'doblá levemente'],
+  ['gire', 'doblá'],
+  ['continúe', 'seguí'],
+  ['siga', 'seguí'],
+  ['manténgase', 'mantenete'],
+  ['mantenga', 'mantenete'],
+  ['tome', 'tomá'],
+  ['entre en', 'entrá en'],
+  ['salga', 'salí'],
+  ['diríjase', 'andá'],
+  ['conduzca', 'andá'],
+  ['incorpórese', 'incorporate'],
+  ['haga un cambio de sentido', 'pegá la vuelta'],
+  ['dé la vuelta', 'pegá la vuelta'],
+  ['su destino', 'tu destino'],
+  ['ha llegado', 'llegaste']
+].map(function (r) { return [new RegExp('(^|[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ])(' + r[0] + ')(?![A-Za-zÁÉÍÓÚÜÑáéíóúüñ])', 'gi'), r[1]]; });
+function aCastellano(texto) {
+  var t = String(texto || '');
+  A_CASTELLANO.forEach(function (r) {
+    t = t.replace(r[0], function (todo, antes, m) {
+      return antes + (m.charAt(0) !== m.charAt(0).toLowerCase() ? r[1].charAt(0).toUpperCase() + r[1].slice(1) : r[1]);
+    });
+  });
+  return t;
+}
+// Para la voz: abreviaturas y unidades dichas enteras ("6 t" → "6 toneladas", "4,10 m" → "4 coma 10 metros")
+function paraDecir(texto) {
+  return String(texto)
+    // códigos de caminos rurales ("Camino viejo a Miramar/045-01. Seguí en 045-01."): no se leen
+    .replace(/\s*Seguí en \d{3}-\d{2}\.?/g, '')
+    .replace(/\s*\/\s*\d{3}-\d{2}\b/g, '')
+    .replace(/\s*\/\s*/g, ' o ')
+    .replace(/\bAv(da)?\.\s*/g, 'Avenida ')
+    .replace(/\bRN ?(\d+)/g, 'ruta nacional $1')
+    .replace(/\bRP ?(\d+)/g, 'ruta provincial $1')
+    .replace(/(\d) ?km\b/g, '$1 kilómetros')
+    .replace(/(\d) ?t\b/g, '$1 toneladas')
+    .replace(/(\d) ?m\b/g, '$1 metros')
+    .replace(/(\d+),(\d+)/g, '$1 coma $2')
+    .replace(/\s+/g, ' ');
+}
 function hablar(texto, urgente) {
   if (!nav.voz || !texto) return;
+  texto = paraDecir(texto);
   sesionDeAudio();
   if (!hayVoz()) { avisarVozFalla(); return; }
   decirFrase(texto, urgente, function (ok, detalle) { if (!ok) avisarVozFalla(detalle); });

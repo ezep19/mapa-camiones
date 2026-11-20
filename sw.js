@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v6';
+var VERSION = 'v7';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;

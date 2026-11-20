@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mapa para camiones</title>
+  <!-- Versión anterior (Leaflet, v44): la usa index.html si el teléfono no tiene WebGL -->
+  <meta name="description" content="Por dónde no pasa un camión: pasos bajos, límites de peso, calles prohibidas y sin salida.">
+  <meta name="theme-color" content="#1f2a36">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="iconos/favicon-32.png">
+  <link rel="apple-touch-icon" href="iconos/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Camiones">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
+        integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="">
+  <link rel="stylesheet" href="css/estilos.css?v=44">
+</head>
+<body>
+  <main id="mapa" aria-label="Mapa"></main>
+
+  <!-- Arriba, como en Google Maps: "¿A dónde vas?" y las medidas del camión -->
+  <div class="buscador">
+    <button id="btn-buscar" class="buscador-campo" type="button" aria-controls="panel-ruta">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      <span id="buscador-texto">¿A dónde vas?</span>
+    </button>
+    <button id="btn-camion" class="chip-camion" type="button" aria-controls="ventana-camion" aria-label="Medidas de mi camión">
+      <span aria-hidden="true">🚛</span><span id="camion-resumen" class="camion-resumen">Medidas</span>
+    </button>
+  </div>
+  <button id="btn-capas" class="boton-flotante boton-capas" type="button" aria-controls="panel-capas" aria-expanded="false" aria-label="Qué mostrar en el mapa">
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5-10-5Z" fill="currentColor"/><path d="m2 12.5 10 5 10-5M2 16.5l10 5 10-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+  </button>
+
+  <section id="panel-capas" class="panel" hidden aria-label="Qué mostrar en el mapa">
+    <div class="panel-cabecera">
+      <strong>Qué mostrar</strong>
+      <button id="cerrar-capas" class="boton-x" type="button" aria-label="Cerrar">×</button>
+    </div>
+    <ul id="lista-capas" class="lista-capas"></ul>
+    <div id="ir-zonas" class="ir-zonas" hidden></div>
+    <button id="btn-ayuda" class="boton-chico boton-ancho" type="button" aria-controls="ventana-ayuda">Cómo se usa</button>
+    <p id="nota-datos" class="panel-nota"></p>
+  </section>
+
+  <section id="panel-ruta" class="panel panel-ruta" hidden aria-label="Ruta para mi camión">
+    <div class="panel-cabecera">
+      <strong>Ruta para tu camión</strong>
+      <span>
+        <button id="borrar-ruta" class="boton-texto" type="button" hidden>Borrar</button>
+        <button id="cerrar-ruta" class="boton-x" type="button" aria-label="Cerrar">×</button>
+      </span>
+    </div>
+    <div id="ruta-entradas" class="ruta-entradas">
+      <div class="ruta-fila">
+        <span class="ruta-marca desde" aria-hidden="true">A</span>
+        <input id="ruta-desde" type="search" placeholder="Desde" aria-label="Desde" enterkeyhint="search" autocomplete="off">
+        <button type="button" class="boton-icono" id="desde-ubicacion" aria-label="Salir desde mi ubicación">📍</button>
+      </div>
+      <ul id="resultados-desde" class="ruta-resultados" hidden></ul>
+      <div class="ruta-fila">
+        <span class="ruta-marca hasta" aria-hidden="true">B</span>
+        <input id="ruta-hasta" type="search" placeholder="¿A dónde vas?" aria-label="Hasta" enterkeyhint="search" autocomplete="off">
+      </div>
+      <ul id="resultados-hasta" class="ruta-resultados" hidden></ul>
+      <p class="panel-nota">También podés dejar el dedo apretado en el mapa: "Ir hasta acá".</p>
+    </div>
+    <div id="ruta-resultado" hidden></div>
+  </section>
+
+  <div id="ventana-ayuda" class="ventana-fondo" hidden>
+    <section class="ventana ayuda" role="dialog" aria-modal="true" aria-labelledby="titulo-ayuda">
+      <div class="panel-cabecera">
+        <h2 id="titulo-ayuda">Cómo se usa</h2>
+        <button id="cerrar-ayuda" class="boton-x" type="button" aria-label="Cerrar">×</button>
+      </div>
+      <ul class="ayuda-colores">
+        <li><i style="background:#d50000"></i><b>Rojo:</b> tu camión NO pasa (puente bajo, peso, prohibido, calle cortada).</li>
+        <li><i style="background:#f2b705"></i><b>Amarillo:</b> verificá en el lugar (falta el dato, obra, portón).</li>
+        <li><i style="background:#7b3fa0"></i><b>Violeta:</b> calle sin salida.</li>
+        <li><i style="background:#2e7d32"></i><b>Verde:</b> calles para camiones.</li>
+      </ul>
+      <p><b>Tocá cualquier marca</b> para ver qué es y si pasás.</p>
+      <h3>Ir a un lugar</h3>
+      <p>Tocá <b>¿A dónde vas?</b>, escribí y elegí de la lista: la ruta sale sola, esquivando lo rojo para tu
+        camión. Tocá <b>▶ Ir</b> y te guía con voz. También podés dejar el dedo apretado en el mapa.</p>
+      <h3>Botones</h3>
+      <p><b>🚛</b> arriba: las medidas de tu camión. <b>Capas</b> (a la derecha): qué se ve en el mapa (gomerías,
+        estaciones de servicio, controles policiales, cortes en vivo...) e ir a otra ciudad. <b>◎</b> abajo: dónde
+        estás.</p>
+      <h3>¿Viste algo mal?</h3>
+      <p>Tocá la marca y usá <b>📣 Reportar un problema</b>, o dejá el dedo apretado en el lugar.</p>
+      <p class="ayuda-aviso">Los datos salen de OpenStreetMap, ordenanzas y TomTom, y pueden estar incompletos:
+        que no haya nada rojo no quiere decir que se pueda pasar. <b>Respetá siempre la señalización.</b></p>
+    </section>
+  </div>
+
+  <div id="ventana-camion" class="ventana-fondo" hidden>
+    <form id="form-camion" class="ventana" novalidate role="dialog" aria-modal="true" aria-labelledby="titulo-camion">
+      <h2 id="titulo-camion">Medidas de tu camión</h2>
+      <p class="ventana-ayuda">Con estas medidas el mapa te marca en rojo por dónde no pasás.
+        Se guardan en este teléfono; las podés cambiar cuando quieras con el botón "Mi camión".</p>
+
+      <label class="campo" for="c-altura">Altura total, con la carga (metros)</label>
+      <input id="c-altura" name="altura" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 4,10">
+      <div id="e-altura" class="campo-error" aria-live="polite"></div>
+
+      <label class="campo" for="c-peso">Peso total, con la carga (toneladas)</label>
+      <input id="c-peso" name="peso" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 45">
+      <div id="e-peso" class="campo-error" aria-live="polite"></div>
+
+      <label class="campo" for="c-largo">Largo total (metros)</label>
+      <input id="c-largo" name="largo" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 18,60">
+      <div id="e-largo" class="campo-error" aria-live="polite"></div>
+
+      <div class="ventana-botones">
+        <button id="cancelar-camion" class="boton boton-secundario" type="button">Cancelar</button>
+        <button class="boton boton-principal" type="submit">Guardar</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="mensaje" class="mensaje" role="status" hidden></div>
+
+  <section id="nav-cartel" class="nav-cartel" hidden aria-live="polite" aria-label="Navegación">
+    <div class="nav-fila">
+      <div class="nav-principal">
+        <div id="nav-distancia" class="nav-distancia"></div>
+        <div id="nav-texto" class="nav-texto"></div>
+      </div>
+      <button id="nav-rumbo" class="nav-boton" type="button" aria-label="El mapa gira hacia donde vas">🧭</button>
+      <button id="nav-voz" class="nav-boton" type="button" aria-label="Apagar la voz">🔊</button>
+      <button id="nav-terminar" class="nav-boton" type="button" aria-label="Terminar la navegación">✕</button>
+    </div>
+    <div id="nav-peligro" class="nav-peligro" hidden></div>
+  </section>
+
+  <div class="atribucion"><a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> · © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a><span id="pie-tomtom" hidden> · <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a></span></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- girar el mapa con dos dedos (si no carga, el mapa anda igual, con el norte siempre arriba) -->
+  <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"
+          integrity="sha384-MtIdllebpZyms2pw9K3YJl8BEqrKNQCdSFAySjeglab6z2PkeFdF4Lb9cDsnxQuG" crossorigin=""></script>
+  <!-- mapa de fondo nítido (vectorial); si no carga, la página usa el mapa común -->
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
+          integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin=""></script>
+  <script src="js/mapa.js?v=44"></script>
+</body>
+</html>

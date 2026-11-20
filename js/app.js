@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 76;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 77;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2350,6 +2350,7 @@ mapa.on('locationerror', function (e) {
 // Después se revisa la ruta contra NUESTROS datos (pasos bajos calculados, reportes) y se avisa.
 var ruta = {
   desde: null, hasta: null,            // { latlng, nombre }
+  sinPeajes: leerGuardado('mapa-camiones:sin-peajes') === true,   // "Evitar peajes" (v77)
   marcas: { desde: null, hasta: null },
   linea: null, borde: null,
   tocando: null,                       // 'desde' | 'hasta' mientras se espera un toque en el mapa
@@ -2757,6 +2758,16 @@ if (panelRuta) {
     prepararCampo(cual);
   });
   if (document.getElementById('agregar-parada')) document.getElementById('agregar-parada').addEventListener('click', agregarParada);
+  // v77: "Evitar peajes" (queda recordado). Al cambiarlo con una ruta armada, se recalcula.
+  var cPeajes = document.getElementById('sin-peajes');
+  if (cPeajes) {
+    cPeajes.checked = ruta.sinPeajes;
+    cPeajes.addEventListener('change', function () {
+      ruta.sinPeajes = cPeajes.checked;
+      guardar('mapa-camiones:sin-peajes', ruta.sinPeajes);
+      if (ruta.desde && ruta.hasta && !nav.activo) calcularRuta();
+    });
+  }
   var bCalcular = document.getElementById('calcular-ruta');
   if (bCalcular) bCalcular.addEventListener('click', calcularRuta);
   document.getElementById('borrar-ruta').addEventListener('click', cancelarRuta);
@@ -3253,6 +3264,7 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
       height: camion.altura, weight: camion.peso, length: camion.largo, width: CAMION_ANCHO } } }
   };
   if (!sinAlternativas) cuerpo.alternative_routes = { target_count: 3, weight_factor: 1.6, share_factor: 0.6 };
+  if (ruta.sinPeajes) cuerpo.options.avoid_features = ['tollways'];
   if (evitar && evitar.length) {
     cuerpo.options.avoid_polygons = { type: 'MultiPolygon', coordinates: evitar.map(function (anillo) { return [anillo]; }) };
   }
@@ -3311,7 +3323,7 @@ function rutaValhalla(evitar, a, b) {
     locations: [{ lat: a.lat, lon: a.lng }, { lat: b.lat, lon: b.lng }],
     costing: 'truck',
     costing_options: { truck: { height: camion.altura, weight: camion.peso, length: camion.largo, width: CAMION_ANCHO,
-                                use_living_streets: 0, use_highways: 1 } },
+                                use_living_streets: 0, use_highways: 1, use_tolls: ruta.sinPeajes ? 0 : 0.5 } },
     alternates: 2,
     units: 'kilometers',
     directions_options: { language: 'es-ES', units: 'kilometers' }
@@ -3386,7 +3398,7 @@ function rutaTomTom(evitar, a, b, conAlternativas) {
   var q = 'key=' + encodeURIComponent(claveTomTom()) + '&travelMode=truck&vehicleCommercial=true' +
           '&vehicleWeight=' + Math.round(camion.peso * 1000) + '&vehicleHeight=' + camion.altura +
           '&vehicleLength=' + camion.largo + '&vehicleWidth=' + CAMION_ANCHO +
-          '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false' +
+          '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false' + (ruta.sinPeajes ? '&avoid=tollRoads' : '') +
           (conAlternativas ? '&maxAlternatives=2' : '');
   var url = 'https://api.tomtom.com/routing/1/calculateRoute/' + a.lat.toFixed(6) + ',' + a.lng.toFixed(6) + ':' +
             b.lat.toFixed(6) + ',' + b.lng.toFixed(6) + '/json?' + q;

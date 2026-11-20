@@ -13,6 +13,7 @@
    10. Utilidades
 */
 'use strict';
+var VERSION_APP = 47;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1576,7 +1577,8 @@ function armarPanel() {
   var nota = document.getElementById('nota-datos');
   var c = mapa.getCenter();
   var aca = zonasIndice.filter(function (z) { return z.aviso && z.limites && L.latLngBounds(z.limites).contains(c); })[0];
-  nota.textContent = 'Datos: OpenStreetMap' + (claveTomTom() ? ', TomTom' : '') + ' y ordenanzas. Pueden estar incompletos.';
+  nota.textContent = 'Datos: OpenStreetMap' + (claveTomTom() ? ', TomTom' : '') + ' y ordenanzas. Pueden estar incompletos. ' +
+                    'Versión ' + VERSION_APP + '.';
   if (aca) {
     var av = document.createElement('span');
     av.className = 'nota-aviso';
@@ -3118,6 +3120,11 @@ function empezarNavegacion(rutaElegida) {
   ponerBrujula();
   mostrarCartelNav('Buscando tu ubicación...', '');
   if (!ruta.esRecalculo) hablar('Vamos. Seguí la ruta azul.', true);
+  // si la voz quedó apagada (botón 🔇) o el navegador no habla, se dice en pantalla (antes no avisaba nada)
+  if (!ruta.esRecalculo && !nav.voz) {
+    mostrarMensaje('🔇 La voz está apagada. Tocá 🔇 en el cartel verde de arriba para prenderla.');
+    setTimeout(ocultarMensaje, 10000);
+  } else if (!ruta.esRecalculo && !hayVoz()) avisarVozFalla();
   ruta.esRecalculo = false;
   pedirPantallaPrendida();
   if (ubicacion.ultima) seguirNavegacion(ubicacion.ultima);

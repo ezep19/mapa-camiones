@@ -694,3 +694,4 @@ body.navegando .boton-zoom { display: none; }
 }
 /* marcas A y B de la ruta */
 .maplibregl-marker.ruta-marca { width: 28px; height: 28px; }
+.boton-voz { margin: 0 0 8px; background: #e8f0fe; color: #1a56c4; font-weight: 700; }

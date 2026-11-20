@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 69;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 70;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2229,7 +2229,8 @@ mapa.on('locationfound', function (e) {
     ubicacion.punto = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
       .setLngLat([e.latlng.lng, e.latlng.lat]).addTo(gl);
   } else ubicacion.punto.setLngLat([e.latlng.lng, e.latlng.lat]);
-  ponerDatos('precision', e.accuracy ? [circuloGeo(e.latlng, e.accuracy)] : []);
+  // navegando no se dibuja el círculo de precisión (alrededor del camión molestaba)
+  ponerDatos('precision', e.accuracy && !(typeof nav !== 'undefined' && nav.activo) ? [circuloGeo(e.latlng, e.accuracy)] : []);
   if (primera) {
     ubicacion.buscando = false;
     controlUbicacion.boton.classList.remove('buscando');

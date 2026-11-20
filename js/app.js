@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 64;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 65;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -52,7 +52,11 @@ var LUGARES = [
 ];
 var LUGAR_POR_ID = {};
 LUGARES.forEach(function (l) { LUGAR_POR_ID[l.id] = l; });
-var ZOOM_LUGARES = 13;   // más lejos que esto no se muestran (taparían todo)
+var ZOOM_LUGARES = 13;   // desde acá se ven TODOS los lugares
+// Pedido del chofer (20/11/2026, parado en una gomería de la ruta 2): "que aparezcan sin tener que acercar tanto, capaz
+// que pasás y no lo ves". Desde este zoom (bastante más lejos) se ven los que entran sin taparse, primero gomerías,
+// talleres y paradores; al acercar aparecen los demás.
+var ZOOM_LUGARES_LEJOS = 9.5;
 
 // Qué medida del camión se compara con cada capa
 var MEDIDA_DE_CAPA = { altura: 'altura', peso: 'peso', largo: 'largo', ancho: 'ancho' };
@@ -670,7 +674,7 @@ function cargarCeldaLugares(c) {
   return paisLugares.pedidas[c.archivo];
 }
 function cargarLugaresVista() {
-  if (!paisLugares.celdas.length || mapa.getZoom() < ZOOM_LUGARES - 1) return;
+  if (!paisLugares.celdas.length || mapa.getZoom() < ZOOM_LUGARES_LEJOS) return;
   if (!LUGARES.some(function (l) { return lugaresPrendidos[l.id]; })) return;
   var lim = mapa.getBounds().pad(0.2);
   paisLugares.celdas.forEach(function (c) { if (L.latLngBounds(c.limites).intersects(lim)) cargarCeldaLugares(c); });
@@ -998,8 +1002,14 @@ function ponerCapasPropias() {
                'circle-opacity': ['case', es('e', 'si'), 0.6, 0.95] } },
     { id: 'precision-area', type: 'fill', source: 'precision', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.12 } },
     { id: 'precision-borde', type: 'line', source: 'precision', paint: { 'line-color': '#1a73e8', 'line-opacity': 0.4, 'line-width': 1 } },
+    // de lejos: solo los que entran sin taparse y con lugar alrededor (MapLibre esconde los que se pisan; en una ciudad
+    // quedan pocos, en la ruta casi todos), un poco más chicos
+    { id: 'lugares-lejos', type: 'symbol', source: 'lugares', minzoom: ZOOM_LUGARES_LEJOS - 1, maxzoom: ZOOM_LUGARES - 1,
+      layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': false, 'icon-padding': 16, 'symbol-sort-key': ['get', 'pr'],
+                'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_LUGARES_LEJOS - 1, 0.8, ZOOM_LUGARES - 1, 0.95] } },
     { id: 'lugares', type: 'symbol', source: 'lugares', minzoom: ZOOM_LUGARES - 1,
-      layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true } },
+      layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+                'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_LUGARES - 1, 1, 15, 1.15] } },
     { id: 'reportes', type: 'symbol', source: 'reportes',
       layout: { 'icon-image': 'ic-reporte', 'icon-allow-overlap': true, 'icon-ignore-placement': true } },
     { id: 'controles', type: 'symbol', source: 'controles', minzoom: ZOOM_CONTROLES - 1,
@@ -1180,6 +1190,7 @@ function crearCapaLugares(features) {
 }
 
 var lugarPorId = {};
+var PRIORIDAD_LUGAR = { gomeria: 1, taller: 2, parador: 2, estacionamiento: 3, balanza: 4, combustible: 5, ducha: 6 };
 // Pone en el mapa los tipos prendidos (de lejos no se ven: lo maneja MapLibre con el zoom mínimo de la capa)
 function mostrarLugares() {
   var feats = [];
@@ -1189,7 +1200,11 @@ function mostrarLugares() {
     gruposLugares[t.id].eachLayer(function (l) {
       var id = L.stamp(l);
       lugarPorId[id] = l;
-      feats.push({ type: 'Feature', geometry: l.feature.geometry, properties: { k: 'l', id: id, ic: 'ic-l-' + t.id } });
+      var p = l.feature.properties;
+      // de lejos, cuando no entran todos, ganan los de menor número
+      var pr = PRIORIDAD_LUGAR[t.id] != null ? PRIORIDAD_LUGAR[t.id] : 5;
+      if (p.camiones) pr -= 2;
+      feats.push({ type: 'Feature', geometry: l.feature.geometry, properties: { k: 'l', id: id, ic: 'ic-l-' + t.id, pr: pr } });
     });
   });
   ponerDatos('lugares', feats);
@@ -1265,7 +1280,7 @@ function armarPanelLugares() {
       guardar(CLAVE_LUGARES, lugaresPrendidos);
       mostrarLugares();
       cargarLugaresVista();
-      if (ev.target.checked && mapa.getZoom() < ZOOM_LUGARES) {
+      if (ev.target.checked && mapa.getZoom() < ZOOM_LUGARES_LEJOS) {
         mostrarMensaje('Acercá el mapa para ver los lugares.');
         setTimeout(ocultarMensaje, 3000);
       }
@@ -1818,7 +1833,7 @@ function cambiarOpcion(o, prender) {
     guardar(CLAVE_LUGARES, lugaresPrendidos);
     mostrarLugares();
     cargarLugaresVista();
-    if (prender && mapa.getZoom() < ZOOM_LUGARES) { mostrarMensaje('Acercá el mapa para ver los lugares.'); setTimeout(ocultarMensaje, 3000); }
+    if (prender && mapa.getZoom() < ZOOM_LUGARES_LEJOS) { mostrarMensaje('Acercá el mapa para ver los lugares.'); setTimeout(ocultarMensaje, 3000); }
     return;
   }
   if (o.alReves) {
@@ -4259,8 +4274,14 @@ gl.on('click', function (e) {
     var hay = capas.filter(function (id) { return gl.getLayer(id); });
     return hay.length ? gl.queryRenderedFeatures([[pt.x - t, pt.y - t], [pt.x + t, pt.y + t]], { layers: hay }) : [];
   }
-  var iconos = buscar(['reportes', 'controles', 'lugares'], 18);
+  var iconos = buscar(['reportes', 'controles', 'lugares', 'lugares-lejos'], 18);
   if (iconos.length) {
+    // el más cercano al dedo (antes ganaba siempre el control o el reporte aunque el lugar estuviera más cerca)
+    var lejos = function (f) {
+      var c = f.geometry.coordinates, s = gl.project(c);
+      return (s.x - pt.x) * (s.x - pt.x) + (s.y - pt.y) * (s.y - pt.y);
+    };
+    iconos.sort(function (a, b) { return lejos(a) - lejos(b); });
     var q = iconos[0].properties;
     if (q.k === 'l' && lugarPorId[q.id]) abrirCartelLugar(lugarPorId[q.id]);
     else if (q.k === 'c' && controles.lista[q.i]) abrirCartelControl(controles.lista[q.i]);

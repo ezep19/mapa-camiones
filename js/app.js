@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 78;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 79;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -132,6 +132,32 @@ function estiloLiviano(est) {
   });
   return est;
 }
+// v79: el estilo "dark" de OpenFreeMap es casi negro: calles gris oscuro sobre negro y nombres que casi no se leen.
+// Se pasa a tonos gris azulado (como Google Maps de noche): calles claras, nombres legibles, sin amarillos ni rojos
+// (esos colores son del camión).
+var COLORES_NOCHE = {
+  background: '#1b2330', water: '#0e1626', waterway: '#0e1626', landuse_residential: '#1f2836',
+  landcover_wood: '#1c2a26', landuse_park: '#1c2a26', building: '#262f3d', aeroway_area: '#222b38',
+  highway_path: '#2f3947', highway_minor: '#3c4758', road_pier: '#3c4758',
+  highway_major_casing: '#242c39', highway_major_inner: '#4d5a6e', highway_major_subtle: '#4d5a6e',
+  highway_motorway_casing: '#242c39', highway_motorway_inner: '#64748c', highway_motorway_subtle: '#64748c',
+  railway: '#3a4250', railway_minor: '#3a4250', railway_transit: '#3a4250'
+};
+function estiloNoche(est) {
+  est.layers.forEach(function (l) {
+    var p = l.paint = l.paint || {}, c = COLORES_NOCHE[l.id.replace(/-/g, '_')];
+    if (l.type === 'background' && c) p['background-color'] = c;
+    else if (l.type === 'fill' && c) p['fill-color'] = c;
+    else if (l.type === 'line' && c) p['line-color'] = c;
+    else if (l.type === 'line' && /dashline/.test(l.id)) p['line-color'] = COLORES_NOCHE.background;
+    else if (l.type === 'symbol' && l.layout && l.layout['text-field']) {
+      if (/^highway_name/.test(l.id)) { p['text-color'] = '#c2cbd8'; p['text-halo-color'] = '#1b2330'; p['text-halo-width'] = 1.5; }
+      else if (/^place_/.test(l.id)) { p['text-color'] = '#d3dae4'; p['text-halo-color'] = 'rgba(15,20,28,0.9)'; p['text-halo-width'] = 1.5; }
+      else if (l.id === 'water_name') { p['text-color'] = '#7f95b3'; p['text-halo-color'] = '#0e1626'; }
+    }
+  });
+  return est;
+}
 // --- Mapa de noche (v75): de noche el mapa oscuro de OpenFreeMap (no encandila manejando), como Google Maps y Waze.
 // "auto" = según la salida y la puesta del sol donde estás; se puede fijar claro u oscuro en Qué mostrar.
 var ESTILO_NOCHE = 'https://tiles.openfreemap.org/styles/dark';
@@ -182,7 +208,7 @@ function ponerFondo() {
     fondo.tipo = 'vectorial';
     fondo.oscuro = oscuro;
     document.body.classList.toggle('mapa-noche', oscuro);
-    gl.setStyle(estiloLiviano(est), { diff: false });
+    gl.setStyle(oscuro ? estiloNoche(estiloLiviano(est)) : estiloLiviano(est), { diff: false });
   }).catch(function () { clearTimeout(espera); respaldo(); });
 }
 ponerFondo();

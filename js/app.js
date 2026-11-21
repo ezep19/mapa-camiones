@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 80;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 81;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3178,7 +3178,7 @@ function calcularViajeLargo(desde, hasta, salida) {
     var corte = Math.min(TRAMO_CIUDAD_KM, total / 3);
     var i1 = acum.findIndex(function (d) { return d >= corte; });
     var i2 = acum.findIndex(function (d) { return d >= total - corte; });
-    var p1 = L.latLng(base.puntos[i1]), p2 = L.latLng(base.puntos[i2]);
+    var p1 = conRumbo(base.puntos, i1), p2 = conRumbo(base.puntos, i2);   // v81: con el rumbo (no la mano contraria)
     // las zonas de todo el recorrido (para revisar el tramo del medio) se bajan mientras se piden la salida y la
     // llegada (antes, primero una cosa y después la otra)
     var cargas = Promise.all([cargarZonasEnRutas([base.puntos]), cargarCortesEn([base.puntos]), cargarPaisEnRutas([base.puntos])]);
@@ -3215,6 +3215,8 @@ function calcularViajeLargo(desde, hasta, salida) {
       c.esquivados = salidaMejor.esquivados + llegadaMejor.esquivados;
       var m0 = salidaMejor.puntos.length, m1 = m0 + medio.puntos.length;
       return arreglarMedio(c, m0, m1, salida && salida.nodeType ? null : salida).then(function (c2) {
+        return quitarIdasYVueltas(c2, salida && salida.nodeType ? null : salida);
+      }).then(function (c2) {
         c2.sinRevisar = zonasSinCargarEnRutas([c2.puntos]);
         return [c2];
       });
@@ -3255,7 +3257,7 @@ function arreglarMedio(c, m0, m1, salida, margen, vez) {
       if (iB - iA < 2 || acum[iB] - acum[iA] > 140 || iB >= actual.puntos.length) return actual;
       if (salida) salida.innerHTML = '<p class="ruta-cargando">Viaje largo: en el camino hay lugares donde no pasás. ' +
         'Buscando cómo esquivarlos...</p>';
-      return calcularTramo(L.latLng(actual.puntos[iA]), L.latLng(actual.puntos[iB]), null, false).then(function (caminos) {
+      return calcularTramo(conRumbo(actual.puntos, iA), conRumbo(actual.puntos, iB), null, false).then(function (caminos) {
         var nuevo = elegirOpciones(caminos)[0];
         var antes = actual.avisos.filter(function (x) { return x.rojo && x.orden >= iA && x.orden <= iB; }).length;
         if (!nuevo || nuevo.rojos >= antes) return actual;   // no mejoró: queda como estaba (con el aviso)
@@ -3273,6 +3275,86 @@ function arreglarMedio(c, m0, m1, salida, margen, vez) {
       return arreglarMedio(final, 0, final.puntos.length, salida, 60, vez + 1);
     }
     return final;
+  });
+}
+
+// --- v81: el camino no sale de la ruta para volver a entrar más adelante ---
+// Pedido del chofer (21/11/2026): "no quiero que me saque de la ruta y después me vuelva a hacer volver por la misma ruta".
+// Causa encontrada: los viajes largos se arman en pedazos (salida, medio, llegada, pedazos que esquivan rojos) y en cada
+// unión el servicio podía arrancar en la mano contraria de una autovía o volver para atrás hasta un cruce (MdP → Rosario:
+// salía de la Ruta 2 hacia La Plata 7 km para atrás; MdP → CABA: bajada 34 de la autopista a La Plata, vuelta en U y otra
+// vez 5 km por la autopista). Arreglo: (1) en cada punto de unión se le dice al servicio hacia dónde va el camión;
+// (2) al final se buscan las "idas y vueltas" (el camino se va y vuelve cerca de donde estaba) y ese pedazo se pide de
+// nuevo entero; se queda el nuevo solo si es más corto, no pasa por más rojos y ya no tiene la ida y vuelta.
+function rumboPuntos(p, q) {   // p, q = [lat, lng]
+  var r = Math.PI / 180, y = Math.sin((q[1] - p[1]) * r) * Math.cos(q[0] * r);
+  var x = Math.cos(p[0] * r) * Math.sin(q[0] * r) - Math.sin(p[0] * r) * Math.cos(q[0] * r) * Math.cos((q[1] - p[1]) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+// El punto k del recorrido, con el rumbo del camión ahí (mirando ~40 m antes y después)
+function conRumbo(puntos, k) {
+  var ll = L.latLng(puntos[k]), a = k, b = k;
+  while (a > 0 && ll.distanceTo(puntos[a]) < 40) a--;
+  while (b < puntos.length - 1 && ll.distanceTo(puntos[b]) < 40) b++;
+  if (a !== b) ll.rumbo = Math.round(rumboPuntos(puntos[a], puntos[b]));
+  return ll;
+}
+// Idas y vueltas: el camino recorre más de 1 km y vuelve a pasar a menos de 120 m de donde ya pasó (sale y vuelve por la
+// misma ruta, o da la vuelta en U). Un cruce en V (Ruta 2 → 215 → 6) no cuenta: no vuelve a pasar por el mismo lugar.
+// No se miran los primeros ni los últimos 3 km (al salir o llegar a veces hay que dar la vuelta).
+function idasYVueltas(puntos) {
+  var n = puntos.length, acum = [0], res = [];
+  function d(i, j) {
+    var dy = (puntos[j][0] - puntos[i][0]) * 110540, dx = (puntos[j][1] - puntos[i][1]) * 111320 * Math.cos(puntos[i][0] * Math.PI / 180);
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  for (var i = 1; i < n; i++) acum.push(acum[i - 1] + d(i - 1, i));
+  var total = acum[n - 1], k = 0;
+  while (k < n) {
+    if (acum[k] < 3000) { k++; continue; }
+    if (acum[k] > total - 3000) break;
+    var mejor = null;
+    for (var j = k + 2; j < n && acum[j] - acum[k] < 40000 && acum[j] < total - 3000; j++) {
+      var camino = acum[j] - acum[k];
+      if (camino < 1000) continue;
+      var recto = d(k, j);
+      if (recto < 120) mejor = { i: k, j: j, camino: camino, recto: recto };   // la vuelta más larga que empieza acá
+    }
+    if (mejor) { res.push(mejor); k = mejor.j + 1; } else k += 3;
+  }
+  return { lista: res, acum: acum };
+}
+function quitarIdasYVueltas(c, salida) {
+  var iv = idasYVueltas(c.puntos);
+  if (!iv.lista.length) return Promise.resolve(c);
+  var acum = iv.acum;
+  function indiceEn(m) { var j = acum.findIndex(function (x) { return x >= m; }); return j < 0 ? acum.length - 1 : j; }
+  var ventanas = [];
+  iv.lista.forEach(function (e) {
+    var iA = indiceEn(Math.max(0, acum[e.i] - 3000)), iB = indiceEn(acum[e.j] + 3000);
+    var ant = ventanas[ventanas.length - 1];
+    if (ant && iA <= ant.iB) ant.iB = iB; else ventanas.push({ iA: iA, iB: iB });   // ventanas pegadas: una sola
+  });
+  ventanas = ventanas.filter(function (v) { return (acum[v.iB] - acum[v.iA]) / 1000 <= 120; }).slice(0, 3);
+  if (salida) salida.innerHTML = '<p class="ruta-cargando">Viaje largo: enderezando el camino para que no salgas de la ruta...</p>';
+  var cadena = Promise.resolve(c);
+  ventanas.reverse().forEach(function (v) {   // del último al primero: los índices de los anteriores no cambian
+    cadena = cadena.then(function (actual) {
+      var kmViejo = (acum[v.iB] - acum[v.iA]) / 1000;
+      return calcularTramo(conRumbo(actual.puntos, v.iA), conRumbo(actual.puntos, v.iB), null, false).then(function (caminos) {
+        var nuevo = elegirOpciones(caminos)[0];
+        var antes = (actual.avisos || []).filter(function (x) { return x.rojo && x.orden >= v.iA && x.orden <= v.iB; }).length;
+        if (!nuevo || nuevo.rojos > antes || nuevo.km > kmViejo - 0.5) return actual;
+        if (idasYVueltas(nuevo.puntos).lista.length) return actual;
+        return empalmar(actual, v.iA, v.iB, nuevo, kmViejo);
+      }, function () { return actual; });
+    });
+  });
+  return cadena.then(function (final) {
+    if (final === c) return c;
+    final.avisos = revisarRuta(final.puntos, final.pasos);
+    final.rojos = final.avisos.filter(function (x) { return x.rojo; }).length;
+    return final.rojos > c.rojos ? c : final;   // nunca peor que antes
   });
 }
 
@@ -3398,6 +3480,10 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
       height: camion.altura, weight: camion.peso, length: camion.largo, width: CAMION_ANCHO } } }
   };
   if (!sinAlternativas) cuerpo.alternative_routes = { target_count: 3, weight_factor: 1.6, share_factor: 0.6 };
+  // v81: hacia dónde va el camión en la salida / llegada (puntos de unión de un viaje largo, recálculos)
+  if (a.rumbo != null || b.rumbo != null) {
+    cuerpo.bearings = [a.rumbo != null ? [a.rumbo, 45] : [0, 180], b.rumbo != null ? [b.rumbo, 45] : [0, 180]];
+  }
   if (ruta.sinPeajes) cuerpo.options.avoid_features = ['tollways'];
   if (evitar && evitar.length) {
     cuerpo.options.avoid_polygons = { type: 'MultiPolygon', coordinates: evitar.map(function (anillo) { return [anillo]; }) };
@@ -3479,6 +3565,8 @@ function rutaValhalla(evitar, a, b) {
     });
     if (lugaresEvitar.length) cuerpo.exclude_locations = lugaresEvitar.map(function (p) { return { lat: p.lat, lon: p.lng }; });
   }
+  if (a.rumbo != null) { cuerpo.locations[0].heading = a.rumbo; cuerpo.locations[0].heading_tolerance = 45; }
+  if (b.rumbo != null) { cuerpo.locations[1].heading = b.rumbo; cuerpo.locations[1].heading_tolerance = 45; }
   return conTiempoLimite('https://valhalla1.openstreetmap.de/route', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo)
   }, 30).then(function (r) {
@@ -3535,7 +3623,7 @@ function rutaTomTom(evitar, a, b, conAlternativas) {
           '&vehicleWeight=' + Math.round(camion.peso * 1000) + '&vehicleHeight=' + camion.altura +
           '&vehicleLength=' + camion.largo + '&vehicleWidth=' + CAMION_ANCHO +
           '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false' + (ruta.sinPeajes ? '&avoid=tollRoads' : '') +
-          (conAlternativas ? '&maxAlternatives=2' : '');
+          (conAlternativas ? '&maxAlternatives=2' : '') + (a.rumbo != null ? '&vehicleHeading=' + a.rumbo : '');
   var url = 'https://api.tomtom.com/routing/1/calculateRoute/' + a.lat.toFixed(6) + ',' + a.lng.toFixed(6) + ':' +
             b.lat.toFixed(6) + ',' + b.lng.toFixed(6) + '/json?' + q;
   var rect = rectangulosTomTom(evitar);
@@ -4605,7 +4693,7 @@ function seguirNavegacion(pos) {
       nav.dichos['f' + p0.clave] = Date.now();
       hablar('Cuidado. ' + (p0.d < 30 ? 'Acá' : 'A ' + vozDistancia(Math.max(30, p0.d))) + ', ' + p0.voz + '.', true);
     }
-    if (nav.fuera >= NAV.FUERA_VECES && Date.now() - nav.ultimoRecalculo > NAV.RECALCULO_CADA_S * 1000) recalcularDesde(pos);
+    if (nav.fuera >= NAV.FUERA_VECES && Date.now() - nav.ultimoRecalculo > NAV.RECALCULO_CADA_S * 1000) recalcularDesde(pos, rumboGps);
     else mostrarCartelNav('Fuera de la ruta', 'Volvé a la ruta azul o esperá: la recalculo en unos segundos.', txtP);
     // fuera de la ruta el mapa sigue al camión, mirando hacia donde va (según el GPS)
     if (rumboGps != null) nav.ultimoRumbo = rumboGps;
@@ -4764,14 +4852,21 @@ function rumboEntre(a, b) {
 // v76: en un viaje largo, si te salís de la ruta no se recalcula todo el viaje (10–20 s): se busca cómo volver a la
 // ruta unos km más adelante (1–3 s) y se sigue con el resto como estaba. Si eso falla o pasa por algo rojo, todo.
 var VOLVER_A_LA_RUTA_M = 8000;
-function volverALaRuta(pos) {
+function volverALaRuta(pos, rumboGps) {
   var r = nav.r, total = nav.acum[nav.acum.length - 1], hecho = nav.recorrido || 0;
-  if (!r || total - hecho < 40000) return Promise.reject(new Error('corto'));
-  var j = nav.acum.findIndex(function (d) { return d >= hecho + VOLVER_A_LA_RUTA_M; });
+  // v81 (el chofer: "que busque el camino y no vaya cambiando, a no ser que esté cortado"): antes solo con más de
+  // 40 km por delante; si no, se armaba un camino nuevo desde cero (y podía ser otro). Ahora siempre se vuelve a la
+  // misma ruta, un poco más adelante (8 km, o menos si falta poco). Se cambia de camino solo si el de antes pasa por algo
+  // rojo (un corte en vivo, por ejemplo): eso lo revisa recalcularDesde.
+  var falta = total - hecho;
+  if (!r || falta < 1500) return Promise.reject(new Error('cerca del final'));
+  var adelante = Math.min(VOLVER_A_LA_RUTA_M, Math.max(1000, falta * 0.4));
+  var j = nav.acum.findIndex(function (d) { return d >= hecho + adelante; });
   if (j < 1 || j >= r.puntos.length - 2) return Promise.reject(new Error('cerca del final'));
-  var destino = L.latLng(r.puntos[j]);
-  return cargarZonasEn(L.latLngBounds([L.latLng(pos), destino]).pad(0.2)).then(function () {
-    return calcularTramo(L.latLng(pos), destino, null, false);
+  var destino = conRumbo(r.puntos, j), desde = L.latLng(pos);
+  if (rumboGps != null) desde.rumbo = Math.round(rumboGps);   // hacia donde va el camión (no lo manda a dar la vuelta)
+  return cargarZonasEn(L.latLngBounds([desde, destino]).pad(0.2)).then(function () {
+    return calcularTramo(desde, destino, null, false);
   }).then(function (caminos) {
     var t = elegirOpciones(caminos)[0];
     if (!t || t.rojos) throw new Error('el camino para volver pasa por algo rojo');
@@ -4792,7 +4887,7 @@ function volverALaRuta(pos) {
     return c;
   });
 }
-function recalcularDesde(pos) {
+function recalcularDesde(pos, rumboGps) {
   if (!ruta.hasta) return;
   nav.recalculando = true;
   nav.ultimoRecalculo = Date.now();
@@ -4801,7 +4896,7 @@ function recalcularDesde(pos) {
   marcarParadasPasadas(pos);
   ponerPunto('desde', pos, 'Mi ubicación');
   var sesion = nav.sesion;
-  volverALaRuta(pos).then(function (c) {
+  volverALaRuta(pos, rumboGps).then(function (c) {
     if (!nav.activo || nav.sesion !== sesion) { nav.recalculando = false; return; }
     if (c.rojos > (nav.r.rojos || 0)) throw new Error('quedó peor');
     nav.recalculando = false;

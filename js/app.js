@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 79;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 80;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2523,7 +2523,7 @@ function mostrarOpciones(cual, opciones, titulo, icono) {
     var li = document.createElement('li');
     var b = document.createElement('button');
     b.type = 'button';
-    b.textContent = (icono || '') + o.nombre;
+    b.textContent = (o.icono || icono || '') + (o.etiqueta || o.nombre);
     b.addEventListener('click', function () { elegirPunto(cual, [o.lat, o.lng], o.nombre); });
     li.appendChild(b);
     lista.appendChild(li);
@@ -2602,20 +2602,72 @@ mapa.on('click', function (e) {
   elegirPunto(cual, e.latlng);
 });
 
-// Buscar direcciones.
-// Mientras escribís: Photon (buscador de datos de OpenStreetMap hecho para sugerir al escribir), sesgado a lo que se ve.
-// Al tocar "Buscar" o Enter: Photon y, si no encuentra, Nominatim (que no permite buscar mientras se escribe).
+// Buscar direcciones (v80).
+// 1) Al instante, sin internet: provincias y ~300 ciudades del país (datos/ciudades.json, scripts/hacer_ciudades.py).
+// 2) Photon (buscador de OpenStreetMap para sugerir al escribir), dos pedidos a la vez: ciudades y pueblos de todo el país
+//    (sin mirar dónde estás) y calles / direcciones / lugares cerca de lo que se ve. Antes solo el 2.º: en Mar del Plata
+//    "Catamarca", "Tucumán" o "Córdoba" daban solo la CALLE con ese nombre y nunca la provincia o la ciudad.
+// 3) Enter / Buscar sin resultados, o "buscar más": Nominatim.
 var sugerencia = { timer: null, ctrl: null };
+var ciudades = { lista: null, pedido: null };
+function sinTildes(t) {
+  return String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function cargarCiudades() {
+  if (!ciudades.pedido) {
+    ciudades.pedido = fetch('datos/ciudades.json?v=' + VERSION_APP)
+      .then(function (r) { if (!r.ok) throw new Error('ciudades ' + r.status); return r.json(); })
+      .then(function (l) {
+        l.forEach(function (e) { e.claves = [e.n].concat(e.a || []).map(sinTildes); });
+        ciudades.lista = l;
+        return l;
+      })
+      .catch(function () { ciudades.pedido = null; return []; });
+  }
+  return ciudades.pedido;
+}
+// opción para la lista: etiqueta (lo que se ve), nombre (lo que queda en el casillero) e ícono
+function opcionCiudad(e) {
+  if (e.prov) return { icono: '🗺️ ', etiqueta: e.n + ' (provincia) → ' + e.cap, nombre: e.cap + ', ' + e.n, lat: e.lat, lng: e.lng, ciudad: e.cap };
+  var etiqueta = e.n + (e.p && e.p !== e.n ? ', ' + e.p : e.p ? ' (capital de la provincia)' : '') +
+                 (e.a && e.a.length ? ' (' + e.a[0] + ')' : '');
+  return { icono: '🏙️ ', etiqueta: etiqueta, nombre: e.n + (e.p && e.p !== e.n ? ', ' + e.p : ''), lat: e.lat, lng: e.lng, ciudad: e.n };
+}
+function ciudadesQueCoinciden(texto) {
+  var t = sinTildes(texto);
+  if (!ciudades.lista || t.length < 2) return [];
+  var res = [];
+  ciudades.lista.forEach(function (e) {
+    var nivel = 9;
+    e.claves.forEach(function (k) {
+      if (k === t) nivel = Math.min(nivel, 0);                                    // igual
+      else if (k.indexOf(t) === 0) nivel = Math.min(nivel, 1);                   // empieza igual
+      else if (t.length >= 3 && (' ' + k).indexOf(' ' + t) >= 0) nivel = Math.min(nivel, 2);   // una palabra empieza igual
+    });
+    // provincias y capitales primero; después los nombres más cortos
+    if (nivel < 9) res.push({ e: e, orden: nivel * 10 + (e.prov ? 0 : e.c ? 1 : 2) + e.n.length / 100 });
+  });
+  return res.sort(function (a, b) { return a.orden - b.orden; }).slice(0, 4).map(function (x) { return opcionCiudad(x.e); });
+}
+
 function sugerir(cual, inmediato) {
   var input = document.getElementById('ruta-' + cual);
   var lista = document.getElementById('resultados-' + cual);
   var texto = input.value.trim();
   clearTimeout(sugerencia.timer);
-  if (texto.length < 3) {
+  if (texto.length < 2) {
     if (inmediato) { input.focus(); return; }
     if (cual === 'hasta' && !texto) mostrarRecientes(); else lista.hidden = true;
     return;
   }
+  // al instante: las ciudades y provincias de la lista propia
+  var locales = ciudadesQueCoinciden(texto);
+  if (locales.length) mostrarOpciones(cual, locales);
+  else if (texto.length >= 3) { lista.hidden = false; lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>'; }   // no dejar la lista de antes
+  if (!locales.length && !ciudades.lista) cargarCiudades().then(function () {
+    if (input.value.trim() === texto) { var l = ciudadesQueCoinciden(texto); if (l.length) mostrarOpciones(cual, l); }
+  });
+  if (texto.length < 3 && !inmediato) return;
   sugerencia.timer = setTimeout(function () { buscarPhoton(cual, texto, inmediato); }, inmediato ? 0 : 250);
 }
 
@@ -2629,50 +2681,88 @@ function etiquetaPhoton(p) {
   if (p.state && p.state !== lugar) partes.push(p.state);
   return partes.join(', ');
 }
+// cada palabra que escribiste tiene que ser el principio de alguna palabra del nombre ("Juan B Justo" no es "San Justo")
+var PALABRAS_SUELTAS = { de: 1, del: 1, la: 1, las: 1, los: 1, el: 1 };
+function coincidenPalabras(nombre, texto) {
+  var n = sinTildes(nombre).split(' ');
+  return sinTildes(texto).split(' ').every(function (w) {
+    return !w || PALABRAS_SUELTAS[w] || n.some(function (x) { return x.indexOf(w) === 0; });
+  });
+}
+function pedirPhoton(url, ctrl) {
+  return fetch(url, ctrl ? { signal: ctrl.signal } : {})
+    .then(function (r) { if (!r.ok) throw new Error('photon ' + r.status); return r.json(); })
+    .then(function (d) {
+      return (d.features || []).filter(function (f) { var cc = (f.properties || {}).countrycode; return !cc || cc === 'AR'; });
+    });
+}
 
-// "Pasar por": primero solo ciudades y pueblos (si no, "Arrecifes" daba calles con ese nombre cerca de lo que se ve)
-function buscarPhoton(cual, texto, conRespaldo, sinFiltro) {
-  var soloLugares = /^p\d/.test(cual) && !sinFiltro;
+function buscarPhoton(cual, texto, conRespaldo) {
+  var esParada = /^p\d/.test(cual);
   var lista = document.getElementById('resultados-' + cual);
   if (sugerencia.ctrl) sugerencia.ctrl.abort();
   var ctrl = sugerencia.ctrl = window.AbortController ? new AbortController() : null;
-  var c = mapa.getCenter();
-  var url = 'https://photon.komoot.io/api/?limit=6&bbox=-73.6,-55.1,-53.6,-21.7' +
-            (soloLugares ? '&osm_tag=place' : '&lat=' + c.lat.toFixed(3) + '&lon=' + c.lng.toFixed(3)) + '&q=' + encodeURIComponent(texto);
-  if (conRespaldo) { lista.hidden = false; lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>'; }
-  fetch(url, ctrl ? { signal: ctrl.signal } : {})
-    .then(function (r) { if (!r.ok) throw new Error('photon ' + r.status); return r.json(); })
-    .then(function (d) {
-      var vistos = {}, res = [];
-      (d.features || []).forEach(function (f) {
-        var p = f.properties || {};
-        if (p.countrycode && p.countrycode !== 'AR') return;
-        var nombre = etiquetaPhoton(p);
-        if (!nombre || vistos[nombre]) return;
-        vistos[nombre] = true;
-        res.push({ nombre: nombre, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] });
+  var c = mapa.getCenter(), q = '&q=' + encodeURIComponent(texto);
+  var base = 'https://photon.komoot.io/api/?bbox=-73.6,-55.1,-53.6,-21.7';
+  var locales = ciudadesQueCoinciden(texto);
+  if (conRespaldo && !locales.length) { lista.hidden = false; lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>'; }
+  var abortado = false;
+  function nada(e) { if (e && e.name === 'AbortError') abortado = true; return null; }
+  Promise.all([
+    pedirPhoton(base + '&limit=10&osm_tag=place:city&osm_tag=place:town&osm_tag=place:village' + q, ctrl).catch(nada),
+    pedirPhoton(base + '&limit=8&lat=' + c.lat.toFixed(3) + '&lon=' + c.lng.toFixed(3) + q, ctrl).catch(nada)
+  ]).then(function (r) {
+    if (abortado || document.getElementById('ruta-' + cual).value.trim() !== texto) return;   // ya escribió otra cosa
+    var pueblos = r[0], cerca = r[1];
+    if (!pueblos && !cerca) {   // los dos fallaron (¿sin señal?): quedan las de la lista propia
+      if (conRespaldo && !locales.length) buscarNominatim(cual, texto);
+      return;
+    }
+    var vistos = {}, lugares = [], calles = [];
+    function repetida(o) {
+      // la misma ciudad que ya está en la lista (mismo nombre a menos de 15 km)
+      return lugares.some(function (x) {
+        return x.ciudad && sinTildes(x.ciudad) === sinTildes(o.ciudad) && L.latLng(x.lat, x.lng).distanceTo([o.lat, o.lng]) < 15000;
       });
-      if (document.getElementById('ruta-' + cual).value.trim() !== texto) return;   // ya escribió otra cosa
-      if (!res.length) {
-        if (soloLugares) { buscarPhoton(cual, texto, conRespaldo, true); return; }
-        if (conRespaldo) buscarNominatim(cual, texto);
-        else lista.hidden = true;
-        return;
-      }
-      mostrarOpciones(cual, res);
-      // Photon a veces no conoce un lugar (ej. "Parque Industrial Mar del Plata"): opción de buscar con el otro buscador
-      var li = document.createElement('li'), mas = document.createElement('button');
-      mas.type = 'button';
-      mas.className = 'ruta-buscar-mas';
-      mas.textContent = '🔎 No está en la lista: buscar más';
-      mas.addEventListener('click', function () { buscarNominatim(cual, texto); });
-      li.appendChild(mas);
-      lista.appendChild(li);
-    })
-    .catch(function (e) {
-      if (e && e.name === 'AbortError') return;
-      if (conRespaldo) buscarNominatim(cual, texto);
+    }
+    locales.forEach(function (o) { vistos[o.etiqueta] = true; lugares.push(o); });
+    (pueblos || []).forEach(function (f) {
+      var p = f.properties || {};
+      if (!p.name || !coincidenPalabras(p.name, texto)) return;
+      var o = { icono: '🏙️ ', ciudad: p.name, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+      o.etiqueta = o.nombre = p.name + (p.state && p.state !== p.name ? ', ' + p.state : '');
+      if (vistos[o.etiqueta] || repetida(o)) return;
+      vistos[o.etiqueta] = true;
+      lugares.push(o);
     });
+    (cerca || []).forEach(function (f) {
+      var p = f.properties || {};
+      if (p.osm_key === 'place' && /^(city|town|village|state)$/.test(p.osm_value)) return;   // ya están arriba
+      var nombre = etiquetaPhoton(p);
+      if (!nombre || vistos[nombre]) return;
+      vistos[nombre] = true;
+      calles.push({ icono: '📍 ', etiqueta: nombre, nombre: nombre, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] });
+    });
+    // con número ("Colón 2500") primero las direcciones; si no, primero ciudades y pueblos
+    var res;
+    if (/\d/.test(texto)) res = calles.slice(0, 5).concat(lugares.slice(0, 3));
+    else if (esParada) res = lugares.length ? lugares.slice(0, 6) : calles.slice(0, 5);
+    else res = lugares.slice(0, 4).concat(calles.slice(0, 4));
+    if (!res.length) {
+      if (conRespaldo) buscarNominatim(cual, texto);
+      else lista.hidden = true;
+      return;
+    }
+    mostrarOpciones(cual, res);
+    // Photon a veces no conoce un lugar (ej. "Parque Industrial Mar del Plata"): opción de buscar con el otro buscador
+    var li = document.createElement('li'), mas = document.createElement('button');
+    mas.type = 'button';
+    mas.className = 'ruta-buscar-mas';
+    mas.textContent = '🔎 No está en la lista: buscar más';
+    mas.addEventListener('click', function () { buscarNominatim(cual, texto); });
+    li.appendChild(mas);
+    lista.appendChild(li);
+  });
 }
 
 function buscarNominatim(cual, texto) {
@@ -2706,6 +2796,7 @@ function prepararCampo(cual) {
     if (ev.key === 'Enter') { ev.preventDefault(); buscarDireccion(cual); }
   });
   campo.addEventListener('input', function () { sugerir(cual, false); });
+  campo.addEventListener('focus', cargarCiudades);   // la lista de ciudades (20 KB) se baja la primera vez que se toca
   // al tocar el campo: elegir todo (para escribir encima) y, si "Hasta" está vacío, mostrar los recientes
   campo.addEventListener('focus', function () {
     if (/^Mi ubicación$|^Punto en el mapa/.test(campo.value)) campo.select();

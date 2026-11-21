@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 83;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 84;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2933,6 +2933,7 @@ function calcularRuta() {
   var desde = ruta.desde.latlng, hasta = ruta.hasta.latlng;
   var largo = desde.distanceTo(hasta) / 1000 > VIAJE_LARGO_KM;
   var paradas = paradasElegidas();
+  decidirEvitarCapital(desde, hasta, paradas);
 
   (paradas.length ? calcularConParadas([ruta.desde].concat(paradas, [ruta.hasta]), salida)
    : (largo ? cargarZonasEnRutas([[[desde.lat, desde.lng]], [[hasta.lat, hasta.lng]]])
@@ -3033,6 +3034,7 @@ function pedirCaminos(a, b, evitar, conAlternativas) {
   // (403 = cupo del día o clave mala: 15 minutos; 429 = demasiados pedidos por minuto: 1 minuto; sin respuesta
   // legible —cuando se queda sin cupo contesta sin permiso CORS y el navegador lo ve como "Failed to fetch"—: 2 minutos)
   if (clave && ruta.orsHasta && Date.now() < ruta.orsHasta) clave = null;
+  if (clave && evitar && evitar.length && L.latLng(a || ruta.desde.latlng).distanceTo(b || ruta.hasta.latlng) > 140000) clave = null;
   // v74: si OpenRouteService no está (cupo del día gastado, caído), TomTom (también calcula para camión; 20.000
   // rutas gratis por mes con la cuenta del chofer) y recién después Valhalla (el de respaldo, que respeta menos)
   function respaldo() {
@@ -3054,9 +3056,29 @@ function pedirCaminos(a, b, evitar, conAlternativas) {
     : respaldo();
 }
 
+// v84: un viaje largo DE PASO no cruza la Capital. Probado el 21/11/2026: Mar del Plata → Rosario entraba por la
+// autopista La Plata y, para esquivar 89 lugares prohibidos para camiones, iba 13 km por Palermo, Av. Santa Fe y
+// Cabildo (con una vuelta en U). El chofer va por la 2, la 7, la 51...: por afuera. Solo si el viaje tiene más de
+// 100 km y ni la salida, ni la llegada, ni las paradas están en la Capital (rectángulo con un poco de margen).
+var CAPITAL = L.latLngBounds([[-34.7058, -58.5315], [-34.5266, -58.3351]]);
+var ANILLO_CAPITAL = (function () {   // más de 5 vértices: los servicios lo toman como zona, no como un lugar chico
+  var s = -34.7058, n = -34.5266, w = -58.5315, e = -58.3351, mlat = (s + n) / 2, mlng = (w + e) / 2;
+  return [[w, s], [mlng, s], [e, s], [e, mlat], [e, n], [mlng, n], [w, n], [w, mlat], [w, s]];
+})();
+function decidirEvitarCapital(desde, hasta, paradas) {
+  var puntos = [desde, hasta].concat((paradas || []).map(function (p) { return p.latlng; })).filter(Boolean);
+  var margen = CAPITAL.pad(0.05);
+  ruta.evitarCapital = L.latLng(desde).distanceTo(hasta) > 100000 &&
+    !puntos.some(function (p) { return margen.contains(L.latLng(p)); });
+}
+
 // Zonas prohibidas (ordenanzas) para este camión, salvo las que tienen adentro la salida o la llegada
 function zonasProhibidasEntre(a, b) {
   var zonas = [], claves = {};
+  if (ruta.evitarCapital && !CAPITAL.contains(a) && !CAPITAL.contains(b)) {
+    zonas.push(ANILLO_CAPITAL);
+    claves['zona#capital'] = true;
+  }
   if (grupos.prohibido) grupos.prohibido.eachLayer(function (l) {
     if (l.feature.geometry.type !== 'Polygon' || evaluar(l.feature.properties).estado !== 'no') return;
     var anillo = l.feature.geometry.coordinates[0];
@@ -3168,7 +3190,15 @@ function mostrarBorrador(c, salida, nCalculo) {
 function calcularViajeLargo(desde, hasta, salida) {
   salida.innerHTML = '<p class="ruta-cargando">Viaje largo: buscando el recorrido...</p>';
   var nCalculo = ruta.numeroCalculo;   // (no "numero": así se llama la función que escribe los números)
-  return pedirCaminos(desde, hasta, [], false).then(function (caminos) {
+  var evitarBase = ruta.evitarCapital ? [ANILLO_CAPITAL] : [];
+  return pedirCaminos(desde, hasta, evitarBase, false).then(function (caminos) {
+    if (evitarBase.length && caminos[0].km > 0) caminos[0].sinCapital = true;
+    return caminos;
+  }, function (e) {
+    if (!evitarBase.length) throw e;
+    console.warn('Sin la Capital no hubo camino:', e.message);
+    return pedirCaminos(desde, hasta, [], false);
+  }).then(function (caminos) {
     var base = caminos[0];
     mostrarBorrador(base, salida, nCalculo);
     // distancia acumulada a lo largo del recorrido
@@ -4575,7 +4605,7 @@ function empezarNavegacion(rutaElegida) {
   // de 60 m), hasta que salga a la calle no está "fuera de la ruta" (antes recalculaba cada 30 s con el camión parado).
   // (solo hasta 500 m: más lejos no es un playón, es que la salida elegida no es donde está el camión)
   var desdeAca = ruta.desde && ruta.desde.latlng ? L.latLng(ruta.desde.latlng) : null;
-  var inicioRuta = L.latLng(rutaElegida.puntos[0]), d0 = desdeAca ? desdeAca.distanceTo(inicioRuta) : 0;
+  var inicioRuta = L.latLng(r.puntos[0]), d0 = desdeAca ? desdeAca.distanceTo(inicioRuta) : 0;
   nav.alInicio = d0 > NAV.FUERA_DE_RUTA_M && d0 < 500 ? { punto: inicioRuta, d0: d0 } : null;
   nav.sesion = (nav.sesion || 0) + 1;   // un recálculo viejo no pisa una navegación nueva
   volverACentrar(false);

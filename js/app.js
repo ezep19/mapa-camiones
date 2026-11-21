@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 81;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 82;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -4569,6 +4569,7 @@ function empezarNavegacion(rutaElegida) {
   });
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
   nav.primeraCamara = !ruta.esRecalculo;
+  if (!ruta.esRecalculo) nav.ultimaVuelta = 0;
   nav.recorrido = 0;
   nav.sesion = (nav.sesion || 0) + 1;   // un recálculo viejo no pisa una navegación nueva
   volverACentrar(false);
@@ -4896,10 +4897,18 @@ function recalcularDesde(pos, rumboGps) {
   marcarParadasPasadas(pos);
   ponerPunto('desde', pos, 'Mi ubicación');
   var sesion = nav.sesion;
+  // v82: si ya lo mandé de vuelta a la ruta hace menos de 4 min y se volvió a salir, el chofer eligió ir por otro lado
+  // (conoce el camino, hay un corte que no figura...): no insistir con la ruta de antes, buscar una nueva desde ahí.
+  if (nav.ultimaVuelta && Date.now() - nav.ultimaVuelta < 240000) {
+    nav.ultimaVuelta = 0;
+    recalcularTodo();
+    return;
+  }
   volverALaRuta(pos, rumboGps).then(function (c) {
     if (!nav.activo || nav.sesion !== sesion) { nav.recalculando = false; return; }
     if (c.rojos > (nav.r.rojos || 0)) throw new Error('quedó peor');
     nav.recalculando = false;
+    nav.ultimaVuelta = Date.now();
     ruta.opciones = [c];
     mostrarRuta(0, true);
     ruta.esRecalculo = true;

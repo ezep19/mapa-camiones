@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 82;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 83;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -4569,8 +4569,14 @@ function empezarNavegacion(rutaElegida) {
   });
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
   nav.primeraCamara = !ruta.esRecalculo;
-  if (!ruta.esRecalculo) nav.ultimaVuelta = 0;
+  if (!ruta.esRecalculo) nav.ultimaVuelta = null;
   nav.recorrido = 0;
+  // v83: la ruta arranca en la calle más cercana. Si el camión está adentro de una estación, un parador o un playón (más
+  // de 60 m), hasta que salga a la calle no está "fuera de la ruta" (antes recalculaba cada 30 s con el camión parado).
+  // (solo hasta 500 m: más lejos no es un playón, es que la salida elegida no es donde está el camión)
+  var desdeAca = ruta.desde && ruta.desde.latlng ? L.latLng(ruta.desde.latlng) : null;
+  var inicioRuta = L.latLng(rutaElegida.puntos[0]), d0 = desdeAca ? desdeAca.distanceTo(inicioRuta) : 0;
+  nav.alInicio = d0 > NAV.FUERA_DE_RUTA_M && d0 < 500 ? { punto: inicioRuta, d0: d0 } : null;
   nav.sesion = (nav.sesion || 0) + 1;   // un recálculo viejo no pisa una navegación nueva
   volverACentrar(false);
   abrirPanelRuta(false);
@@ -4683,6 +4689,15 @@ function seguirNavegacion(pos) {
     rumboGps = rumboEntre(L.latLng(nav.posAnterior), L.latLng(pos));
     nav.posAnterior = pos;
   } else if (!nav.posAnterior) nav.posAnterior = pos;
+  if (nav.alInicio) {
+    if (u.fuera <= NAV.FUERA_DE_RUTA_M) nav.alInicio = null;   // ya salió a la ruta
+    else if (L.latLng(pos).distanceTo(nav.alInicio.punto) < nav.alInicio.d0 + 80) {
+      nav.fuera = 0;
+      mostrarCartelNav(textoDistancia(L.latLng(pos).distanceTo(nav.alInicio.punto)), 'Salí a la calle: la ruta azul empieza ahí.');
+      seguirConCamara(pos);
+      return;
+    } else nav.alInicio = null;   // se fue para otro lado: ahora sí cuenta como fuera de la ruta
+  }
   if (u.fuera > NAV.FUERA_DE_RUTA_M) {
     nav.fuera++;
     // fuera de la ruta no hay avisos preparados: se mira lo que hay adelante (lo rojo para tu camión)
@@ -4899,8 +4914,9 @@ function recalcularDesde(pos, rumboGps) {
   var sesion = nav.sesion;
   // v82: si ya lo mandé de vuelta a la ruta hace menos de 4 min y se volvió a salir, el chofer eligió ir por otro lado
   // (conoce el camino, hay un corte que no figura...): no insistir con la ruta de antes, buscar una nueva desde ahí.
-  if (nav.ultimaVuelta && Date.now() - nav.ultimaVuelta < 240000) {
-    nav.ultimaVuelta = 0;
+  // (y solo si de verdad se movió: más de 300 m desde donde lo mandé de vuelta)
+  if (nav.ultimaVuelta && Date.now() - nav.ultimaVuelta.t < 240000 && L.latLng(pos).distanceTo(nav.ultimaVuelta.pos) > 300) {
+    nav.ultimaVuelta = null;
     recalcularTodo();
     return;
   }
@@ -4908,7 +4924,7 @@ function recalcularDesde(pos, rumboGps) {
     if (!nav.activo || nav.sesion !== sesion) { nav.recalculando = false; return; }
     if (c.rojos > (nav.r.rojos || 0)) throw new Error('quedó peor');
     nav.recalculando = false;
-    nav.ultimaVuelta = Date.now();
+    nav.ultimaVuelta = { t: Date.now(), pos: L.latLng(pos) };
     ruta.opciones = [c];
     mostrarRuta(0, true);
     ruta.esRecalculo = true;

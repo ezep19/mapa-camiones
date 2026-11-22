@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 85;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 86;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -506,10 +506,35 @@ document.addEventListener('keydown', function (ev) {
 
 // ===== 4. ¿Pasa o no pasa? =====
 // Devuelve: estado ('no' | 'si' | 'sin_dato' | 'aviso'), y la medida y el límite comparados
+// v86: normas que rigen solo algunos días y horas (ej. Ruta 307 a Tafí del Valle: viernes a domingo de 5 a 23 h).
+// Se mira la hora del teléfono: fuera de ese horario queda amarillo (ojo), adentro rojo.
+function enHorario(h, cuando) {
+  if (typeof h === 'string') { try { h = JSON.parse(h); } catch (e) { return true; } }
+  if (!h || !h.dias) return true;
+  var d = cuando || new Date(), hora = d.getHours() + d.getMinutes() / 60;
+  return h.dias.indexOf(d.getDay()) >= 0 && hora >= h.desde && hora < h.hasta;
+}
+function horarioDe(p) {
+  if (typeof p.horario === 'string') { try { return JSON.parse(p.horario); } catch (e) { return null; } }
+  return p.horario || null;
+}
+// cada 5 minutos: si una norma con horario empezó o terminó, se vuelve a pintar (rojo <-> amarillo)
+var horarioFirma = null;
+setInterval(function () {
+  var firma = '';
+  if (grupos.prohibido) grupos.prohibido.eachLayer(function (l) {
+    var p = l.feature && l.feature.properties;
+    if (p && p.horario) firma += enHorario(p.horario) ? '1' : '0';
+  });
+  if (horarioFirma !== null && firma !== horarioFirma) pedirRepintar();
+  horarioFirma = firma;
+}, 5 * 60 * 1000);
+
 function evaluar(p) {
   if (p.capa === 'prohibido') {
     // ordenanzas como "prohibido camiones de más de 6 t": un camión liviano sí puede pasar
     if (p.peso_desde && camion && camion.peso <= p.peso_desde) return { estado: 'si', norma: true };
+    if (p.horario && !enHorario(p.horario)) return { estado: 'sin_dato', norma: true, fueraDeHorario: true };
     // zonas imposibles para camiones largos (semis): con uno corto no es rojo, pero hay que verificar
     if (p.largo_desde && camion && camion.largo <= p.largo_desde) return { estado: 'sin_dato', norma: true };
     return { estado: 'no', norma: !!(p.peso_desde || p.largo_desde) };
@@ -827,7 +852,8 @@ fetch('datos/zonas.json', { cache: 'no-cache' })
   .then(function (r) { if (!r.ok) throw new Error('zonas.json ' + r.status); return r.json(); })
   .then(function (indice) {
     // solo zonas con restricciones descargadas (una zona a medio bajar no se ofrece ni cuenta como revisada)
-    zonasIndice = indice.zonas.filter(function (z) { return z.limites && z.archivo; });
+    // v86: también las que solo traen normas locales (ej. Ruta 307 a Tafí del Valle, fuera de toda ciudad)
+    zonasIndice = indice.zonas.filter(function (z) { return z.limites && (z.archivo || z.normas); });
     // Zonas con muy pocas restricciones cargadas en OpenStreetMap: avisar (como Mar del Plata)
     zonasIndice.forEach(function (z) {
       var c = z.conteo || {};
@@ -1200,14 +1226,20 @@ function veredicto(p) {
   if (p.capa === 'prohibido' && e.estado === 'si') {
     titulo = 'PASÁS';
     nota = 'La prohibición es para camiones de más de ' + toneladas(p.peso_desde) + ' y el tuyo pesa ' + toneladas(camion.peso) + '.';
+  } else if (p.capa === 'prohibido' && e.fueraDeHorario) {
+    titulo = 'AHORA PODÉS PASAR, pero ojo con el horario';
+    nota = 'Prohibido para camiones grandes ' + (horarioDe(p) || {}).texto + '. Fijate a qué hora vas a pasar.';
   } else if (p.capa === 'prohibido' && e.estado === 'sin_dato') {
     titulo = 'OJO: muy difícil para camiones';
     nota = 'Es imposible para camiones de más de ' + metros(p.largo_desde) + '. El tuyo mide ' + metros(camion.largo) +
            ': puede ser que pases, verificá antes de entrar.';
   } else if (p.capa === 'prohibido') {
-    titulo = p.largo_desde ? 'NO PASÁS: imposible para tu camión' : 'NO PODÉS CIRCULAR: prohibido para camiones';
+    titulo = p.largo_desde ? 'NO PASÁS: imposible para tu camión' : p.horario ? 'NO PODÉS CIRCULAR AHORA' :
+             p.permiso ? 'NO ENTRES sin permiso municipal' : 'NO PODÉS CIRCULAR: prohibido para camiones';
+    if (p.permiso) nota = 'Solo con permiso de la Municipalidad para cargar o descargar, y en el horario permitido.';
     if (p.peso_desde && camion) nota = 'Es para camiones de más de ' + toneladas(p.peso_desde) + ' y el tuyo pesa ' + toneladas(camion.peso) + '.';
     if (p.largo_desde && camion) nota = 'Es para camiones de más de ' + metros(p.largo_desde) + ' y el tuyo mide ' + metros(camion.largo) + '.';
+    if (p.horario) nota = 'Prohibido ' + (horarioDe(p) || {}).texto + (nota ? '. ' + nota : '.');
   } else if (p.capa === 'barrera') {
     titulo = e.estado === 'no' ? 'NO PASÁS: la calle está cortada para vehículos' : 'OJO: puede estar cerrado';
     nota = e.estado === 'no' ? 'Según el mapa hay ' + String(p.titulo || 'una barrera').toLowerCase() + ' en la calle: no pasan autos ni camiones.'
@@ -1262,6 +1294,8 @@ function textoValor(p) {
     case 'peso':
       return p.limite != null ? 'Peso máximo ' + toneladas(p.limite) : sinDato(p.limite_texto, 'peso');
     case 'prohibido':
+      if (p.horario) return 'Camiones grandes: prohibido ' + (horarioDe(p) || {}).texto;
+      if (p.permiso) return 'Camiones solo con permiso municipal';
       if (p.peso_desde) return 'Prohibido camiones de más de ' + toneladas(p.peso_desde);
       if (p.largo_desde) return 'Imposible para camiones de más de ' + metros(p.largo_desde);
       return 'Prohibido el paso de camiones';
@@ -2182,7 +2216,7 @@ function armarBotonesZonas() {
   if (!caja) return;   // index.html viejo guardado en el celular
   if (zonasIndice.length < 2) { caja.hidden = true; return; }
   // con muchas ciudades, una lista desplegable (en el celular abre la lista grande del teléfono)
-  var ordenadas = zonasIndice.slice().sort(function (a, b) { return a.titulo.localeCompare(b.titulo, 'es'); });
+  var ordenadas = zonasIndice.filter(function (z) { return z.archivo; }).sort(function (a, b) { return a.titulo.localeCompare(b.titulo, 'es'); });
   var claveLista = ordenadas.map(function (z) { return z.id; }).join(',');
   if (caja.dataset.lista === claveLista) return;   // ya está armada (armarPanel se llama seguido)
   caja.dataset.lista = claveLista;
@@ -3177,6 +3211,17 @@ function calcularTramo(a, b, salida, conAlternativas) {
   return vuelta(1, inicio.zonas, inicio.claves, null).then(function (caminos) { return salirDeLosBarrios(caminos, 0); });
 }
 
+// v86: debajo de "Pasa por N lugares donde NO pasás": por qué (horario o permiso municipal) o el consejo de siempre
+function explicarRojos(avisos) {
+  var rojos = avisos.filter(function (x) { return x.rojo; });
+  function todos(campo) {
+    return rojos.length && rojos.every(function (x) { return x.capa && x.capa.feature && x.capa.feature.properties[campo]; });
+  }
+  if (todos('horario')) return 'Tiene horario para camiones (mirá abajo): esperá o buscá otro camino.';
+  if (todos('permiso')) return 'Ahí se entra solo con permiso de la Municipalidad para cargar o descargar.';
+  return 'No encontré otro camino. Probá salir o llegar por otro lado.';
+}
+
 // El camino de un viaje largo se dibuja apenas llega (en 1 o 2 segundos) mientras se revisa que el camión pase:
 // el chofer ve enseguida por dónde va (pedido del chofer, 20/11/2026: "tarda mucho en cargar la ruta").
 function mostrarBorrador(c, salida, nCalculo) {
@@ -3761,7 +3806,7 @@ function mostrarRuta(indice, sinMoverMapa) {
              '<button type="button" id="empezar-manejo" class="boton-ir">▶ Ir</button></div>';
   if (r.rojos) {
     html += '<div class="ruta-estado mal">⛔ Pasa por ' + r.rojos + (r.rojos === 1 ? ' lugar' : ' lugares') +
-            ' donde NO pasás<small>No encontré otro camino. Probá salir o llegar por otro lado.</small></div>';
+            ' donde NO pasás<small>' + explicarRojos(avisos) + '</small></div>';
   } else if (sinRevisar) {
     html += '<div class="ruta-estado mal">⚠ No pude revisar parte de la ruta<small>No se cargaron los datos de ' +
             esc(r.sinRevisar.join(', ')) + ' (¿mala señal?). Volvé a intentar.</small></div>';
@@ -3993,8 +4038,21 @@ function revisarRuta(puntosRuta, pasos) {
       var voz = esReporte ? 'reporte de un chofer: ' + p.tipo
         : (p.titulo || textoValor(p)).replace(/^./, function (c) { return c.toLowerCase(); }) +
           (p.calle && !p.norma ? (p.capa === 'corte' ? ', ' : ' en ') + p.calle : '') + (estado === 'no' ? '. Tu camión no pasa' : '. Verificá en el lugar');
-      var esquivar = rojo;
+      // v86: lo que rige solo en un horario (Ruta 307 a Tafí: viernes a domingo de 5 a 23 h) no se esquiva: la otra
+      // forma de llegar a Tafí eran 626 km por Cafayate. Queda en rojo en la tarjeta y el chofer decide si espera.
+      var esquivar = rojo && !p.horario;
+      if (rojo && p.horario) texto += ' (hasta las ' + (horarioDe(p) || {}).hasta + ' h; si no podés esperar, buscá otro camino)';
       function agregar(extra) {
+        // v86: una norma que abarca muchos tramos de calle (Ruta 307: 22) es UN solo aviso (con todo lo que hay que esquivar)
+        if (p.norma && !extra.posible && l.feature.geometry.type !== 'Polygon') {
+          var igual = avisos.filter(function (x) { return x.normaTitulo === p.titulo && !x.posible; })[0];
+          if (igual) {
+            if (extra.zonas) { igual.zonas = (igual.zonas || []).concat(extra.zonas); igual.zonasClaves = (igual.zonasClaves || []).concat(extra.zonasClaves || []); }
+            if (extra.orden < igual.orden) { igual.orden = extra.orden; igual.latlng = extra.latlng; igual.capa = l; }
+            return;
+          }
+          extra.normaTitulo = p.titulo;
+        }
         avisos.push(Object.assign({ voz: voz, texto: texto, color: color, rojo: rojo, capa: l, zonas: null, zonasClaves: null }, extra));
       }
 
@@ -4089,7 +4147,10 @@ function revisarRuta(puntosRuta, pasos) {
       var soloLaPunta = posMax - posMin < 120 && (posMin < 30 || posMax > largoTotal - 30) && largoTotal > 2.5 * encima;
       // o se va abriendo de a poco: pegada a la ruta en una punta y separada en la otra (las bajadas de autopista)
       var seAbre = (dPrimera <= 5 && dUltima >= 10) || (dUltima <= 5 && dPrimera >= 10);
-      var nombreEnRuta = p.calle && textoPasos && textoPasos.indexOf(normalizarCalle(p.calle)) !== -1;
+      // v86: en las normas locales "calle" es una descripción ("Ruta Provincial 307, entre Santa Lucía y..."): para
+      // comparar con las indicaciones se usa el nombre de la calle en el mapa ("nombre"); sin nombre, no se descarta nada
+      var nombreCalle = p.norma ? p.nombre : p.calle;
+      var nombreEnRuta = nombreCalle && textoPasos && textoPasos.indexOf(normalizarCalle(nombreCalle)) !== -1;
       if ((soloLaPunta || seAbre) && !nombreEnRuta && rojo && !esReporte && p.capa !== 'corte') {
         var llR = L.latLng(puntosRuta[ordenMin]);
         var hayIndicacion = (pasos || []).some(function (ps) {
@@ -4105,8 +4166,8 @@ function revisarRuta(puntosRuta, pasos) {
       // Calle paralela pegada (ej.: el Paseo del Bajo al lado de Alicia Moreau de Justo, o una colectora): si la
       // calle restringida tiene nombre y ese nombre no aparece en NINGUNA indicación de la ruta, lo más probable es
       // que la ruta vaya por la de al lado. Si es rojo se avisa como "posible" (sin esquivarlo); si no, nada.
-      if (!esReporte && p.capa !== 'corte' && p.calle && textoPasos && !/^(Entre|Calle|Avenida)$/i.test(p.calle) &&
-          textoPasos.indexOf(normalizarCalle(p.calle)) === -1) {
+      if (!esReporte && p.capa !== 'corte' && nombreCalle && textoPasos && !/^(Entre|Calle|Avenida)$/i.test(nombreCalle) &&
+          textoPasos.indexOf(normalizarCalle(nombreCalle)) === -1) {
         if (!rojo) return;
         agregar({ texto: 'Posible: ' + texto + ' (si vas por esa calle; la ruta parece ir por una paralela)', rojo: false,
                   posible: true, voz: voz.replace(/\. Tu camión no pasa$/, '') + ', si vas por esa calle',
@@ -4438,10 +4499,10 @@ function clipPeligro(t) {
   if (/radar/.test(t)) return clipVel ? ['h_radar', clipVel] : ['h_radar'];
   if (/cámara de semáforo|camara de semaforo/.test(t)) return ['h_camara'];
   var tipo = /caminera/.test(t) ? 'h_caminera' : /gendarmer/.test(t) ? 'h_gendarmeria' : /fitosanitari/.test(t) ? 'h_fito'
-    : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona/.test(t) ? 'h_zona'
+    : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona|centro/.test(t) ? 'h_zona'
     : /paso bajo|altura|puente/.test(t) ? 'h_altura' : /peso/.test(t) ? 'h_peso' : /largo/.test(t) ? 'h_largo'
     : /angost|ancho/.test(t) ? 'h_ancho' : /cortad|corte/.test(t) ? 'h_corte' : /obra/.test(t) ? 'h_obra'
-    : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib/.test(t) ? 'h_prohibido' : 'h_otro';
+    : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido' : 'h_otro';
   var fin = /no pasa/.test(t) ? 's_nopasa' : /si vas por esa calle|si la ruta pasa/.test(t) ? 's_sivas' : /verific/.test(t) ? 's_verificar' : null;
   return fin ? [tipo, fin] : [tipo];
 }

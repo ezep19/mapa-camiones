@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 87;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 88;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3490,7 +3490,8 @@ function empalmar(c, iA, iB, nuevo, kmViejo) {
 //   + 0,7 por cada vuelta (giro a la derecha o a la izquierda)
 //   + 2 por cada km FUERA de la red de tránsito pesado, solo en las zonas que la tienen cargada
 //   + 1000 por cada lugar rojo que no se pudo esquivar
-var PUNTAJE = { kmCallesChicas: 12, vuelta: 0.7, kmFueraDeRed: 2, rojo: 1000 };
+//   + 6 por cada km de camino de tierra o ripio (v88)
+var PUNTAJE = { kmCallesChicas: 12, vuelta: 0.7, kmFueraDeRed: 2, rojo: 1000, kmTierra: 6 };
 // Nombres de calles grandes (si el servicio dice que es una calle "común" y el nombre no tiene nada de esto,
 // se la trata como calle de barrio)
 var NOMBRE_DE_AVENIDA = /(^|[^a-záéíóúñ])(av(da)?\.?|avenida|ruta|r[pn] ?\d|autopista|autov[ií]a|acceso|camino|colectora|bulevar|boulevard|bv\.?|costanera|circunvalaci[oó]n|diagonal|paseo|ruta|variante|traza|puente|t[uú]nel|rotonda)([^a-záéíóúñ]|$)/i;
@@ -3524,7 +3525,8 @@ function elegirOpciones(caminos) {
   caminos.forEach(function (c) {
     var red = medirRed(c.puntos);
     c.kmEnRed = red.enRed; c.kmZonaConRed = red.zonaConRed;
-    c.puntaje = c.segundos / 60 + PUNTAJE.kmCallesChicas * (c.kmChicas || 0) + PUNTAJE.vuelta * c.vueltas +
+    c.kmTierra = tramosDeTierra(c.puntos).reduce(function (s, x) { return s + x.m; }, 0) / 1000;
+    c.puntaje = c.segundos / 60 + PUNTAJE.kmCallesChicas * (c.kmChicas || 0) + PUNTAJE.vuelta * c.vueltas + PUNTAJE.kmTierra * c.kmTierra +
                 PUNTAJE.kmFueraDeRed * Math.max(0, red.zonaConRed - red.enRed) + PUNTAJE.rojo * c.rojos;
   });
   var porFacilidad = caminos.slice().sort(function (a, b) { return a.puntaje - b.puntaje; });
@@ -3571,11 +3573,73 @@ function conTiempoLimite(url, opciones, segundos) {
   return fetch(url, opciones);
 }
 
+// --- v88: caminos de tierra / ripio ---
+// Cada servicio dice qué pedazos de SU camino no están asfaltados (OpenRouteService: la superficie; Valhalla: "rough";
+// TomTom: la sección "unpaved"). Se anotan por posición (pedacitos de ≤ 50 m en una grilla de ~100 m), no por número de
+// punto: así siguen valiendo después de empalmar pedazos de un viaje largo o de volver a la ruta navegando.
+var tierra = { grilla: {}, vistos: {}, hay: false };
+function anotarTierra(puntos, rangos) {   // puntos [[lat, lng]...]; rangos [[desde, hasta], ...] (índices de puntos)
+  (rangos || []).forEach(function (r) {
+    for (var i = Math.max(1, r[0] + 1); i <= Math.min(r[1], puntos.length - 1); i++) {
+      var a = puntos[i - 1], b = puntos[i], m = L.latLng(a).distanceTo(b);
+      var n = Math.max(1, Math.ceil(m / 50));
+      for (var k = 0; k < n; k++) {
+        var p = [a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n];
+        var q = [a[0] + (b[0] - a[0]) * (k + 1) / n, a[1] + (b[1] - a[1]) * (k + 1) / n];
+        var id = Math.round(p[0] * 1e5) + ',' + Math.round(p[1] * 1e5) + ',' + Math.round(q[0] * 1e5) + ',' + Math.round(q[1] * 1e5);
+        if (tierra.vistos[id]) continue;
+        tierra.vistos[id] = 1;
+        var celda = Math.floor((p[0] + q[0]) / 2 * 1000) + ',' + Math.floor((p[1] + q[1]) / 2 * 1000);
+        (tierra.grilla[celda] = tierra.grilla[celda] || []).push([p[0], p[1], q[0], q[1]]);
+        tierra.hay = true;
+      }
+    }
+  });
+}
+// ¿Hay un pedazo de tierra a menos de 12 m del punto?
+function esTierra(lat, lng) {
+  var cy = Math.floor(lat * 1000), cx = Math.floor(lng * 1000), kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540;
+  for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+    var lista = tierra.grilla[(cy + dy) + ',' + (cx + dx)];
+    if (!lista) continue;
+    for (var j = 0; j < lista.length; j++) {
+      var s = lista[j];
+      var ax = (s[1] - lng) * kx, ay = (s[0] - lat) * ky, bx = (s[3] - lng) * kx, by = (s[2] - lat) * ky;
+      var vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
+      var t = L2 ? Math.max(0, Math.min(1, -(ax * vx + ay * vy) / L2)) : 0;
+      if (Math.hypot(ax + t * vx, ay + t * vy) < 12) return true;
+    }
+  }
+  return false;
+}
+// Tramos del camino que van por tierra: [{ i0, i1, m }] (índices de puntos y metros); huecos < 60 m se unen
+function tramosDeTierra(puntos) {
+  var res = [];
+  if (!tierra.hay || !puntos || puntos.length < 2) return res;
+  var actual = null, hueco = 0;
+  for (var i = 1; i < puntos.length; i++) {
+    var a = puntos[i - 1], b = puntos[i], m = L.latLng(a).distanceTo(b), n = Math.max(1, Math.ceil(m / 25)), paso = m / n;
+    for (var k = 0; k < n; k++) {
+      var t = (k + 0.5) / n;
+      if (esTierra(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)) {
+        if (!actual) { actual = { i0: i - 1, i1: i, m: 0 }; res.push(actual); }
+        actual.m += paso + hueco; actual.i1 = i; hueco = 0;
+      } else if (actual) {
+        hueco += paso;
+        if (hueco >= 60) { actual = null; hueco = 0; }
+      }
+    }
+  }
+  return res.filter(function (x) { return x.m >= 100; });
+}
+// Superficies de OpenRouteService que no son asfalto / cemento / adoquín
+var ORS_TIERRA = { 2: 1, 8: 1, 9: 1, 10: 1, 11: 1, 12: 1, 13: 1, 15: 1, 16: 1, 17: 1 };
+
 function rutaORS(clave, evitar, sinAlternativas, a, b) {
   a = a || ruta.desde.latlng; b = b || ruta.hasta.latlng;
   var cuerpo = {
     coordinates: [[a.lng, a.lat], [b.lng, b.lat]],
-    language: 'es', units: 'km', instructions: true, extra_info: ['waytype'],
+    language: 'es', units: 'km', instructions: true, extra_info: ['waytype', 'surface'],
     options: { vehicle_type: 'hgv', profile_params: { restrictions: {
       height: camion.altura, weight: camion.peso, length: camion.largo, width: CAMION_ANCHO } } }
   };
@@ -3626,9 +3690,13 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
             if (h > d) sumar(d, h);
           });
         });
+        var sup = f.properties.extras && f.properties.extras.surface;
+        var puntosC = c.map(function (p) { return [p[1], p[0]]; });
+        if (sup) anotarTierra(puntosC, sup.values.filter(function (v) { return ORS_TIERRA[v[2]]; }));
+        if (tipos) anotarTierra(puntosC, tipos.values.filter(function (v) { return v[2] === 5; }));   // 5 = huella / camino rural
         return {
           servicio: 'OpenRouteService',
-          puntos: c.map(function (p) { return [p[1], p[0]]; }),
+          puntos: puntosC,
           km: f.properties.summary.distance, segundos: f.properties.summary.duration,
           pasos: pasos, vueltas: vueltas, kmChicas: kmChicas, chicas: tipos ? chicas : null
         };
@@ -3684,16 +3752,18 @@ function rutaValhalla(evitar, a, b) {
   }).then(function (d) {
     var viajes = [d.trip].concat((d.alternates || []).map(function (a) { return a.trip; }));
     return viajes.map(function (trip) {
-      var pasos = [], puntos = [], vueltas = 0;
+      var pasos = [], puntos = [], vueltas = 0, rangosTierra = [];
       trip.legs.forEach(function (leg) {
         var base = puntos.length;
         puntos = puntos.concat(decodificarPolilinea(leg.shape, 6));
         leg.maneuvers.forEach(function (m) {
+          if (m.rough && m.end_shape_index != null) rangosTierra.push([base + (m.begin_shape_index || 0), base + m.end_shape_index]);
           var esVuelta = [10, 11, 14, 15].indexOf(m.type) !== -1;   // derecha, cerrada der., cerrada izq., izquierda
           pasos.push({ texto: aCastellano(m.instruction), km: m.length, ini: base + (m.begin_shape_index || 0), vuelta: esVuelta });
           if (esVuelta) vueltas++;
         });
       });
+      anotarTierra(puntos, rangosTierra);
       return { servicio: 'Valhalla (servicio de respaldo, menos confiable)', puntos: puntos,
                km: trip.summary.length, segundos: trip.summary.time, pasos: pasos, vueltas: vueltas, kmChicas: null };
     });
@@ -3722,7 +3792,8 @@ function rutaTomTom(evitar, a, b, conAlternativas) {
   var q = 'key=' + encodeURIComponent(claveTomTom()) + '&travelMode=truck&vehicleCommercial=true' +
           '&vehicleWeight=' + Math.round(camion.peso * 1000) + '&vehicleHeight=' + camion.altura +
           '&vehicleLength=' + camion.largo + '&vehicleWidth=' + CAMION_ANCHO +
-          '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false' + (ruta.sinPeajes ? '&avoid=tollRoads' : '') +
+          '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false&sectionType=unpaved&avoid=unpavedRoads' +
+          (ruta.sinPeajes ? '&avoid=tollRoads' : '') +
           (conAlternativas ? '&maxAlternatives=2' : '') + (a.rumbo != null ? '&vehicleHeading=' + a.rumbo : '');
   var url = 'https://api.tomtom.com/routing/1/calculateRoute/' + a.lat.toFixed(6) + ',' + a.lng.toFixed(6) + ':' +
             b.lat.toFixed(6) + ',' + b.lng.toFixed(6) + '/json?' + q;
@@ -3737,6 +3808,8 @@ function rutaTomTom(evitar, a, b, conAlternativas) {
     return d.routes.map(function (rt) {
       var puntos = [];
       rt.legs.forEach(function (leg) { leg.points.forEach(function (p) { puntos.push([p.latitude, p.longitude]); }); });
+      anotarTierra(puntos, (rt.sections || []).filter(function (s) { return s.sectionType === 'UNPAVED'; })
+        .map(function (s) { return [s.startPointIndex, s.endPointIndex]; }));
       var ins = (rt.guidance && rt.guidance.instructions) || [], pasos = [], vueltas = 0;
       // a veces trae dos "Ha llegado" (uno antes de tiempo): queda solo el último
       ins = ins.filter(function (it, k) { return !/^ARRIVE/.test(it.maneuver || '') || k === ins.length - 1; });
@@ -3936,6 +4009,7 @@ function resumenFacilidad(o) {
   var partes = [o.vueltas + (o.vueltas === 1 ? ' vuelta' : ' vueltas')];
   if (o.kmZonaConRed > 0.5) partes.push(Math.round(100 * o.kmEnRed / o.kmZonaConRed) + '% por red de tránsito pesado');
   if (o.kmChicas != null) partes.push(o.kmChicas < 0.05 ? 'sin calles chicas' : numero(o.kmChicas, 1) + ' km por calles chicas');
+  if (o.kmTierra >= 0.1) partes.push(numero(o.kmTierra, 1) + ' km de tierra o ripio');
   return esc(partes.join(' · '));
 }
 
@@ -4221,6 +4295,14 @@ function revisarRuta(puntosRuta, pasos) {
                                clave: 'sinsalida#' + L.stamp(mejorSS.l), zonas: null, zonasClaves: null });
   }
   revisarCapa(grupoReportes, true);
+  // v88: caminos de tierra o ripio (no es rojo: con lluvia un camión cargado se puede quedar)
+  tramosDeTierra(puntosRuta).forEach(function (x) {
+    if (x.m < 300) return;
+    var largo = x.m < 1000 ? Math.round(x.m / 100) * 100 + ' m' : numero(x.m / 1000, 1) + ' km';
+    avisos.push({ texto: 'Camino de tierra o ripio: ' + largo + ' (si llovió, puede estar intransitable)',
+                  voz: 'camino de tierra. Si llovió, verificá', color: '#a0662b', rojo: false, capa: null,
+                  latlng: L.latLng(puntosRuta[x.i0]), orden: x.i0, clave: 'tierra#' + x.i0, zonas: null, zonasClaves: null });
+  });
   // primero lo que no pasás; después en el orden en que aparecen sobre la ruta
   avisos.sort(function (a, b) { return (a.rojo ? 0 : 1) - (b.rojo ? 0 : 1) || a.orden - b.orden; });
   return avisos;
@@ -4540,7 +4622,7 @@ function clipPeligro(t) {
     : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona|centro/.test(t) ? 'h_zona'
     : /paso bajo|altura|puente/.test(t) ? 'h_altura' : /peso/.test(t) ? 'h_peso' : /largo/.test(t) ? 'h_largo'
     : /angost|ancho/.test(t) ? 'h_ancho' : /cortad|corte/.test(t) ? 'h_corte' : /obra/.test(t) ? 'h_obra'
-    : /sin salida/.test(t) ? 'h_sinsalida' : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido' : 'h_otro';
+    : /sin salida/.test(t) ? 'h_sinsalida' : /tierra|ripio/.test(t) ? 'h_tierra' : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido' : 'h_otro';
   var fin = /no pasa/.test(t) ? 's_nopasa' : /si vas por esa calle|si la ruta pasa/.test(t) ? 's_sivas' : /verific/.test(t) ? 's_verificar' : null;
   return fin ? [tipo, fin] : [tipo];
 }

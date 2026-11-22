@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 89;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 90;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1783,6 +1783,8 @@ var CONTROLES = {
   vial:          { nombre: 'Policía Caminera / Vial', icono: '🚓' },
   gendarmeria:   { nombre: 'Gendarmería',             icono: '🛂' },
   fitosanitario: { nombre: 'Control fitosanitario',   icono: '🌾' },
+  // v90: pasos de frontera / aduanas (datos/fronteras.geojson, scripts/descargar_fronteras.py)
+  frontera:      { nombre: 'Paso de frontera',        icono: '🛃' },
   // radares y cámaras (datos/radares.geojson, scripts/descargar_radares.py; pedido del chofer el 20/11/2026)
   radar:         { nombre: 'Radar de velocidad',      icono: '📷', radar: true },
   camara:        { nombre: 'Cámara de semáforo',      icono: '🚦', radar: true }
@@ -1796,14 +1798,15 @@ function maximaCamion(m) {
   return (!camion || !camion.peso || camion.peso > 3.5) ? Math.min(m, MAXIMA_CAMION) : m;
 }
 var ZOOM_CONTROLES = 9;
-var controles = { lista: [], actualizado: null, policiales: [], radares: [], radaresActualizado: null };
+var controles = { lista: [], actualizado: null, policiales: [], radares: [], radaresActualizado: null,
+                  fronteras: [], fronterasActualizado: null };
 
 function iconoControl(p) {
   if (p.tipo === 'radar' && p.maxima) return 'ic-r-' + maximaCamion(p.maxima);
   return 'ic-c-' + (CONTROLES[p.tipo] ? p.tipo : 'policial');
 }
 function ponerControles() {
-  controles.lista = controles.policiales.concat(controles.radares);
+  controles.lista = controles.policiales.concat(controles.radares, controles.fronteras);
   // todos juntos en una fuente de íconos (r = 1: radar o cámara, van en sus propias capas)
   ponerDatos('controles', controles.lista.map(function (it, i) {
     var p = it.f.properties;
@@ -1826,6 +1829,7 @@ function bajarControles(archivo, donde, fechaEn) {
 }
 bajarControles('datos/controles.geojson', 'policiales', 'actualizado');
 bajarControles('datos/radares.geojson', 'radares', 'radaresActualizado');
+bajarControles('datos/fronteras.geojson', 'fronteras', 'fronterasActualizado');
 
 function abrirCartelControl(it) {
   var p = it.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
@@ -1863,6 +1867,11 @@ function armarCartelControl(p) {
   if (p.ruta) html += '<div class="cartel-calle">' + esc(p.ruta) + '</div>';
   if (p.tipo === 'fitosanitario') {
     html += '<div class="cartel-linea">Revisan la carga (frutas, verduras, animales). Tené a mano la documentación.</div>';
+  } else if (p.tipo === 'frontera') {
+    if (p.por_agua) html += '<div class="cartel-linea"><b>Cruce por río</b> (lancha o balsa): con el camión, solo si hay balsa para vehículos.</div>';
+    html += '<div class="cartel-linea">Paso internacional: llevá pasaporte o DNI y los papeles del camión y de la carga (MIC/DTA).</div>';
+    html += '<div class="cartel-linea">Los pasos de montaña cierran seguido por nieve o viento: ' +
+            '<a href="https://www.argentina.gob.ar/seguridad/pasosinternacionales" target="_blank" rel="noopener">ver si está abierto</a>.</div>';
   } else {
     html += '<div class="cartel-linea">Tené a mano los papeles del camión y de la carga.</div>';
   }
@@ -1871,9 +1880,12 @@ function armarCartelControl(p) {
     var tel = String(p.telefono).split(/[;,]/)[0].trim();
     html += '<div class="cartel-linea">Teléfono: <a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">' + esc(tel) + '</a></div>';
   }
-  html += '<div class="cartel-fuente">Figura en OpenStreetMap como control fijo: puede no estar funcionando siempre, ' +
-          'y puede haber controles que no figuran.</div>';
-  html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (controles.actualizado ? ' (' + fecha(controles.actualizado) + ')' : '') +
+  html += p.tipo === 'frontera'
+    ? '<div class="cartel-fuente">Figura en OpenStreetMap: confirmá el horario y si está abierto antes de viajar.</div>'
+    : '<div class="cartel-fuente">Figura en OpenStreetMap como control fijo: puede no estar funcionando siempre, ' +
+      'y puede haber controles que no figuran.</div>';
+  var act = p.tipo === 'frontera' ? controles.fronterasActualizado : controles.actualizado;
+  html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (act ? ' (' + fecha(act) + ')' : '') +
           ' · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) + '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
   return html;
 }
@@ -1896,7 +1908,8 @@ function controlesEnRuta(puntosRuta) {
       var d = Math.hypot(ax + t * vx - px, ay + t * vy - py);
       if (d < mejor) { mejor = d; idx = i - 1; tMejor = t; }
     }
-    if (mejor <= (esRadar(it.f.properties) ? 35 : 60)) res.push({ item: it, orden: idx, t: tMejor });
+    var maxD = esRadar(it.f.properties) ? 35 : it.f.properties.tipo === 'frontera' ? 200 : 60;   // el complejo de frontera queda al costado
+    if (mejor <= maxD) res.push({ item: it, orden: idx, t: tMejor });
   });
   return res.sort(function (a, b) { return a.orden - b.orden; });
 }
@@ -2163,7 +2176,7 @@ var OPCIONES_MAPA = [
     hay: function () { return !!claveTomTom(); } },
   { id: 'sin_salida', icono: '🔚', nombre: 'Calles sin salida', detalle: 'Se ven de cerca', capas: ['sin_salida'] },
   { id: 'lugares', icono: '⛽', nombre: 'Lugares útiles', detalle: 'Gomerías, combustible, paradores, duchas', lugares: true },
-  { id: 'controles', icono: '👮', nombre: 'Controles y radares', detalle: 'Policía, Gendarmería, radares y cámaras', clave: 'controles',
+  { id: 'controles', icono: '👮', nombre: 'Controles y radares', detalle: 'Policía, Gendarmería, radares, cámaras y pasos de frontera', clave: 'controles',
     hay: function () { return controles.lista.length > 0; } },
   { id: 'red_pesada', icono: '🟩', nombre: 'Calles para camiones', detalle: 'Red de tránsito pesado', clave: 'red_pesada',
     hay: function () { return !!redPesada.grupo; } },
@@ -4865,6 +4878,7 @@ function clipPeligro(t) {
   if (/radar/.test(t)) return clipVel ? ['h_radar', clipVel] : ['h_radar'];
   if (/cámara de semáforo|camara de semaforo/.test(t)) return ['h_camara'];
   // v89: clima
+  if (/frontera/.test(t)) return ['h_frontera'];
   if (/tormenta/.test(t)) return ['h_tormenta'];
   if (/hielo|nieve/.test(t)) return ['h_hielo'];
   if (/tierra mojad/.test(t)) return ['h_barro'];
@@ -5053,7 +5067,7 @@ function empezarNavegacion(rutaElegida) {
     return { n: n, texto: a.texto, voz: a.voz, rojo: !!a.rojo, dist: nav.acum[mejor] };
   });
   // controles policiales: se avisan como un peligro, pero sin alarma
-  var VOZ_CONTROL = { policial: 'control policial', vial: 'control de la policía caminera',
+  var VOZ_CONTROL = { policial: 'control policial', vial: 'control de la policía caminera', frontera: 'paso de frontera',
                       gendarmeria: 'control de Gendarmería', fitosanitario: 'control fitosanitario',
                       radar: 'radar de velocidad', camara: 'cámara de semáforo' };
   (r.controles || controlesEnRuta(r.puntos)).forEach(function (c, k) {

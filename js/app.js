@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 86;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 87;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -259,8 +259,29 @@ function dibujarLimite(numero) {
   x.fillText(String(numero), t / 2, t / 2 + k);
   return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
 }
+// v87: cartel de "calle sin salida" (como el de la calle: azul, con la T blanca y la raya roja arriba). Antes eran miles
+// de puntos violetas desde zoom 13 que ensuciaban el mapa (pedido del chofer: "algo más prolijo").
+function dibujarSinSalida() {
+  var k = 2, t = 26 * k, c = document.createElement('canvas');
+  c.width = c.height = t;
+  var x = c.getContext('2d');
+  function caja(m, r) {
+    var a = m, b = t - m;
+    x.beginPath(); x.moveTo(a + r, a); x.lineTo(b - r, a); x.quadraticCurveTo(b, a, b, a + r); x.lineTo(b, b - r);
+    x.quadraticCurveTo(b, b, b - r, b); x.lineTo(a + r, b); x.quadraticCurveTo(a, b, a, b - r); x.lineTo(a, a + r);
+    x.quadraticCurveTo(a, a, a + r, a); x.closePath();
+  }
+  x.shadowColor = 'rgba(0,0,0,0.35)'; x.shadowBlur = 3 * k; x.shadowOffsetY = k;
+  caja(2 * k, 4 * k); x.fillStyle = '#ffffff'; x.fill();
+  x.shadowColor = 'transparent';
+  caja(3.5 * k, 3 * k); x.fillStyle = '#1f5fbf'; x.fill();
+  x.fillStyle = '#ffffff'; x.fillRect(t / 2 - 2 * k, 10 * k, 4 * k, 11 * k);   // la calle
+  x.fillStyle = '#e53935'; x.fillRect(7 * k, 6.5 * k, t - 14 * k, 4 * k);        // el fin
+  return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
+}
 gl.on('styleimagemissing', function (ev) {
   if (gl.hasImage(ev.id)) return;
+  if (ev.id === 'ic-sin-salida') { gl.addImage(ev.id, dibujarSinSalida(), { pixelRatio: 2 }); return; }
   var d = datosIcono(ev.id);
   if (d && d.length === 1) gl.addImage(ev.id, dibujarLimite(d[0].slice(1)), { pixelRatio: 2 });
   else if (d) gl.addImage(ev.id, dibujarIcono(d[0], d[1], d[2]), { pixelRatio: 2 });
@@ -888,7 +909,7 @@ function crearCapa(features) {
 // ¿Se dibuja? Lo que tu camión pasa (gris) solo si lo pediste en Capas; "pasás justo" siempre
 function oculto(e) { return e.estado === 'si' && !e.justo && !apagadas.ver_gris; }
 
-var ZOOM_SIN_SALIDA = 13;   // las calles sin salida (miles de puntos violetas) se ven solo de cerca
+var ZOOM_SIN_SALIDA = 15;   // v87: las calles sin salida (miles) se ven solo de cerca, como un cartelito (antes 13)
 var VACIO = { type: 'FeatureCollection', features: [] };
 var fuentes = {};           // id de fuente -> datos (se vuelven a poner si cambia el mapa de fondo)
 function ponerDatos(id, features) {
@@ -1123,10 +1144,10 @@ function ponerCapasPropias() {
       paint: { 'line-color': COLORES.no, 'line-width': grosorZoom(1.5) } }
   ].forEach(function (c) { gl.addLayer(c, debajo); });
   [
-    { id: 'r-sin-salida', type: 'circle', source: 'restr', minzoom: ZOOM_SIN_SALIDA - 1,
+    { id: 'r-sin-salida', type: 'symbol', source: 'restr', minzoom: ZOOM_SIN_SALIDA - 1,
       filter: ['all', GEO_PUNTOS, es('ss', 1)],
-      paint: { 'circle-color': COLORES.aviso, 'circle-radius': radioZoom(), 'circle-stroke-color': '#ffffff',
-               'circle-stroke-width': ['step', ['zoom'], 0.5, 12, 1, 14, 2] } },
+      layout: { 'icon-image': 'ic-sin-salida', 'icon-allow-overlap': false, 'icon-padding': 2,
+                'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_SIN_SALIDA - 1, 0.6, 16, 0.8, 18, 1] } },
     { id: 'r-puntos', type: 'circle', source: 'restr', filter: ['all', GEO_PUNTOS, es('ss', 0), es('ve', 1)],
       paint: { 'circle-color': COLOR_ESTADO, 'circle-radius': radioZoom(), 'circle-stroke-color': '#ffffff',
                'circle-stroke-width': ['step', ['zoom'], 0.5, 12, 1, 14, 2],
@@ -4182,6 +4203,23 @@ function revisarRuta(puntosRuta, pasos) {
     if (c.id === 'sin_salida') return;   // la ruta no entra a una calle sin salida salvo que sea el destino
     revisarCapa(grupos[c.id], false);
   });
+  // v87: los servicios de rutas nunca mandan POR una calle sin salida (no lleva a ningún lado), pero si el destino está
+  // en una, la ruta entra. Se avisa si una punta sin salida queda pegada a la ruta en los últimos 400 m.
+  if (grupos.sin_salida && puntosRuta.length > 1) {
+    var nR = puntosRuta.length, finR = L.latLng(puntosRuta[nR - 1]), desdeI = nR - 1, acumF = 0, mejorSS = null;
+    while (desdeI > 0 && acumF < 400) { acumF += L.latLng(puntosRuta[desdeI]).distanceTo(puntosRuta[desdeI - 1]); desdeI--; }
+    grupos.sin_salida.eachLayer(function (l) {
+      if (!l.getLatLng) return;
+      var ll = l.getLatLng();
+      if (finR.distanceTo(ll) > 450) return;
+      var dr = distRuta(xy([ll.lat, ll.lng]));
+      if (dr.d < 30 && dr.i >= desdeI && (!mejorSS || dr.d < mejorSS.d)) mejorSS = { d: dr.d, i: dr.i, l: l };
+    });
+    if (mejorSS) avisos.push({ texto: 'Tu destino está en una calle sin salida: fijate si tenés lugar para dar la vuelta',
+                               voz: 'tu destino está en una calle sin salida. Verificá en el lugar', color: '#1f5fbf', rojo: false,
+                               capa: mejorSS.l, latlng: mejorSS.l.getLatLng(), orden: mejorSS.i,
+                               clave: 'sinsalida#' + L.stamp(mejorSS.l), zonas: null, zonasClaves: null });
+  }
   revisarCapa(grupoReportes, true);
   // primero lo que no pasás; después en el orden en que aparecen sobre la ruta
   avisos.sort(function (a, b) { return (a.rojo ? 0 : 1) - (b.rojo ? 0 : 1) || a.orden - b.orden; });
@@ -4502,7 +4540,7 @@ function clipPeligro(t) {
     : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona|centro/.test(t) ? 'h_zona'
     : /paso bajo|altura|puente/.test(t) ? 'h_altura' : /peso/.test(t) ? 'h_peso' : /largo/.test(t) ? 'h_largo'
     : /angost|ancho/.test(t) ? 'h_ancho' : /cortad|corte/.test(t) ? 'h_corte' : /obra/.test(t) ? 'h_obra'
-    : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido' : 'h_otro';
+    : /sin salida/.test(t) ? 'h_sinsalida' : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido' : 'h_otro';
   var fin = /no pasa/.test(t) ? 's_nopasa' : /si vas por esa calle|si la ruta pasa/.test(t) ? 's_sivas' : /verific/.test(t) ? 's_verificar' : null;
   return fin ? [tipo, fin] : [tipo];
 }

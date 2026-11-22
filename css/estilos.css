@@ -1080,3 +1080,9 @@ body.navegando .punto-ubicacion {
 /* v77: "Evitar peajes" en el panel de la ruta */
 .ruta-check { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 4px 2px; font-size: 1rem; cursor: pointer; }
 .ruta-check input { width: 22px; height: 22px; accent-color: var(--primario, #1668f2); }
+
+/* v87: cartelito de calle sin salida en la ayuda (igual al del mapa) */
+.ayuda-colores i.ayuda-sin-salida {
+  border-radius: 3px;
+  background: #1f5fbf url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='4' y='3' width='8' height='2.5' fill='%23e53935'/%3E%3Crect x='7' y='5.5' width='2' height='7.5' fill='%23fff'/%3E%3C/svg%3E") center / 100% no-repeat;
+}

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 88;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 89;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -533,21 +533,24 @@ function enHorario(h, cuando) {
   if (typeof h === 'string') { try { h = JSON.parse(h); } catch (e) { return true; } }
   if (!h || !h.dias) return true;
   var d = cuando || new Date(), hora = d.getHours() + d.getMinutes() / 60;
-  return h.dias.indexOf(d.getDay()) >= 0 && hora >= h.desde && hora < h.hasta;
+  if (h.hasta > h.desde) return h.dias.indexOf(d.getDay()) >= 0 && hora >= h.desde && hora < h.hasta;
+  // pasa la medianoche (ej. de 22 a 6): después de las 22 cuenta el día de hoy; antes de las 6, el de ayer
+  if (hora >= h.desde) return h.dias.indexOf(d.getDay()) >= 0;
+  return hora < h.hasta && h.dias.indexOf((d.getDay() + 6) % 7) >= 0;
 }
 function horarioDe(p) {
   if (typeof p.horario === 'string') { try { return JSON.parse(p.horario); } catch (e) { return null; } }
   return p.horario || null;
 }
 // cada 5 minutos: si una norma con horario empezó o terminó, se vuelve a pintar (rojo <-> amarillo)
-var horarioFirma = null;
+var horarioFirma = '';   // v89: antes null (el primer control no repintaba aunque el horario hubiera empezado)
 setInterval(function () {
   var firma = '';
   if (grupos.prohibido) grupos.prohibido.eachLayer(function (l) {
     var p = l.feature && l.feature.properties;
     if (p && p.horario) firma += enHorario(p.horario) ? '1' : '0';
   });
-  if (horarioFirma !== null && firma !== horarioFirma) pedirRepintar();
+  if (firma !== horarioFirma) pedirRepintar();
   horarioFirma = firma;
 }, 5 * 60 * 1000);
 
@@ -609,10 +612,11 @@ function bajarJSON(archivo, obligatorio) {
 // Las restricciones de una zona (lo que hace falta para revisar una ruta). v73: los lugares y la red de tránsito
 // pesado van aparte (cargarZona): en un viaje largo se bajaban los de todas las ciudades del camino (varios MB).
 var zonasExtras = {};          // id de zona -> promesa de sus lugares y su red
+var zonasExtrasListas = {};    // id de zona -> true cuando ya llegaron (v89: para no avisar "sin estaciones" de más)
 function cargarZona(z) {
   if (!zonasExtras[z.id]) {
     zonasExtras[z.id] = Promise.all([bajarJSON(z.lugares), bajarJSON(z.red)]).then(function (r) {
-      try { agregarExtrasZona({ zona: z, lugares: r[0], red: r[1] }); } catch (e) { console.error(e); }
+      try { agregarExtrasZona({ zona: z, lugares: r[0], red: r[1] }); zonasExtrasListas[z.id] = true; } catch (e) { console.error(e); }
     });
   }
   return Promise.all([cargarRestriccionesZona(z), zonasExtras[z.id]]);
@@ -792,7 +796,7 @@ function cargarPaisEnRutas(listas) {
 // Los baja scripts/descargar_lugares_pais.py en cuadrados de 2° (datos/pais-lugares/*.geojson, índice
 // datos/pais-lugares.json). Se bajan los de lo que se ve (solo si los lugares están prendidos y el mapa cerca) y
 // los de por donde pasa una ruta (para "Dónde cargar y parar en el camino").
-var paisLugares = { celdas: [], pedidas: {}, timer: null };
+var paisLugares = { celdas: [], pedidas: {}, listas: {}, timer: null };   // listas: cuadrados ya bajados bien
 var lugarVisto = {};   // osm -> true: un lugar que viene en una zona y en el país va una sola vez
 fetch('datos/pais-lugares.json', { cache: 'no-cache' })
   .then(function (r) { return r.ok ? r.json() : null; })
@@ -814,6 +818,7 @@ function cargarCeldaLugares(c) {
   if (paisLugares.pedidas[c.archivo]) return paisLugares.pedidas[c.archivo];
   paisLugares.pedidas[c.archivo] = bajarJSON(c.archivo, true).then(function (d) {
     var n = 0;
+    paisLugares.listas[c.archivo] = true;
     d.features.forEach(function (f) { if (agregarLugar(f)) n++; });
     if (!n) return;
     clearTimeout(paisLugares.timer);   // varios cuadrados juntos: se redibuja una vez
@@ -833,9 +838,10 @@ function cargarLugaresVista() {
 
 // Lugares útiles a menos de 150 m de la ruta, con el kilómetro donde quedan (para la lista de la tarjeta)
 var TIPOS_EN_RUTA = { combustible: 1, parador: 1, gomeria: 1, taller: 1, estacionamiento: 1, balanza: 1 };
-function lugaresEnRuta(puntos) {
+function lugaresEnRuta(puntos, maxD, soloTipo) {   // v89: maxD (metros, 150 si no se dice) y soloTipo opcionales
   if (puntos.length < 2) return [];
-  var lat0 = puntos[0][0] * Math.PI / 180, kx = Math.cos(lat0) * 111320, ky = 110540, C = 500;   // cuadraditos de 500 m
+  maxD = maxD || 150;
+  var lat0 = puntos[0][0] * Math.PI / 180, kx = Math.cos(lat0) * 111320, ky = 110540, C = Math.max(500, maxD);   // cuadraditos de 500 m o más
   var acum = [0], grilla = {};
   for (var i = 1; i < puntos.length; i++) {
     var ax = puntos[i - 1][1] * kx, ay = puntos[i - 1][0] * ky, bx = puntos[i][1] * kx, by = puntos[i][0] * ky;
@@ -848,7 +854,7 @@ function lugaresEnRuta(puntos) {
   }
   var res = [];
   Object.keys(TIPOS_EN_RUTA).forEach(function (tipo) {
-    if (!gruposLugares[tipo]) return;
+    if (!gruposLugares[tipo] || (soloTipo && tipo !== soloTipo)) return;
     gruposLugares[tipo].eachLayer(function (l) {
       var ll = l.getLatLng(), px = ll.lng * kx, py = ll.lat * ky, cx = Math.floor(px / C), cy = Math.floor(py / C);
       var mejor = Infinity, km = 0, visto = {};
@@ -862,7 +868,7 @@ function lugaresEnRuta(puntos) {
           if (d < mejor) { mejor = d; km = (acum[j - 1] + t * Math.sqrt(L2)) / 1000; }
         });
       }
-      if (mejor <= 150) res.push({ l: l, km: km });
+      if (mejor <= maxD) res.push({ l: l, km: km });
     });
   });
   return res.sort(function (a, b) { return a.km - b.km; });
@@ -3131,10 +3137,17 @@ function decidirEvitarCapital(desde, hasta, paradas) {
     !puntos.some(function (p) { return margen.contains(L.latLng(p)); });
 }
 
+// Rojos que se pueden esquivar (los que tienen horario no: ver revisarRuta)
+function rojosEsquivables(avisos) {
+  return (avisos || []).filter(function (x) {
+    return x.rojo && !(x.capa && x.capa.feature && x.capa.feature.properties.horario);
+  }).length;
+}
+
 // Zonas prohibidas (ordenanzas) para este camión, salvo las que tienen adentro la salida o la llegada
 function zonasProhibidasEntre(a, b) {
   var zonas = [], claves = {};
-  if (ruta.evitarCapital && !CAPITAL.contains(a) && !CAPITAL.contains(b)) {
+  if (ruta.evitarCapital && !CAPITAL.contains(a) && !CAPITAL.contains(b) && L.latLngBounds([a, b]).pad(0.3).intersects(CAPITAL)) {
     zonas.push(ANILLO_CAPITAL);
     claves['zona#capital'] = true;
   }
@@ -3577,7 +3590,7 @@ function conTiempoLimite(url, opciones, segundos) {
 // Cada servicio dice qué pedazos de SU camino no están asfaltados (OpenRouteService: la superficie; Valhalla: "rough";
 // TomTom: la sección "unpaved"). Se anotan por posición (pedacitos de ≤ 50 m en una grilla de ~100 m), no por número de
 // punto: así siguen valiendo después de empalmar pedazos de un viaje largo o de volver a la ruta navegando.
-var tierra = { grilla: {}, vistos: {}, hay: false };
+var tierra = { grilla: {}, gruesa: new Map(), vistos: {}, hay: false };   // gruesa: casilleros de ~1 km con tierra en él o al lado
 function anotarTierra(puntos, rangos) {   // puntos [[lat, lng]...]; rangos [[desde, hasta], ...] (índices de puntos)
   (rangos || []).forEach(function (r) {
     for (var i = Math.max(1, r[0] + 1); i <= Math.min(r[1], puntos.length - 1); i++) {
@@ -3591,6 +3604,8 @@ function anotarTierra(puntos, rangos) {   // puntos [[lat, lng]...]; rangos [[de
         tierra.vistos[id] = 1;
         var celda = Math.floor((p[0] + q[0]) / 2 * 1000) + ',' + Math.floor((p[1] + q[1]) / 2 * 1000);
         (tierra.grilla[celda] = tierra.grilla[celda] || []).push([p[0], p[1], q[0], q[1]]);
+        var gy = Math.floor((p[0] + q[0]) * 50), gx = Math.floor((p[1] + q[1]) * 50);
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) tierra.gruesa.set((gy + dy) * 100000 + gx + dx, 1);
         tierra.hay = true;
       }
     }
@@ -3617,8 +3632,20 @@ function tramosDeTierra(puntos) {
   var res = [];
   if (!tierra.hay || !puntos || puntos.length < 2) return res;
   var actual = null, hueco = 0;
+  function cercaGruesa(ll) {   // ¿hay tierra anotada en el casillero de ~1 km de este punto o en los vecinos?
+    return tierra.gruesa.has(Math.floor(ll[0] * 100) * 100000 + Math.floor(ll[1] * 100));
+  }
   for (var i = 1; i < puntos.length; i++) {
     var a = puntos[i - 1], b = puntos[i], m = L.latLng(a).distanceTo(b), n = Math.max(1, Math.ceil(m / 25)), paso = m / n;
+    // v88: tramos sin tierra anotada cerca (mirando cada 800 m) se saltean enteros (un viaje de 1.200 km pasaba de ~50 ms a pocos ms)
+    var lejos = true;
+    for (var g = 0, ng = Math.ceil(m / 800); g <= ng && lejos; g++) {
+      lejos = !cercaGruesa([a[0] + (b[0] - a[0]) * g / ng, a[1] + (b[1] - a[1]) * g / ng]);
+    }
+    if (lejos) {
+      if (actual) { hueco += m; if (hueco >= 60) { actual = null; hueco = 0; } }
+      continue;
+    }
     for (var k = 0; k < n; k++) {
       var t = (k + 0.5) / n;
       if (esTierra(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)) {
@@ -3757,7 +3784,8 @@ function rutaValhalla(evitar, a, b) {
         var base = puntos.length;
         puntos = puntos.concat(decodificarPolilinea(leg.shape, 6));
         leg.maneuvers.forEach(function (m) {
-          if (m.rough && m.end_shape_index != null) rangosTierra.push([base + (m.begin_shape_index || 0), base + m.end_shape_index]);
+          // "rough" es de la maniobra entera: en una de 150 km con un poco de ripio marcaba todo como tierra
+          if (m.rough && m.end_shape_index != null && m.length <= 3) rangosTierra.push([base + (m.begin_shape_index || 0), base + m.end_shape_index]);
           var esVuelta = [10, 11, 14, 15].indexOf(m.type) !== -1;   // derecha, cerrada der., cerrada izq., izquierda
           pasos.push({ texto: aCastellano(m.instruction), km: m.length, ini: base + (m.begin_shape_index || 0), vuelta: esVuelta });
           if (esVuelta) vueltas++;
@@ -3875,6 +3903,220 @@ function borrarRuta() {
   modoResultado(false);
 }
 
+// ===== v89: "Para el viaje": descansos, tramos sin estaciones de servicio y clima en el camino =====
+// Ideas propias (el chofer pidió "cosas innovadoras que sirvan mucho"). Todo es orientativo y así se dice en la tarjeta.
+var DESCANSO = { cadaSeg: 2.5 * 3600, paradoReinicia: 15 * 60, sinEstacionKm: 150 };
+var TIPOS_DESCANSO = { parador: 0, estacionamiento: 5, combustible: 10 };   // cuanto menos, mejor para parar
+// Hora en que se pasa por el km (tiempo de la ruta, en proporción a la distancia)
+function horaEnKm(r, km) { return new Date(Date.now() + (r.segundos || 0) * Math.min(1, km / (r.km || 1)) * 1000); }
+function horaViaje(d) {
+  var hoy = new Date(), dias = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) -
+                                          new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate())) / 86400000);
+  var hhmm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  return (dias === 1 ? 'mañana ' : dias > 1 ? 'en ' + dias + ' días, ' : '') + hhmm;
+}
+// Dónde parar a descansar: cada ~2 h 30 min de viaje, el mejor lugar (parador > estacionamiento > estación;
+// "para camiones" suma) entre 50 km antes y 15 km después de ese punto. Si no hay nada cargado, se dice igual.
+function descansosSugeridos(r, lugares) {
+  var res = [], usados = {};
+  if (!lugares || !r.segundos || r.segundos < DESCANSO.cadaSeg + 1800) return res;
+  for (var s = DESCANSO.cadaSeg; s < r.segundos - 1800; s += DESCANSO.cadaSeg) {
+    var kmObj = r.km * s / r.segundos, mejor = null;
+    lugares.forEach(function (x, i) {
+      var p = x.l.feature.properties, base = TIPOS_DESCANSO[p.tipo];
+      if (base == null || usados[i] || x.km < kmObj - 50 || x.km > kmObj + 15) return;
+      var puntos = Math.abs(x.km - kmObj) + base - (p.camiones ? 15 : 0);
+      if (!mejor || puntos < mejor.puntos) mejor = { i: i, puntos: puntos };
+    });
+    if (mejor) usados[mejor.i] = true;
+    res.push({ kmObj: kmObj, i: mejor ? mejor.i : null });
+  }
+  return res;
+}
+// Tramos largos sin ninguna estación de servicio cargada (solo si ya están bajados todos los datos del camino:
+// si no, avisaría de más)
+// (estaciones a menos de 3 km de la ruta: las de un pueblo al costado también sirven)
+function tramosSinCombustible(r) {
+  if (!r.km || r.km < DESCANSO.sinEstacionKm) return [];
+  if (celdasEnRutas(paisLugares.celdas, [r.puntos]).some(function (c) { return !paisLugares.listas[c.archivo]; })) return [];
+  if (zonasEnRutas([r.puntos]).some(function (z) { return z.lugares && !zonasExtrasListas[z.id]; })) return [];
+  var kms = [0].concat(lugaresEnRuta(r.puntos, 3000, 'combustible').map(function (x) { return x.km; })).concat([r.km]), res = [];
+  for (var i = 1; i < kms.length; i++) {
+    if (kms[i] - kms[i - 1] >= DESCANSO.sinEstacionKm) {
+      res.push({ desde: kms[i - 1], hasta: kms[i], primero: i === 1, ultimo: i === kms.length - 1 });
+    }
+  }
+  return res;
+}
+function htmlParaElViaje(r) {
+  var html = '', huecos = tramosSinCombustible(r), descansos = descansosSugeridos(r, r.lugares);
+  huecos.forEach(function (h) {
+    var donde = h.primero && h.ultimo ? 'en todo el viaje'
+              : h.primero ? 'desde la salida hasta el km ' + Math.round(h.hasta)
+              : h.ultimo ? 'desde el km ' + Math.round(h.desde) + ' hasta la llegada'
+              : 'entre el km ' + Math.round(h.desde) + ' y el km ' + Math.round(h.hasta);
+    html += '<div class="ruta-viaje-aviso">⛽ <b>' + Math.round(h.hasta - h.desde) + ' km sin estaciones de servicio</b> ' +
+            esc(donde) + ' (ninguna a menos de 3 km de la ruta). Cargá antes: puede haber alguna que no está en el mapa.</div>';
+  });
+  if (descansos.length) {
+    html += '<details class="ruta-pasos"><summary>☕ Dónde parar a descansar (cada 2 h 30 min)</summary><ul class="ruta-lista">';
+    descansos.forEach(function (d) {
+      var hora = horaViaje(horaEnKm(r, d.i != null ? r.lugares[d.i].km : d.kmObj));
+      if (d.i == null) {
+        html += '<li><span class="ruta-sin-lugar"><span class="ruta-lista-icono">☕</span><span class="ruta-lugar-km">km ' +
+                Math.round(d.kmObj) + '</span> ' + esc(hora) + ' · no hay lugares cargados cerca: buscá un lugar seguro</span></li>';
+        return;
+      }
+      var x = r.lugares[d.i], p = x.l.feature.properties, tipo = LUGAR_POR_ID[p.tipo];
+      html += '<li><button type="button" data-lugar="' + d.i + '"><span class="ruta-lista-icono">' + tipo.icono + '</span>' +
+              '<span class="ruta-lugar-km">km ' + Math.round(x.km) + '</span> ' + esc(hora + ' · ' + (p.nombre || tipo.uno)) +
+              (p.camiones ? ' <small>para camiones</small>' : '') + '</button></li>';
+    });
+    html += '</ul></details>';
+  }
+  return html;
+}
+
+// --- Clima en el camino (Open-Meteo: gratis, sin cuenta; datos CC BY 4.0, se nombra la fuente) ---
+// Se mira el pronóstico de CADA punto del camino a la hora en que vas a pasar por ahí: ráfagas de viento (peligrosas con
+// el semi vacío), lluvia fuerte, tormenta, niebla, hielo o nieve. Y en los caminos de tierra, cuánto llueve en el día antes.
+var CLIMA = { rafagas: 60, rafagasFuertes: 75, lluviaMmH: 4, visibilidadM: 800, lluviaTierraMm: 5 };
+var TIPOS_CLIMA = {
+  tormenta: { icono: '⛈️', titulo: 'Tormenta', voz: 'tormenta', color: '#7b4fc9' },
+  hielo: { icono: '❄️', titulo: 'Puede haber hielo o nieve', voz: 'puede haber hielo o nieve', color: '#3a8fd6' },
+  lluvia: { icono: '🌧️', titulo: 'Lluvia fuerte', voz: 'lluvia fuerte', color: '#2f6fb5' },
+  niebla: { icono: '🌫️', titulo: 'Niebla: poca visibilidad', voz: 'niebla, poca visibilidad', color: '#7d8794' },
+  viento: { icono: '💨', titulo: 'Viento fuerte', voz: 'viento fuerte', color: '#c27a00' },
+  barro: { icono: '🟫', titulo: 'Camino de tierra mojado', voz: 'camino de tierra mojado', color: '#a0662b' }
+};
+function climaEnRuta(r) {
+  if (r.climaPedido) return r.climaPedido;
+  var pts = r.puntos, acum = [0];
+  for (var i = 1; i < pts.length; i++) acum.push(acum[i - 1] + L.latLng(pts[i - 1]).distanceTo(pts[i]));
+  var total = acum[acum.length - 1] || 1, paso = Math.max(12000, total / 45), muestras = [], j = 0;
+  for (var m = 0; m < total; m += paso) {
+    while (j < pts.length - 1 && acum[j + 1] < m) j++;
+    muestras.push({ i: j, km: m / 1000 });
+  }
+  muestras.push({ i: pts.length - 1, km: total / 1000 });
+  tramosDeTierra(pts).filter(function (x) { return x.m >= 300; }).slice(0, 8).forEach(function (x) {
+    muestras.push({ i: x.i0, km: acum[x.i0] / 1000, tierra: x.m });
+  });
+  var url = 'https://api.open-meteo.com/v1/forecast?latitude=' +
+            muestras.map(function (x) { return pts[x.i][0].toFixed(3); }).join(',') +
+            '&longitude=' + muestras.map(function (x) { return pts[x.i][1].toFixed(3); }).join(',') +
+            '&hourly=wind_gusts_10m,precipitation,weather_code,visibility,temperature_2m,snowfall' +
+            '&past_days=1&forecast_days=3&timezone=GMT&timeformat=unixtime&wind_speed_unit=kmh';
+  var salida = Date.now();
+  r.climaPedido = conTiempoLimite(url, {}, 15).then(function (resp) {
+    if (!resp.ok) throw new Error('Open-Meteo ' + resp.status);
+    return resp.json();
+  }).then(function (d) {
+    if (!Array.isArray(d)) d = [d];
+    var marcas = [];   // { tipo, k (número de muestra), km, i, valor, t }
+    muestras.forEach(function (x, k) {
+      var h = d[k] && d[k].hourly;
+      if (!h || !h.time) return;
+      var t = salida / 1000 + (r.segundos || 0) * Math.min(1, x.km / (total / 1000)), n = -1;
+      for (var q = 0; q < h.time.length; q++) if (Math.abs(h.time[q] - t) <= 1800) { n = q; break; }
+      if (n < 0) return;   // más allá del pronóstico
+      if (x.tierra) {
+        var mm = 0;
+        for (var q2 = 0; q2 < h.time.length; q2++) if (h.time[q2] > t - 86400 && h.time[q2] <= t) mm += h.precipitation[q2] || 0;
+        if (mm >= CLIMA.lluviaTierraMm) marcas.push({ tipo: 'barro', k: k, km: x.km, i: x.i, valor: Math.round(mm), t: t });
+        return;
+      }
+      var cod = h.weather_code[n], pr = h.precipitation[n] || 0, vis = h.visibility ? h.visibility[n] : null;
+      var temp = h.temperature_2m[n], nieve = h.snowfall ? h.snowfall[n] : 0, raf = h.wind_gusts_10m[n] || 0;
+      if (cod >= 95) marcas.push({ tipo: 'tormenta', k: k, km: x.km, i: x.i, t: t });
+      if (nieve > 0 || [56, 57, 66, 67].indexOf(cod) >= 0 || (temp != null && temp <= 1 && pr > 0.1)) {
+        marcas.push({ tipo: 'hielo', k: k, km: x.km, i: x.i, t: t });
+      }
+      if (pr >= CLIMA.lluviaMmH || cod === 65 || cod === 82) marcas.push({ tipo: 'lluvia', k: k, km: x.km, i: x.i, valor: pr, t: t });
+      if ((vis != null && vis < CLIMA.visibilidadM) || cod === 45 || cod === 48) marcas.push({ tipo: 'niebla', k: k, km: x.km, i: x.i, t: t });
+      if (raf >= CLIMA.rafagas) marcas.push({ tipo: 'viento', k: k, km: x.km, i: x.i, valor: Math.round(raf), t: t });
+    });
+    // muestras seguidas con lo mismo = un solo aviso ("entre el km 320 y el 410")
+    var grupos = [];
+    marcas.forEach(function (mk) {
+      var g = grupos.filter(function (x) { return x.tipo === mk.tipo && mk.tipo !== 'barro' && mk.k - x.kFin <= 1; })[0];
+      if (g) { g.kFin = mk.k; g.kmFin = mk.km; g.valor = Math.max(g.valor || 0, mk.valor || 0); }
+      else grupos.push({ tipo: mk.tipo, kFin: mk.k, kmIni: mk.km, kmFin: mk.km, i: mk.i, valor: mk.valor, t: mk.t });
+    });
+    return grupos.map(function (g) {
+      var T = TIPOS_CLIMA[g.tipo], donde = g.kmFin - g.kmIni >= 5
+        ? 'entre el km ' + Math.round(g.kmIni) + ' y el ' + Math.round(g.kmFin) : 'en el km ' + Math.round(g.kmIni);
+      var detalle = '', voz = T.voz;
+      if (g.tipo === 'viento') {
+        detalle = 'ráfagas de hasta ' + g.valor + ' km/h' + (g.valor >= CLIMA.rafagasFuertes ? ' (cuidado si vas vacío o con carga alta)' : '');
+        voz += ', ráfagas de ' + g.valor + ' kilómetros por hora';
+      }
+      if (g.tipo === 'barro') detalle = 'unos ' + g.valor + ' mm de lluvia en las 24 h antes de que pases; puede estar intransitable';
+      var texto = T.titulo + ' ' + donde + (detalle ? ': ' + detalle : '');
+      return { tipo: g.tipo, texto: T.icono + ' ' + texto + ' (cuando pases, ' + horaViaje(new Date(g.t * 1000)) + ')',
+               corto: T.icono + ' ' + T.titulo + (detalle ? ': ' + detalle : ''), voz: voz, color: T.color, i: g.i, latlng: L.latLng(pts[g.i]), km: g.kmIni };
+    });
+  }).catch(function (e) { console.warn('Sin clima:', e.message); return null; });
+  return r.climaPedido;
+}
+// Pone el clima en la tarjeta de la ruta cuando llega (y lo suma a los avisos de la navegación)
+function ponerClima(r) {
+  climaEnRuta(r).then(function (lista) {
+    r.clima = lista;
+    var caja = document.getElementById('ruta-clima');
+    if (caja && ruta.linea === r) {
+      if (!lista) caja.innerHTML = '';
+      else if (!lista.length) caja.innerHTML = '<p class="ruta-clima-bien">🌤️ Sin viento fuerte, tormentas, niebla ni hielo en el camino</p>';
+      else {
+        caja.innerHTML = '<ul class="ruta-lista">' + lista.map(function (c, k) {
+          return '<li><button type="button" data-clima="' + k + '"><i style="background:' + c.color + '"></i>' + esc(c.texto) + '</button></li>';
+        }).join('') + '</ul><p class="ruta-clima-fuente">Pronóstico del tiempo: Open-Meteo.com</p>';
+        caja.querySelectorAll('[data-clima]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            abrirPanelRuta(false);
+            mapa.setView(lista[+b.getAttribute('data-clima')].latlng, Math.max(mapa.getZoom(), 11));
+          });
+        });
+      }
+    }
+    if (lista && nav.activo && nav.r === r) agregarClimaANav(r);
+  });
+}
+function agregarClimaANav(r) {
+  (r.clima || []).forEach(function (c) {
+    var n = 'cl' + c.tipo + c.latlng.lat.toFixed(2) + c.latlng.lng.toFixed(2);
+    if (nav.avisos.some(function (a) { return a.n === n; })) return;
+    nav.avisos.push({ n: n, texto: c.corto, voz: c.voz, rojo: false, icono: '', antes: 5000,
+                      dist: nav.acum[Math.min(c.i, nav.acum.length - 1)] });
+  });
+}
+
+// Navegando: avisa si hace mucho que manejás sin parar (2 h 30 min; parar 15 min o más lo reinicia)
+var manejo = { seg: 0, t: 0, parado: null, avisado: 0, timer: null };
+function controlarDescanso() {
+  var ahora = Date.now(), dt = (ahora - manejo.t) / 1000;
+  manejo.t = ahora;
+  if (dt > DESCANSO.paradoReinicia) { manejo.seg = 0; manejo.parado = null; manejo.avisado = 0; return; }   // app cerrada un rato
+  if (velocidad.kmh == null || velocidad.kmh < 5) {
+    manejo.parado = manejo.parado || ahora;
+    if (ahora - manejo.parado >= DESCANSO.paradoReinicia * 1000) { manejo.seg = 0; manejo.avisado = 0; }
+    return;
+  }
+  manejo.parado = null;
+  manejo.seg += Math.min(dt, 60);
+  if (manejo.seg < DESCANSO.cadaSeg || ahora - manejo.avisado < 30 * 60 * 1000) return;
+  manejo.avisado = ahora;
+  var hecho = (nav.recorrido || 0) / 1000, prox = (nav.r && nav.r.lugares || []).filter(function (x) {
+    return TIPOS_DESCANSO[x.l.feature.properties.tipo] != null && x.km > hecho + 0.3;
+  })[0];
+  var p = prox && prox.l.feature.properties;
+  mostrarMensaje('☕ Hace ' + duracion(manejo.seg) + ' que manejás. Te conviene parar a descansar.' +
+                 (p ? ' Próximo lugar: ' + (p.nombre || LUGAR_POR_ID[p.tipo].uno) + ', a ' + textoDistancia((prox.km - hecho) * 1000) + '.' : ''));
+  clearTimeout(manejo.timer);
+  manejo.timer = setTimeout(ocultarMensaje, 40000);
+  hablar('Ya llevás varias horas manejando. Te conviene parar a descansar un rato.');
+}
+
 function mostrarRuta(indice, sinMoverMapa) {
   var opciones = ruta.opciones;
   var r = opciones[indice];
@@ -3910,6 +4152,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   } else {
     html += '<div class="ruta-estado bien">✓ Sin problemas para tu camión</div>';
   }
+  html += '<div id="ruta-clima" class="ruta-clima"></div>';   // v89: se llena cuando llega el pronóstico
   if (opciones.length > 1) {
     html += '<div class="ruta-opciones">';
     opciones.forEach(function (o, i) {
@@ -3941,6 +4184,7 @@ function mostrarRuta(indice, sinMoverMapa) {
     html += '</ul></details>';
   }
   r.lugares = lugaresEnRuta(r.puntos).slice(0, 250);
+  html += htmlParaElViaje(r);   // v89: tramos sin estaciones y dónde descansar
   if (r.lugares.length) {
     html += '<details class="ruta-pasos"><summary>⛽ Dónde cargar y parar en el camino (' + r.lugares.length + ')</summary>' +
             '<ul class="ruta-lista">';
@@ -3968,6 +4212,7 @@ function mostrarRuta(indice, sinMoverMapa) {
           ', ' + metros(camion.largo) + '). Respetá siempre la señalización.</p></details>';
   var salida = document.getElementById('ruta-resultado');
   salida.innerHTML = html;
+  ponerClima(r);   // v89: el pronóstico llega después (si ya estaba, aparece enseguida)
   document.getElementById('empezar-manejo').addEventListener('click', function () { empezarNavegacion(); });
   salida.querySelectorAll('[data-opcion]').forEach(function (b) {
     b.addEventListener('click', function () { mostrarRuta(+b.getAttribute('data-opcion'), true); });
@@ -4608,6 +4853,7 @@ function clipDistancia(t) {
     n = n < 100 ? Math.max(30, Math.min(90, Math.round(n / 10) * 10)) : Math.min(1000, Math.round(n / 50) * 50);
     return 'd_' + n;
   }
+  if (/un kilómetro/.test(t)) return 'd_1k';
   var k = /(\d+)(?: coma (\d))? kilómetros/.exec(t);
   if (k && +k[1] + (k[2] ? +k[2] / 10 : 0) < 1.3) return 'd_1k';
   return 'd_mas';
@@ -4618,8 +4864,15 @@ function clipPeligro(t) {
   var vel = /máxima (\d+)/.exec(t), clipVel = vel && +vel[1] >= 20 && +vel[1] <= 130 && +vel[1] % 10 === 0 ? 'v_' + vel[1] : null;
   if (/radar/.test(t)) return clipVel ? ['h_radar', clipVel] : ['h_radar'];
   if (/cámara de semáforo|camara de semaforo/.test(t)) return ['h_camara'];
+  // v89: clima
+  if (/tormenta/.test(t)) return ['h_tormenta'];
+  if (/hielo|nieve/.test(t)) return ['h_hielo'];
+  if (/tierra mojad/.test(t)) return ['h_barro'];
+  if (/viento/.test(t)) return ['h_viento'];
+  if (/lluvia/.test(t)) return ['h_lluvia'];
+  if (/niebla/.test(t)) return ['h_niebla'];
   var tipo = /caminera/.test(t) ? 'h_caminera' : /gendarmer/.test(t) ? 'h_gendarmeria' : /fitosanitari/.test(t) ? 'h_fito'
-    : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona|centro/.test(t) ? 'h_zona'
+    : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona|centro/.test(t) ? 'h_zona'
     : /paso bajo|altura|puente/.test(t) ? 'h_altura' : /peso/.test(t) ? 'h_peso' : /largo/.test(t) ? 'h_largo'
     : /angost|ancho/.test(t) ? 'h_ancho' : /cortad|corte/.test(t) ? 'h_corte' : /obra/.test(t) ? 'h_obra'
     : /sin salida/.test(t) ? 'h_sinsalida' : /tierra|ripio/.test(t) ? 'h_tierra' : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido' : 'h_otro';
@@ -4662,6 +4915,7 @@ function clipsDe(texto) {
     else if ((m = /^Recalculando la ruta\.\s*/.exec(t))) { out.push('recalc'); t = t.slice(m[0].length); }
     else if ((m = /^Llegaste a destino\.\s*/.exec(t))) { out.push('llegaste'); t = t.slice(m[0].length); }
     else if ((m = /^Voz prendida\.\s*/.exec(t))) { out.push('voz_on'); t = t.slice(m[0].length); }
+    else if ((m = /^Ya llevás varias horas manejando\.[^.]*\.\s*/.exec(t))) { out.push('descanso'); t = t.slice(m[0].length); }
     else if ((m = /^Seguí por [^.]*\.\s*/.exec(t))) { out.push('seguir'); t = t.slice(m[0].length); }
     else if ((m = /^(Cuidado|Atención)\.\s*(?:(Acá)|(?:En|A) ([^,]+)),\s*/.exec(t))) {
       t = t.slice(m[0].length);
@@ -4761,7 +5015,10 @@ function textoDistancia(m) {
   return (Math.round(m / 10) * 10) + ' m';
 }
 function vozDistancia(m) {
-  if (m >= 1000) return numero(m / 1000, 1).replace(',', ' coma ') + ' kilómetros';
+  if (m >= 1000) {   // v89: se redondea antes (4.999 m decía "5 coma 0 kilómetros")
+    var km = Math.round(m / 100) / 10;
+    return km === 1 ? 'un kilómetro' : (km % 1 === 0 ? String(km) : numero(km, 1).replace(',', ' coma ')) + ' kilómetros';
+  }
   return (m >= 100 ? Math.round(m / 50) * 50 : Math.round(m / 10) * 10) + ' metros';
 }
 // "Gire a la derecha a Avenida Juan B. Justo." -> "gire a la derecha a Avenida Juan B. Justo"
@@ -4808,6 +5065,7 @@ function empezarNavegacion(rutaElegida) {
                       dist: nav.acum[Math.min(c.orden, nav.acum.length - 1)] +
                             (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
   });
+  if (r.clima) agregarClimaANav(r);   // v89: viento, lluvia, niebla... (si el pronóstico ya llegó)
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
   nav.primeraCamara = !ruta.esRecalculo;
   if (!ruta.esRecalculo) nav.ultimaVuelta = null;
@@ -4922,6 +5180,7 @@ function ubicarEnRuta(pos) {
 
 function seguirNavegacion(pos) {
   if (!nav.activo) return;
+  controlarDescanso();   // v89: hace cuánto que manejás sin parar
   // mientras se recalcula, el mapa sigue al camión igual (si no, se iba de la pantalla justo cuando te perdiste)
   if (nav.recalculando) { nav.ultimaPos = pos; seguirConCamara(pos); return; }
   nav.ultimaPos = pos;
@@ -4961,6 +5220,7 @@ function seguirNavegacion(pos) {
     return;
   }
   nav.fuera = 0;
+  nav.posRecalculo = null;   // v89: si se pierde otra vez en el mismo lugar, recalcula sin esperar
   nav.idx = u.idx;
   nav.recorrido = u.recorrido;   // metros hechos sobre la ruta (para volver a ella si te salís)
   if (nav.ultimaVuelta && nav.recorrido > nav.ultimaVuelta.hastaM) nav.ultimaVuelta = null;
@@ -4991,7 +5251,7 @@ function seguirNavegacion(pos) {
   nav.limite = null;
   nav.avisos.forEach(function (a) {
     var hasta = a.dist - u.recorrido;
-    if (hasta < -20 || hasta > NAV.AVISO_PELIGRO_M) return;
+    if (hasta < -20 || hasta > (a.antes || NAV.AVISO_PELIGRO_M)) return;   // el clima se avisa antes (a.antes)
     if (a.maxima && (nav.limite == null || a.maxima < nav.limite)) nav.limite = a.maxima;
     if (!peligro) peligro = (a.icono || (a.rojo ? '⛔ ' : '⚠ ')) + 'En ' + textoDistancia(Math.max(0, hasta)) + ': ' + a.texto;
     if (!nav.dichos['a' + a.n]) {
@@ -5136,7 +5396,7 @@ function volverALaRuta(pos, rumboGps) {
     return calcularTramo(desde, destino, null, false);
   }).then(function (caminos) {
     var t = elegirOpciones(caminos)[0];
-    if (!t || t.rojos) throw new Error('el camino para volver pasa por algo rojo');
+    if (!t || rojosEsquivables(t.avisos)) throw new Error('el camino para volver pasa por algo rojo');
     var corrida = t.puntos.length - (j + 1);
     var kmVuelta = t.km;
     var c = {

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 93;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 94;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -98,7 +98,7 @@ var ESTILO_RESPALDO = { version: 8, sources: { osm: { type: 'raster', tiles: ['h
 var gl = new maplibregl.Map({
   container: 'mapa', style: ESTILO_VACIO,
   center: [inicioMapa[1], inicioMapa[0]], zoom: zoomInicio - 1, minZoom: 3, maxZoom: 18,
-  maxPitch: 60, pitchWithRotate: false, touchPitch: false, dragRotate: true,
+  maxPitch: 65, pitchWithRotate: false, touchPitch: false, dragRotate: true,
   attributionControl: false, fadeDuration: 0,
   // pantallas de 3x: se dibuja a 2x (casi igual de nítido y mucho menos trabajo para el teléfono)
   pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
@@ -1122,15 +1122,27 @@ function ponerCapasPropias() {
     gl.addSource(id, { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 });
   });
   var redondo = { 'line-cap': 'round', 'line-join': 'round' };
+  // v94: modo viaje (navegando): edificios en 3D (solo de cerca) debajo de todo lo nuestro
+  if (gl.getSource('openmaptiles')) {
+    gl.addLayer({ id: 'viaje-3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building', minzoom: 15,
+                  filter: ['!', ['has', 'hide_3d']], layout: { visibility: 'none' },
+                  paint: { 'fill-extrusion-color': fondo.oscuro ? '#2f3b50' : '#dfe5ee',
+                           'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.6, ['get', 'render_height']],
+                           'fill-extrusion-base': ['get', 'render_min_height'], 'fill-extrusion-opacity': 0.88 } }, debajo);
+  }
   [
     { id: 'red-pesada', type: 'line', source: 'red', layout: redondo,
       paint: { 'line-color': '#2e7d32', 'line-opacity': 0.5, 'line-width': ['step', ['zoom'], 2, 12, 4, 14, 7] } },
     { id: 'ruta-alt', type: 'line', source: 'ruta', filter: es('t', 'alt'),
       paint: { 'line-color': '#5b6470', 'line-opacity': 0.55, 'line-width': 5, 'line-dasharray': [1.6, 1.6] } },
+    { id: 'ruta-brillo', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+      paint: { 'line-color': '#2f8bff', 'line-opacity': 0.45, 'line-blur': 10, 'line-width': 30 } },
     { id: 'ruta-borde', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: redondo,
       paint: { 'line-color': '#ffffff', 'line-opacity': 0.9, 'line-width': 11 } },
     { id: 'ruta-linea', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: redondo,
       paint: { 'line-color': '#1565c0', 'line-opacity': 0.85, 'line-width': 7 } },
+    { id: 'ruta-centro', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+      paint: { 'line-color': '#9fd0ff', 'line-opacity': 0.9, 'line-width': 3 } },
     // zonas agrupadas (muchas calles rojas juntas): solo de lejos
     { id: 'r-agrupada', type: 'fill', source: 'restr', maxzoom: AGRUPAR.zoomCalles, filter: ['all', GEO_AREAS, ['has', 'zg']],
       paint: { 'fill-color': COLORES.no, 'fill-opacity': 0.14 } },
@@ -1197,8 +1209,20 @@ function ponerCapasPropias() {
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true } }
   ].forEach(function (c) { gl.addLayer(c); });
   ponerVisibilidad();
+  if (typeof nav !== 'undefined' && nav.activo) ponerModoViaje(true);   // cambió el mapa (de día a noche) navegando
 }
 gl.on('style.load', ponerCapasPropias);
+// v94: "modo viaje" al tocar Ir: edificios en 3D, ruta más gruesa y con brillo (se ve de lejos sobre el mapa inclinado)
+function ponerModoViaje(prender) {
+  if (!gl.getLayer('ruta-linea')) return;
+  ['viaje-3d', 'ruta-brillo', 'ruta-centro'].forEach(function (id) {
+    if (gl.getLayer(id)) gl.setLayoutProperty(id, 'visibility', prender ? 'visible' : 'none');
+  });
+  gl.setPaintProperty('ruta-linea', 'line-width', prender ? 12 : 7);
+  gl.setPaintProperty('ruta-borde', 'line-width', prender ? 18 : 11);
+  gl.setPaintProperty('ruta-linea', 'line-color', prender ? '#1a6dff' : '#1565c0');
+  gl.setPaintProperty('ruta-linea', 'line-opacity', prender ? 1 : 0.85);
+}
 
 // Capas que se prenden y apagan enteras desde "Qué mostrar"
 function ponerVisibilidad() {
@@ -2404,9 +2428,10 @@ mapa.on('locationfound', function (e) {
   if (!ubicacion.punto) {
     var el = document.createElement('div');
     el.className = 'punto-ubicacion';
-    ubicacion.punto = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
+    // v94: 'viewport' = el camión se ve derecho aunque el mapa esté inclinado (acostado en 3D quedaba aplastado)
+    ubicacion.punto = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'viewport' })
       .setLngLat([e.latlng.lng, e.latlng.lat]).addTo(gl);
-  } else ubicacion.punto.setLngLat([e.latlng.lng, e.latlng.lat]);
+  } else if (!(typeof nav !== 'undefined' && nav.activo)) ubicacion.punto.setLngLat([e.latlng.lng, e.latlng.lat]);
   // navegando no se dibuja el círculo de precisión (alrededor del camión molestaba)
   ponerDatos('precision', e.accuracy && !(typeof nav !== 'undefined' && nav.activo) ? [circuloGeo(e.latlng, e.accuracy)] : []);
   if (primera) {
@@ -5027,6 +5052,7 @@ var nav = {
 };
 var NAV = {
   FUERA_DE_RUTA_M: 60,      // más lejos que esto de la ruta = te saliste
+  PEGAR_M: 30,              // v94: hasta esto de la ruta, el camión se dibuja sobre la línea azul
   FUERA_VECES: 3,           // ...durante 3 posiciones seguidas
   RECALCULO_CADA_S: 30,
   PRIMER_AVISO_M: 600, ULTIMO_AVISO_M: 80, AVISO_PELIGRO_M: 400, LLEGADA_M: 35
@@ -5500,6 +5526,12 @@ function empezarNavegacion(rutaElegida) {
   resumenNav(nav.acum[nav.acum.length - 1]);
   medirHoja();
   document.body.classList.add('navegando');
+  ponerModoViaje(true);   // v94
+  if (!ruta.esRecalculo) {   // v94: la pantalla cambia con una animación (los carteles entran desde arriba y abajo)
+    document.body.classList.add('entrando-viaje');
+    clearTimeout(nav.timerEntrada);
+    nav.timerEntrada = setTimeout(function () { document.body.classList.remove('entrando-viaje'); }, 1200);
+  }
   ponerVozBoton();
   ponerRumboBoton();
   nav.ultimoRumbo = null;
@@ -5532,7 +5564,13 @@ function terminarNavegacion(mensaje) {
   volverACentrar(false);
   nav.activo = false;
   gl.easeTo({ bearing: 0, pitch: 0, duration: 600 });   // al terminar: mapa derecho y el norte arriba
-  if (ubicacion.punto) ubicacion.punto.setRotation(0);
+  pararCamion();
+  if (ubicacion.punto) {
+    ubicacion.punto.setRotation(0);
+    if (ubicacion.ultima) ubicacion.punto.setLngLat([ubicacion.ultima.lng, ubicacion.ultima.lat]);
+  }
+  ponerModoViaje(false);
+  document.body.classList.remove('entrando-viaje');
   ponerBrujula();
   nav.recalculando = false;
   nav.sesion = (nav.sesion || 0) + 1;
@@ -5565,7 +5603,41 @@ function resumenNav(faltaM) {
   document.getElementById('nav-falta-resto').textContent = textoDistancia(faltaM) + ' · llegás ' +
     ('0' + llega.getHours()).slice(-2) + ':' + ('0' + llega.getMinutes()).slice(-2);
 }
+// v94: flecha grande de lo que hay que hacer (como los GPS): sale del texto de la indicación
+var FLECHAS_NAV = {
+  recto: '<path d="M12 2.5l6.5 7h-4.6V21.5h-3.8V9.5H5.5z"/>',
+  der: '<path d="M6 21.5V12.8a4 4 0 0 1 4-4h5.2V4.5l6.3 6.2-6.3 6.2v-4.3H10.3a.6.6 0 0 0-.6.6v8.3z"/>',
+  izq: '<path d="M18 21.5V12.8a4 4 0 0 0-4-4H8.8V4.5L2.5 10.7l6.3 6.2v-4.3h4.9a.6.6 0 0 1 .6.6v8.3z"/>',
+  leveDer: '<path d="M8.2 21.5v-6.8a4 4 0 0 1 1.2-2.9l5.4-5.3-2.6-2.6h8.3v8.3l-2.7-2.7-5.3 5.3a.6.6 0 0 0-.2.5v6.2z"/>',
+  leveIzq: '<path d="M15.8 21.5v-6.8a4 4 0 0 0-1.2-2.9L9.2 6.5l2.6-2.6H3.5v8.3l2.7-2.7 5.3 5.3a.6.6 0 0 1 .2.5v6.2z"/>',
+  vuelta: '<path d="M6 21.5V9a5.5 5.5 0 0 1 11 0v5.2h3.2L15.3 20l-4.9-5.8h3.2V9a2.1 2.1 0 0 0-4.2 0v12.5z"/>',
+  rotonda: '<path d="M10.2 21.5v-6.1a5.6 5.6 0 1 1 7.2-6.9l2.6-1.2.4 7-6.4-2.7 2.3-1.1a2.6 2.6 0 1 0-2.4 3.5h.1v7.5z"/>',
+  llegada: '<path d="M5.5 22V2.5h2.3v1.2h12.7l-3.4 5 3.4 5H7.8V22z"/>',
+  alerta: '<path fill-rule="evenodd" d="M12 2 23 21H1zm-1.3 6.5v6.3h2.6V8.5zm0 8.2v2.5h2.6v-2.5z"/>',
+  gps: '<path fill-rule="evenodd" d="M11 1h2v3.1a8 8 0 0 1 6.9 6.9H23v2h-3.1a8 8 0 0 1-6.9 6.9V23h-2v-3.1A8 8 0 0 1 4.1 13H1v-2h3.1A8 8 0 0 1 11 4.1zm1 5a6 6 0 1 0 0 12 6 6 0 0 0 0-12zm0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7z"/>'
+};
+function flechaNav(distancia, texto) {
+  var t = String(texto || ''), d = String(distancia || '');
+  if (/^(Fuera de la ruta|Recalculando|Sin ruta nueva)/.test(d)) return 'alerta';
+  if (/^Buscando/.test(d)) return 'gps';
+  if (/destino|Llegás/i.test(t)) return 'llegada';
+  if (/rotonda/i.test(t)) return 'rotonda';
+  if (/\ben U\b|retorno|media vuelta|vuelta en U/i.test(t)) return 'vuelta';
+  var izq = /izquierda/i.test(t), der = /derecha/i.test(t);
+  if ((izq || der) && /leve|ligera|mantenete|manten[eé]|salida|bifurcaci|desv[ií]o|incorpor/i.test(t)) return izq ? 'leveIzq' : 'leveDer';
+  if (izq) return 'izq';
+  if (der) return 'der';
+  return 'recto';
+}
 function mostrarCartelNav(distancia, texto, peligro) {
+  var fl = document.getElementById('nav-flecha');
+  if (fl) {
+    var tipo = flechaNav(distancia, texto);
+    if (fl.getAttribute('data-tipo') !== tipo) {
+      fl.setAttribute('data-tipo', tipo);
+      fl.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + FLECHAS_NAV[tipo] + '</svg>';
+    }
+  }
   document.getElementById('nav-distancia').textContent = distancia;
   document.getElementById('nav-texto').textContent = texto;
   document.getElementById('nav-peligro').textContent = peligro || '';
@@ -5609,6 +5681,8 @@ function seguirNavegacion(pos) {
     if (u.fuera <= NAV.FUERA_DE_RUTA_M) nav.alInicio = null;   // ya salió a la ruta
     else if (L.latLng(pos).distanceTo(nav.alInicio.punto) < nav.alInicio.d0 + 80) {
       nav.fuera = 0;
+      // v94: el camión mira hacia donde empieza la ruta (antes quedaba apuntando al norte)
+      if (L.latLng(pos).distanceTo(nav.alInicio.punto) > 15) nav.ultimoRumbo = rumboEntre(L.latLng(pos), nav.alInicio.punto);
       mostrarCartelNav(textoDistancia(L.latLng(pos).distanceTo(nav.alInicio.punto)), 'Salí a la calle: la ruta azul empieza ahí.');
       seguirConCamara(pos);
       return;
@@ -5637,6 +5711,8 @@ function seguirNavegacion(pos) {
   nav.posRecalculo = null;   // v89: si se pierde otra vez en el mismo lugar, recalcula sin esperar
   nav.idx = u.idx;
   nav.recorrido = u.recorrido;   // metros hechos sobre la ruta (para volver a ella si te salís)
+  // v94: el camión se dibuja SOBRE la línea azul (el GPS del teléfono erra 5–20 m: quedaba al costado de la ruta)
+  var verPos = u.fuera <= NAV.PEGAR_M ? puntoEnRuta(u.recorrido) : pos;
   if (nav.ultimaVuelta && nav.recorrido > nav.ultimaVuelta.hastaM) nav.ultimaVuelta = null;
   if (true) {
     var rumbo = rumboEnRuta(u);
@@ -5676,6 +5752,7 @@ function seguirNavegacion(pos) {
   if (!prox) {
     mostrarCartelNav(textoDistancia(falta), 'Seguí hasta el destino', peligro);
     if (decir.length) hablar(decir.join(' '));
+    seguirConCamara(verPos);
     return;
   }
   var dist = prox.dist - u.recorrido;
@@ -5698,7 +5775,7 @@ function seguirNavegacion(pos) {
   }
   // los peligros van primero; no se corta lo que se estaba diciendo
   if (decir.length) hablar(decir.join(' '));
-  seguirConCamara(pos);
+  seguirConCamara(verPos);
 }
 
 // La cámara sigue al camión: en un solo movimiento suave se corre y (con "rumbo arriba") gira hacia donde vas.
@@ -5706,14 +5783,43 @@ function seguirNavegacion(pos) {
 // "Modo viaje" (pedido del chofer, 20/11/2026: "que se acerque y se ponga como navegador, como hace Maps"):
 // mapa inclinado (VIAJE.inclinacion), de cerca, girando hacia donde vas y con una flecha en vez del punto azul.
 // El zoom depende de la velocidad: en la ciudad más cerca, en la ruta un poco más lejos para ver lo que viene.
-var VIAJE = { inclinacion: 50 };
+var VIAJE = { inclinacion: 62 };   // v94: más inclinado (se ve en 3D, con los edificios parados)
 function zoomDeViaje() {
   var kmh = velocidad.kmh;
   if (kmh == null || kmh < 35) return 17;
   return kmh < 70 ? 16.4 : 15.8;
 }
+// v94: el camión se mueve suave, al mismo tiempo y con el mismo tiempo que la cámara (antes saltaba a la posición nueva y
+// la cámara llegaba después: se lo veía temblar y torcerse en la pantalla). Al tocar Ir se pone de una sobre la ruta.
+var camionAnim = { raf: 0, fin: 0 };
+function moverCamion(pos, rot, dur) {
+  var m = ubicacion.punto;
+  if (!m) return;
+  var ll = m.getLngLat(), r0 = m.getRotation();
+  var de = { lng: ll.lng, lat: ll.lat, rot: r0 };
+  var a = { lng: pos.lng, lat: pos.lat, rot: rot == null ? r0 : r0 + ((((rot - r0) % 360) + 540) % 360 - 180) };
+  if (L.latLng(ll.lat, ll.lng).distanceTo(pos) > 400) dur = 0;   // salto grande (GPS que vuelve): directo
+  pararCamion();
+  var t0 = Date.now();
+  function poner(t) {
+    m.setLngLat([de.lng + (a.lng - de.lng) * t, de.lat + (a.lat - de.lat) * t]);
+    m.setRotation(de.rot + (a.rot - de.rot) * t);
+  }
+  function paso() {
+    var t = dur ? Math.min(1, (Date.now() - t0) / dur) : 1;
+    poner(t);
+    if (t < 1) camionAnim.raf = requestAnimationFrame(paso);
+  }
+  paso();
+  if (dur) camionAnim.fin = setTimeout(function () { cancelAnimationFrame(camionAnim.raf); poner(1); }, dur + 150);
+}
+function pararCamion() {
+  cancelAnimationFrame(camionAnim.raf);
+  clearTimeout(camionAnim.fin);
+}
 function seguirConCamara(pos) {
-  if (ubicacion.punto && nav.ultimoRumbo != null) ubicacion.punto.setRotation(nav.ultimoRumbo);   // la flecha
+  // el camión (flecha) va al mismo ritmo que la cámara; con el mapa suelto (botón Centrar), igual se mueve
+  moverCamion(pos, nav.ultimoRumbo, nav.libre ? 400 : nav.primeraCamara ? 0 : 900);
   if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")
   var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; }, pitch: VIAJE.inclinacion,
             offset: [0, Math.round(gl.getContainer().clientHeight * 0.22)] };

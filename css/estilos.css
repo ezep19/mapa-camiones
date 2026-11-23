@@ -1105,3 +1105,93 @@ body.navegando .punto-ubicacion {
 .ruta-sin-senal p { margin: 6px 0 0; font-size: 13px; color: #4a5568; }
 .ruta-sin-senal p.bien { color: #0a8a43; }
 .ruta-sin-senal p.ojo { color: #b45309; }
+
+/* ===== v94: MODO VIAJE (al tocar Ir): mapa inclinado en 3D, colores propios y el camión pegado a la ruta ===== */
+/* cielo / bruma arriba (da profundidad al mapa inclinado) y sombra suave abajo, detrás de los carteles */
+body.navegando::before, body.navegando::after {
+  content: ''; position: fixed; left: 0; right: 0; z-index: 1; pointer-events: none;
+  animation: aparecerViaje 1s ease-out both;
+}
+body.navegando::before {
+  top: 0; height: 30vh;
+  background: linear-gradient(to bottom, rgba(106, 164, 240, 0.62) 0%, rgba(160, 198, 245, 0.35) 45%, rgba(190, 215, 245, 0) 100%);
+}
+body.navegando::after {
+  bottom: 0; height: 22vh;
+  background: linear-gradient(to top, rgba(15, 27, 45, 0.28), rgba(15, 27, 45, 0));
+}
+body.navegando.mapa-noche::before {
+  background: linear-gradient(to bottom, rgba(8, 14, 28, 0.85) 0%, rgba(20, 34, 64, 0.45) 50%, rgba(20, 34, 64, 0) 100%);
+}
+@keyframes aparecerViaje { from { opacity: 0; } to { opacity: 1; } }
+
+/* cartel de arriba: azul noche con la flecha grande en verde */
+body.navegando .nav-cartel {
+  background: linear-gradient(160deg, #18315a 0%, #0f1b2d 75%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 30px rgba(5, 12, 25, 0.45);
+  padding: 12px 14px 12px 12px;
+}
+.nav-flecha {
+  flex: none; width: 62px; height: 62px; border-radius: 18px; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(145deg, #2bd47d 0%, #0a8a43 100%);
+  box-shadow: 0 4px 14px rgba(10, 138, 67, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.nav-flecha:empty { display: none; }
+.nav-flecha svg { width: 42px; height: 42px; fill: #fff; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25)); }
+.nav-flecha[data-tipo="alerta"] { background: linear-gradient(145deg, #ffb340 0%, #f06a00 100%); box-shadow: 0 4px 14px rgba(240, 106, 0, 0.45); }
+.nav-flecha[data-tipo="gps"] { background: linear-gradient(145deg, #4d9bff 0%, #1668f2 100%); box-shadow: 0 4px 14px rgba(22, 104, 242, 0.45); }
+.nav-flecha[data-tipo="llegada"] { background: linear-gradient(145deg, #ff8a3d 0%, #e24f00 100%); box-shadow: 0 4px 14px rgba(226, 79, 0, 0.45); }
+.nav-fila { gap: 12px; }
+body.navegando .nav-distancia { color: #fff; font-size: 2.15rem; letter-spacing: -0.5px; }
+body.navegando .nav-texto { color: #d3e3ff; }
+@media (max-width: 359px) {
+  .nav-flecha { width: 52px; height: 52px; border-radius: 15px; }
+  .nav-flecha svg { width: 34px; height: 34px; }
+  body.navegando .nav-distancia { font-size: 1.7rem; }
+}
+
+/* barra de abajo: azul noche, el tiempo en verde */
+body.navegando .nav-abajo {
+  background: linear-gradient(180deg, #16294a 0%, #0f1b2d 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 -8px 28px rgba(5, 12, 25, 0.4);
+}
+body.navegando .nav-resumen b { color: #3ddc84; }
+body.navegando .nav-resumen span { color: #b7c5da; }
+body.navegando .nav-boton-abajo { background: rgba(255, 255, 255, 0.12); color: #fff; }
+
+/* velocímetro a tono */
+body.navegando .velocimetro { background: #0f1b2d; border-color: #3ddc84; box-shadow: 0 4px 16px rgba(5, 12, 25, 0.45); }
+body.navegando .velocimetro b { color: #fff; }
+body.navegando .velocimetro span { color: #9fb0c8; }
+body.navegando .velocimetro.rapido { border-color: var(--marca, #ff6b00); }
+body.navegando .velocimetro.rapido b { color: #ffb070; }
+body.navegando .velocimetro.pasado { border-color: #d50000; background: #d50000; }
+body.navegando .velocimetro.pasado b, body.navegando .velocimetro.pasado span { color: #fff; }
+
+/* al tocar Ir: los carteles entran desde arriba y desde abajo */
+body.entrando-viaje .nav-cartel { animation: entrarArriba 0.55s cubic-bezier(0.2, 0.9, 0.25, 1.15) both; }
+body.entrando-viaje .nav-abajo { animation: entrarAbajo 0.55s cubic-bezier(0.2, 0.9, 0.25, 1.15) 0.1s both; }
+@keyframes entrarArriba { from { transform: translateY(-120%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes entrarAbajo { from { transform: translateY(110%); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* el camión: un brillo que late debajo (se ve dónde estás de un vistazo) y el dibujo arriba */
+body.navegando .punto-ubicacion { overflow: visible; background: none; filter: none; }
+body.navegando .punto-ubicacion::before {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 76px; height: 76px; margin: -38px 0 0 -38px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(43, 140, 255, 0.45) 0%, rgba(43, 140, 255, 0.18) 45%, rgba(43, 140, 255, 0) 70%);
+  animation: latidoCamion 2.2s ease-in-out infinite;
+}
+body.navegando .punto-ubicacion::after {
+  content: ''; position: absolute; inset: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 84'%3E%3Crect x='8' y='26' width='24' height='56' rx='3.5' fill='%23ffffff'/%3E%3Crect x='9.3' y='27.3' width='21.4' height='53.4' rx='2.5' fill='%23eef2f7' stroke='%230f1b2d' stroke-width='1.3'/%3E%3Cpath d='M12 33 H28 M12 42 H28 M12 51 H28 M12 60 H28 M12 69 H28' stroke='%23c3ccd8' stroke-width='1'/%3E%3Crect x='6.2' y='63' width='3' height='7.5' rx='1.2' fill='%230f1b2d'/%3E%3Crect x='30.8' y='63' width='3' height='7.5' rx='1.2' fill='%230f1b2d'/%3E%3Crect x='6.2' y='72' width='3' height='7.5' rx='1.2' fill='%230f1b2d'/%3E%3Crect x='30.8' y='72' width='3' height='7.5' rx='1.2' fill='%230f1b2d'/%3E%3Crect x='16.5' y='21' width='7' height='7' rx='1' fill='%230f1b2d'/%3E%3Crect x='5.5' y='9' width='4' height='5' rx='1.2' fill='%230f1b2d'/%3E%3Crect x='30.5' y='9' width='4' height='5' rx='1.2' fill='%230f1b2d'/%3E%3Crect x='8.5' y='1.5' width='23' height='24' rx='6.5' fill='%23ffffff'/%3E%3Crect x='10' y='3' width='20' height='21' rx='5.5' fill='%23ff6b00'/%3E%3Crect x='12' y='5.5' width='16' height='6' rx='2.2' fill='%231d2b40'/%3E%3Crect x='12.5' y='14' width='15' height='7.5' rx='2' fill='%23e35a00'/%3E%3C/svg%3E") center / contain no-repeat;
+  filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.5));
+}
+@keyframes latidoCamion { 0%, 100% { transform: scale(0.85); opacity: 0.9; } 50% { transform: scale(1.12); opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) {
+  body.navegando .punto-ubicacion::before, body.entrando-viaje .nav-cartel, body.entrando-viaje .nav-abajo { animation: none; }
+}
+/* el camión un poco más grande (ahora se ve derecho, no acostado) y sin la marca verde de salida encima */
+body.navegando .punto-ubicacion { width: 28px; height: 58px; }
+body.navegando .ruta-marca.desde { display: none; }

@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","zona":"Recreo (Catamarca)","actualizado":"2026-11-22","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-65.055756,-29.27238]},"properties":{"capa":"lugar","tipo":"combustible","nombre":"Axion","marca":null,"direccion":null,"horario":"24/7","telefono":null,"camiones":null,"extras":["gasoil"],"osm":"node/1838326135"}}]}

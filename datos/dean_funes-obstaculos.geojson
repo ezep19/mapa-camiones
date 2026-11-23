@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","zona":"Deán Funes","actualizado":"2026-11-22","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-64.353912,-30.423482]},"properties":{"capa":"barrera","titulo":"Bloques de cemento","limite":null,"limite_texto":null,"calle":"Pasaje San Lorenzo","detalle":null,"fuente":"OpenStreetMap","osm":"node/13644435586","bloquea":true}}]}

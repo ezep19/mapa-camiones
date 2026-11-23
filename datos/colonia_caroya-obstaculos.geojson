@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","zona":"Colonia Caroya","actualizado":"2026-11-22","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-64.113826,-31.041588]},"properties":{"capa":"barrera","titulo":"Portón","limite":null,"limite_texto":null,"calle":null,"detalle":null,"fuente":"OpenStreetMap","osm":"node/6871609548","bloquea":false}}]}

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 91;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 93;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -129,6 +129,16 @@ function estiloLiviano(est) {
     if (auto && /#fc8|#ffdaa6|hsl\(26/.test(c)) l.paint['line-color'] = '#d9e2ec';
     else if (borde && /#e9ac77/.test(c)) l.paint['line-color'] = auto ? '#a7b4c2' : '#cdc9c3';
     else if (/#fea|#fff4c6/.test(c)) l.paint['line-color'] = '#ffffff';
+    // v93: rutas nacionales y provinciales más marcadas (en el campo, la RN 9 casi no se veía: blanca y finita sobre el
+    // fondo claro). Borde gris azulado y más ancho desde lejos
+    if (/trunk_primary/.test(l.id)) {
+      if (borde) {
+        l.paint['line-color'] = '#77859a';
+        l.paint['line-width'] = ['interpolate', ['exponential', 1.2], ['zoom'], 4, 1, 6, 2, 8, 3.2, 10, 4.5, 13, 7, 16, 13, 20, 24];
+      } else {
+        l.paint['line-width'] = ['interpolate', ['exponential', 1.2], ['zoom'], 4, 0.3, 6, 0.9, 8, 1.8, 10, 2.8, 13, 4.8, 16, 9.5, 20, 19];
+      }
+    }
   });
   return est;
 }
@@ -4081,6 +4091,109 @@ function climaEnRuta(r) {
   }).catch(function (e) { console.warn('Sin clima:', e.message); return null; });
   return r.climaPedido;
 }
+// --- v93: guardar el mapa del viaje para cuando no haya señal (el chofer, camino a Ojo de Agua por la RN 9: "no se ve
+// nada en el mapa"). Sin señal, el mapa de fondo solo muestra lo que ya se miró antes. Al armar la ruta se bajan los
+// pedazos del mapa (OpenFreeMap) a lo largo del camino: de cerca (nivel 14, lo que se ve navegando) en una franja de
+// ~350 m a cada lado, y de más lejos (12, 10, 8, 6) más ancho. Se guardan aparte (sw.js: 'mapa-camiones-viaje') para
+// que no los borre el tope del mapa común. Los datos de restricciones y lugares del camino ya se guardan al calcular.
+var MAPA_VIAJE = { cache: 'mapa-camiones-viaje', tope: 9000, maxCerca: 3000, aLaVez: 4, kmMinimo: 15 };
+var mapaViaje = { sesion: 0, listo: {} };
+// la dirección de los pedazos (cambia cada semana: .../planet/20261115_080022_pt/{z}/{x}/{y}.pbf). Si el mapa todavía
+// no la pidió, se lee del índice del estilo
+function plantillaTiles() {
+  function sirve(t) { return t && /\{z\}/.test(t) && /\.pbf/.test(t) ? t : null; }
+  try {
+    var f = gl.getSource('openmaptiles'), t = sirve(f && f.tiles && f.tiles[0]);
+    if (t) return Promise.resolve(t);
+    var st = gl.getStyle && gl.getStyle(), u = (st && st.sources.openmaptiles && st.sources.openmaptiles.url) ||
+             'https://tiles.openfreemap.org/planet';
+    return fetch(u).then(function (r) { return r.json(); }).then(function (j) { return sirve(j.tiles && j.tiles[0]); })
+      .catch(function () { return null; });
+  } catch (e) { return Promise.resolve(null); }
+}
+function tilesDelViaje(puntos) {
+  var NIVELES = [{ z: 6, m: 60000 }, { z: 8, m: 20000 }, { z: 10, m: 6000 }, { z: 12, m: 1500 }, { z: 14, m: 350 }];
+  function tx(lng, z) { return Math.floor((lng + 180) / 360 * Math.pow(2, z)); }
+  function ty(lat, z) {
+    var r = lat * Math.PI / 180;
+    return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z));
+  }
+  // muestras cada 250 m sobre el recorrido
+  var muestras = [L.latLng(puntos[0])], resto = 0;
+  for (var i = 1; i < puntos.length; i++) {
+    var a = L.latLng(puntos[i - 1]), b = L.latLng(puntos[i]), d = a.distanceTo(b), m = 250 - resto;
+    while (m <= d) { var f = m / d; muestras.push(L.latLng(a.lat + (b.lat - a.lat) * f, a.lng + (b.lng - a.lng) * f)); m += 250; }
+    resto = d - (m - 250);
+  }
+  muestras.push(L.latLng(puntos[puntos.length - 1]));
+  var lista = [], visto = {}, cerca = 0, lleno = false;
+  NIVELES.forEach(function (n) {
+    muestras.forEach(function (p) {
+      if (lleno) return;
+      var dLat = n.m / 110540, dLng = n.m / (111320 * Math.cos(p.lat * Math.PI / 180));
+      for (var x = tx(p.lng - dLng, n.z); x <= tx(p.lng + dLng, n.z); x++) {
+        for (var y = ty(p.lat + dLat, n.z); y <= ty(p.lat - dLat, n.z); y++) {
+          var k = n.z + '/' + x + '/' + y;
+          if (visto[k]) continue;
+          if (n.z === 14 && ++cerca > MAPA_VIAJE.maxCerca) { lleno = true; return; }
+          visto[k] = 1;
+          lista.push(k);
+        }
+      }
+    });
+  });
+  return lista;
+}
+function mostrarMapaViaje(texto, clase) {
+  var caja = document.getElementById('ruta-sin-senal');
+  if (caja) caja.innerHTML = texto ? '<p class="' + (clase || '') + '">' + texto + '</p>' : '';
+}
+function guardarMapaDelViaje(r) {
+  if (!r || !r.puntos || r.puntos.length < 2 || (r.km || 0) < MAPA_VIAJE.kmMinimo) return;
+  if (!('caches' in window) || !navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+  plantillaTiles().then(function (plantilla) { if (plantilla && ruta.linea === r) guardarMapaConPlantilla(r, plantilla); });
+}
+function guardarMapaConPlantilla(r, plantilla) {
+  var clave = plantilla + '|' + r.puntos.length + '|' + r.puntos[0] + '|' + r.puntos[r.puntos.length - 1];
+  var LISTO = '📥 Mapa del viaje guardado: lo vas a ver aunque no tengas señal.';
+  if (mapaViaje.listo[clave]) { mostrarMapaViaje(LISTO, 'bien'); return; }
+  var sesion = ++mapaViaje.sesion;
+  var urls = tilesDelViaje(r.puntos).map(function (k) {
+    var p = k.split('/');
+    return plantilla.replace('{z}', p[0]).replace('{x}', p[1]).replace('{y}', p[2]);
+  });
+  var i = 0, bien = 0, mal = 0, total = urls.length;
+  function avance() {
+    if (sesion !== mapaViaje.sesion || ruta.linea !== r) return;
+    mostrarMapaViaje('📥 Guardando el mapa del viaje para cuando no haya señal... ' + Math.floor((bien + mal) / total * 100) + '%');
+  }
+  function siguiente() {
+    if (sesion !== mapaViaje.sesion || i >= urls.length) return Promise.resolve();
+    var u = urls[i++];
+    return fetch(u + '?guardar-viaje=1').then(function (resp) { if (resp.ok) bien++; else mal++; })
+      .catch(function () { mal++; })
+      .then(function () { if ((bien + mal) % 25 === 0) avance(); return siguiente(); });
+  }
+  avance();
+  var trabajos = [];
+  for (var n = 0; n < MAPA_VIAJE.aLaVez; n++) trabajos.push(siguiente());
+  Promise.all(trabajos).then(function () {
+    if (sesion !== mapaViaje.sesion) return;
+    var completo = mal <= total * 0.03;
+    if (completo) mapaViaje.listo[clave] = true;
+    if (ruta.linea === r) {
+      if (completo) mostrarMapaViaje(LISTO, 'bien');
+      else mostrarMapaViaje('📥 Guardé ' + Math.floor(bien / total * 100) + '% del mapa del viaje (¿poca señal?). Si podés, ' +
+                            'armá la ruta de nuevo con Wi-Fi o buena señal antes de salir.', 'ojo');
+    }
+    // tope: se borran los más viejos (de viajes anteriores)
+    caches.open(MAPA_VIAJE.cache).then(function (c) {
+      return c.keys().then(function (ks) {
+        for (var j = 0; j < ks.length - MAPA_VIAJE.tope; j++) c.delete(ks[j]);
+      });
+    }).catch(function () {});
+  });
+}
 // Pone el clima en la tarjeta de la ruta cuando llega (y lo suma a los avisos de la navegación)
 function ponerClima(r) {
   climaEnRuta(r).then(function (lista) {
@@ -4188,14 +4301,25 @@ function horaRedonda(ms) {
   return m ? h + ':' + ('0' + m).slice(-2) : String(h);
 }
 // "lunes 23 de 14 a 24 h" (si termina a la medianoche se dice 24; si sigue al otro día, "hasta el martes 24 a las 6 h")
+var MESES_FERIADO = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre',
+                     'noviembre', 'diciembre'];
+// "jueves 24" si es en los próximos 6 días; si no, "jueves 24 de diciembre"
+function diaFeriado(d) {
+  var txt = DIAS_SEMANA[d.getDay()] + ' ' + d.getDate();
+  return d.getTime() - Date.now() > 6 * 86400000 ? txt + ' de ' + MESES_FERIADO[d.getMonth()] : txt;
+}
 function textoPeriodo(p) {
   var a = new Date(p.desde), b = new Date(p.hasta - 1);
-  var dia = (a.toDateString() === new Date().toDateString() ? 'hoy ' : 'el ') + DIAS_SEMANA[a.getDay()] + ' ' + a.getDate();
+  var dia = (a.toDateString() === new Date().toDateString() ? 'hoy ' : 'el ') + diaFeriado(a);
   if (a.toDateString() === b.toDateString()) return dia + ' de ' + horaRedonda(p.desde) + ' a ' + horaRedonda(p.hasta) + ' h';
-  return 'desde ' + dia.replace(/^el /, 'el ') + ' a las ' + horaRedonda(p.desde) + ' h hasta el ' + DIAS_SEMANA[new Date(p.hasta).getDay()] + ' ' +
-         new Date(p.hasta).getDate() + ' a las ' + horaRedonda(p.hasta) + ' h';
+  return 'desde ' + dia + ' a las ' + horaRedonda(p.desde) + ' h hasta el ' + diaFeriado(new Date(p.hasta)) +
+         ' a las ' + horaRedonda(p.hasta) + ' h';
 }
-function textoSentido(s) { return s === 'caba' ? 'hacia CABA' : s === 'costa' ? 'hacia la Costa' : 'en los dos sentidos'; }
+// t (opcional): tramo con su forma de decir el sentido (Ruta 88: "hacia Necochea" / "hacia Mar del Plata")
+function textoSentido(s, t) {
+  if (t && t.hacia && t.hacia[s]) return t.hacia[s];
+  return s === 'caba' ? 'hacia CABA' : s === 'costa' ? 'hacia la Costa' : 'en los dos sentidos';
+}
 // El período que importa ahora: el que rige, o el próximo que empieza en menos de 24 h
 function periodoCercano(x, ms) {
   var ahora = ms || Date.now();
@@ -4218,6 +4342,10 @@ function dibujarFeriados() {
 // cada 5 minutos: lo que empezó o terminó cambia de color (o desaparece)
 setInterval(function () { if (feriados.lista.length) dibujarFeriados(); }, 5 * 60 * 1000);
 
+// "Autopista..., Ramal..., Autovía 2" (sin repetir: el ramal son varios pedazos)
+function nombresTramos(x) {
+  return x.tramos.map(function (q) { return q.nombre; }).filter(function (n, i, l) { return l.indexOf(n) === i; }).join(', ');
+}
 function armarCartelFeriado(x, t) {
   var ahora = Date.now(), p = periodoCercano(x), rige = p && p.desde <= ahora;
   var html = '<div class="cartel-tipo">🚫 Restricción por feriado</div>';
@@ -4231,7 +4359,7 @@ function armarCartelFeriado(x, t) {
   } else if (p) {
     var empieza = new Date(p.desde), hoy = empieza.toDateString() === new Date().toDateString();
     titulo = (rige ? 'AHORA NO PODÉS CIRCULAR ' : 'DESDE ' + (hoy ? '' : 'EL ' + DIAS_SEMANA[empieza.getDay()] + ' ' + empieza.getDate() + ' ') +
-              'LAS ' + horaRedonda(p.desde) + ' H NO PODÉS CIRCULAR ').toUpperCase() + textoSentido(p.sentido).toUpperCase();
+              'LAS ' + horaRedonda(p.desde) + ' H NO PODÉS CIRCULAR ').toUpperCase() + textoSentido(p.sentido, t).toUpperCase();
     nota = 'Camiones de más de ' + toneladas(x.peso_desde) + ': prohibido ' + textoPeriodo(p) +
            (p.sentido !== 'ambos' ? '. En el otro sentido podés pasar.' : '.');
     html += '<div class="veredicto ' + (rige ? 'no' : 'sin_dato') + '">' + esc(titulo) + '<small>' + esc(nota) + '</small></div>';
@@ -4239,13 +4367,13 @@ function armarCartelFeriado(x, t) {
   var otros = x.periodos.filter(function (q) { return q.hasta > ahora; });
   if (otros.length) {
     html += '<div class="cartel-linea"><b>Días y horas:</b></div><ul class="cartel-lista">' + otros.map(function (q) {
-      return '<li>' + esc(textoPeriodo(q) + ', ' + textoSentido(q.sentido)) + '</li>';
+      return '<li>' + esc(textoPeriodo(q) + ', ' + textoSentido(q.sentido, t)) + '</li>';
     }).join('') + '</ul>';
   }
-  html += '<div class="cartel-linea">' + esc(x.titulo) + '. Rige en: ' + esc(x.tramos.map(function (q) { return q.nombre; }).join(', ')) + '.</div>';
+  html += '<div class="cartel-linea">' + esc(x.titulo) + '. Rige en: ' + esc(nombresTramos(x)) + '.</div>';
   if (x.excepciones) html += '<div class="cartel-detalle">' + esc(x.excepciones) + '</div>';
   html += '<div class="cartel-fuente">Fuente: ' + esc(x.organismo || 'Vialidad') +
-          (x.fuente_url ? ' · <a href="' + esc(x.fuente_url) + '" target="_blank" rel="noopener">ver la noticia</a>' : '') +
+          (x.fuente_url ? ' · <a href="' + esc(x.fuente_url) + '" target="_blank" rel="noopener">' + esc(x.fuente_texto || 'ver la noticia') + '</a>' : '') +
           '. Puede cambiar a último momento: escuchá la radio o preguntá en los peajes.</div>';
   return html;
 }
@@ -4265,7 +4393,7 @@ function avisarFeriadoAlAbrir() {
     guardar('mapa-camiones:feriado-visto', clave);
     mostrarMensaje('🚫 ' + (p.desde <= ahora ? 'Ahora rige' : 'Atención') + ': camiones de más de ' + toneladas(x.peso_desde) +
                    ' no pueden circular ' + textoSentido(p.sentido) + ' ' + textoPeriodo(p) + ' por ' +
-                   x.tramos.map(function (t) { return t.nombre; }).join(', ') + '. Tocá la ruta marcada en el mapa para ver más.');
+                   nombresTramos(x) + '. Tocá la ruta marcada en el mapa para ver más.');
   });
 }
 
@@ -4357,17 +4485,29 @@ function agregarFeriados(r) {
     var choca = mios.filter(function (p) { return a0 < p.hasta && a1 > p.desde; })[0];
     var ll = L.latLng(r.puntos[s.i0]);
     var nombres = s.nombres.length > 1 ? s.nombres.slice(0, -1).join(', ') + ' y ' + s.nombres[s.nombres.length - 1] : s.nombres[0];
-    var base = 'Restricción por feriado ' + textoSentido(s.sentido) + ' (' + nombres + '), camiones de más de ' + toneladas(s.x.peso_desde);
+    var sentido = textoSentido(s.sentido, s.nombres.length === 1 ? s.t : null);
+    var base = 'Restricción por feriado ' + sentido + ' (' + nombres + '), camiones de más de ' + toneladas(s.x.peso_desde);
     if (choca) {
       // a qué hora salir para pasar antes de que empiece, o después de que termine
+      // (con varios horarios seguidos, el corrimiento no puede caer en otro: 4/12 de 18 a 24 y 5/12 de 6 a 14)
       var ahora = Date.now();
-      var salirAntes = choca.desde - (a1 - ahora), salirDespues = choca.hasta - (a0 - ahora);
-      var consejo = salirAntes > ahora + 10 * 60000 ? 'Si salís antes de las ' + horaViaje(new Date(salirAntes)) + ' pasás antes. ' : '';
-      consejo += 'Si salís después de las ' + horaViaje(new Date(salirDespues)) + ', pasás cuando ya terminó.';
+      var chocaCon = function (d) { return mios.filter(function (p) { return a0 + d < p.hasta && a1 + d > p.desde; })[0]; };
+      var corrA = choca.desde - a1, q;
+      for (var v = 0; v < 6 && (q = chocaCon(corrA)); v++) corrA = q.desde - a1;
+      var corrD = choca.hasta - a0;
+      for (v = 0; v < 6 && (q = chocaCon(corrD)); v++) corrD = q.hasta - a0;
+      var salirAntes = ahora + corrA, salirDespues = ahora + corrD;
+      var cuandoSalir = function (ms) {
+        var d = new Date(ms);
+        var hhmm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+        return (d.toDateString() === new Date().toDateString() ? '' : 'el ' + diaFeriado(d) + ' ') + 'a las ' + hhmm;
+      };
+      var consejo = salirAntes > ahora + 10 * 60000 ? 'Si salís antes, ' + cuandoSalir(salirAntes) + ', pasás antes. ' : '';
+      consejo += 'Si salís después, ' + cuandoSalir(salirDespues) + ', pasás cuando ya terminó.';
       r.avisos.push({ feriado: true, rojo: true, color: COLORES.no, latlng: ll, orden: s.i0, capa: null, x: s.x, t: s.t,
                       texto: '⛔ ' + base + ': prohibido ' + textoPeriodo(choca) + '. Pasarías por ahí ' + cuando +
                              '. ' + consejo,
-                      corto: 'Restricción por feriado ' + textoSentido(s.sentido) + ' (más de ' + toneladas(s.x.peso_desde) +
+                      corto: 'Restricción por feriado ' + sentido + ' (más de ' + toneladas(s.x.peso_desde) +
                              '): hasta las ' + horaRedonda(choca.hasta) + ' h',
                       voz: 'restricción por feriado para camiones. Tu camión no pasa' });
     } else {
@@ -4377,7 +4517,7 @@ function agregarFeriados(r) {
       r.avisos.push({ feriado: true, rojo: false, color: COLORES.sin_dato, latlng: ll, orden: s.i0, capa: null, x: s.x, t: s.t,
                       texto: base + ': prohibido ' + textoPeriodo(cerca) + '. Pasás ' + cuando +
                              (t1 < cerca.desde ? ', antes de que empiece: no te demores.' : ', cuando ya terminó.'),
-                      corto: 'Restricción por feriado ' + textoSentido(s.sentido) + ' desde las ' + horaRedonda(cerca.desde) + ' h',
+                      corto: 'Restricción por feriado ' + sentido + ' desde las ' + horaRedonda(cerca.desde) + ' h',
                       voz: 'restricción por feriado para camiones. Verificá' });
     }
   });
@@ -4422,6 +4562,7 @@ function mostrarRuta(indice, sinMoverMapa) {
     html += '<div class="ruta-estado bien">✓ Sin problemas para tu camión</div>';
   }
   html += '<div id="ruta-clima" class="ruta-clima"></div>';   // v89: se llena cuando llega el pronóstico
+  html += '<div id="ruta-sin-senal" class="ruta-sin-senal"></div>';   // v93: mapa del viaje guardado para usar sin señal
   if (opciones.length > 1) {
     html += '<div class="ruta-opciones">';
     opciones.forEach(function (o, i) {
@@ -4482,6 +4623,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   var salida = document.getElementById('ruta-resultado');
   salida.innerHTML = html;
   ponerClima(r);   // v89: el pronóstico llega después (si ya estaba, aparece enseguida)
+  guardarMapaDelViaje(r);   // v93
   document.getElementById('empezar-manejo').addEventListener('click', function () { empezarNavegacion(); });
   salida.querySelectorAll('[data-opcion]').forEach(function (b) {
     b.addEventListener('click', function () { mostrarRuta(+b.getAttribute('data-opcion'), true); });

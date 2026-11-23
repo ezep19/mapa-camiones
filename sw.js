@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v9';
+var VERSION = 'v10';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;
@@ -16,6 +16,9 @@ var MAX_TILES = 1500;
 var CACHE_VECTOR = 'mapa-camiones-vector';
 var MAX_VECTOR = 800;
 var CACHE_ESTILO = 'mapa-camiones-estilo';   // letras e íconos del mapa de fondo (pocos y chicos)
+// v93: pedazos del mapa a lo largo de la ruta, bajados al armarla para usar sin señal (los pide la página con
+// "?guardar-viaje=1"; el tope lo maneja la página). Aparte, para que no los borre el tope del mapa común.
+var CACHE_VIAJE = 'mapa-camiones-viaje';
 
 var BASICO = [
   './',
@@ -109,6 +112,23 @@ function primeroGuardado(pedido, cache) {
   });
 }
 
+// Guarda un pedazo del mapa para el viaje (sin el "?guardar-viaje=1", que es solo la marca): si ya estaba guardado
+// para el viaje no hace nada; si estaba en el mapa común lo copia; si no, lo baja. Contesta vacío (la página no lo usa).
+function guardarParaViaje(pedido) {
+  var url = pedido.url.replace(/[?&]guardar-viaje=1$/, '');
+  return caches.open(CACHE_VIAJE).then(function (c) {
+    return c.match(url).then(function (ya) {
+      if (ya) return new Response('', { status: 200 });
+      return caches.match(url).then(function (comun) {
+        return comun || fetch(url, { mode: 'cors' });
+      }).then(function (resp) {
+        if (!resp || !resp.ok) return new Response('', { status: 502 });
+        return c.put(url, resp.clone()).then(function () { return new Response('', { status: 200 }); });
+      });
+    });
+  }).catch(function () { return new Response('', { status: 503 }); });
+}
+
 function recortarTiles(c, max) {
   c.keys().then(function (claves) {
     var sobran = claves.length - max;
@@ -123,7 +143,9 @@ self.addEventListener('fetch', function (ev) {
   if (url.hostname === 'tile.openstreetmap.org') { ev.respondWith(primeroGuardado(pedido, CACHE_TILES)); return; }
   if (url.hostname === 'tiles.openfreemap.org') {
     // el estilo y el índice cambian (cada semana hay mapa nuevo): primero internet. Pedazos, letras e íconos: guardado
-    if (/\.pbf$/.test(url.pathname) && /\/planet\//.test(url.pathname)) ev.respondWith(primeroGuardado(pedido, CACHE_VECTOR));
+    if (/\.pbf$/.test(url.pathname) && /\/planet\//.test(url.pathname)) {
+      ev.respondWith(url.searchParams.has('guardar-viaje') ? guardarParaViaje(pedido) : primeroGuardado(pedido, CACHE_VECTOR));
+    }
     else if (/\/(fonts|sprites|natural_earth)\//.test(url.pathname)) ev.respondWith(primeroGuardado(pedido, CACHE_ESTILO));
     else ev.respondWith(primeroInternetAfuera(pedido));
     return;

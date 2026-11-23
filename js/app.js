@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 94;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 95;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -98,7 +98,7 @@ var ESTILO_RESPALDO = { version: 8, sources: { osm: { type: 'raster', tiles: ['h
 var gl = new maplibregl.Map({
   container: 'mapa', style: ESTILO_VACIO,
   center: [inicioMapa[1], inicioMapa[0]], zoom: zoomInicio - 1, minZoom: 3, maxZoom: 18,
-  maxPitch: 65, pitchWithRotate: false, touchPitch: false, dragRotate: true,
+  maxPitch: 72, pitchWithRotate: false, touchPitch: false, dragRotate: true,
   attributionControl: false, fadeDuration: 0,
   // pantallas de 3x: se dibuja a 2x (casi igual de nítido y mucho menos trabajo para el teléfono)
   pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
@@ -289,9 +289,20 @@ function dibujarSinSalida() {
   x.fillStyle = '#e53935'; x.fillRect(7 * k, 6.5 * k, t - 14 * k, 4 * k);        // el fin
   return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
 }
+// v95: punta de la flecha del próximo giro (blanca con borde azul, apunta al norte: se gira con icon-rotate)
+function dibujarPunta() {
+  var k = 2, t = 30 * k, c = document.createElement('canvas');
+  c.width = c.height = t;
+  var x = c.getContext('2d');
+  x.beginPath(); x.moveTo(t / 2, 3 * k); x.lineTo(t - 4 * k, t - 6 * k); x.lineTo(4 * k, t - 6 * k); x.closePath();
+  x.lineJoin = 'round'; x.lineWidth = 5 * k; x.strokeStyle = '#0b3d91'; x.stroke();
+  x.fillStyle = '#ffffff'; x.fill();
+  return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
+}
 gl.on('styleimagemissing', function (ev) {
   if (gl.hasImage(ev.id)) return;
   if (ev.id === 'ic-sin-salida') { gl.addImage(ev.id, dibujarSinSalida(), { pixelRatio: 2 }); return; }
+  if (ev.id === 'ic-punta') { gl.addImage(ev.id, dibujarPunta(), { pixelRatio: 2 }); return; }
   var d = datosIcono(ev.id);
   if (d && d.length === 1) gl.addImage(ev.id, dibujarLimite(d[0].slice(1)), { pixelRatio: 2 });
   else if (d) gl.addImage(ev.id, dibujarIcono(d[0], d[1], d[2]), { pixelRatio: 2 });
@@ -1118,7 +1129,7 @@ function ponerCapasPropias() {
   if (gl.getSource('restr')) return;
   var nombres = gl.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0];
   var debajo = nombres ? nombres.id : undefined;
-  ['red', 'ruta', 'restr', 'feriados', 'precision', 'lugares', 'controles', 'reportes'].forEach(function (id) {
+  ['red', 'ruta', 'maniobra', 'restr', 'feriados', 'precision', 'lugares', 'controles', 'reportes'].forEach(function (id) {
     gl.addSource(id, { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 });
   });
   var redondo = { 'line-cap': 'round', 'line-join': 'round' };
@@ -1143,6 +1154,11 @@ function ponerCapasPropias() {
       paint: { 'line-color': '#1565c0', 'line-opacity': 0.85, 'line-width': 7 } },
     { id: 'ruta-centro', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
       paint: { 'line-color': '#9fd0ff', 'line-opacity': 0.9, 'line-width': 3 } },
+    // v95: el próximo giro dibujado sobre la ruta (flecha blanca, como Google Maps)
+    { id: 'maniobra-borde', type: 'line', source: 'maniobra', filter: es('t', 'l'), layout: redondo,
+      paint: { 'line-color': '#0b3d91', 'line-width': 13 } },
+    { id: 'maniobra-linea', type: 'line', source: 'maniobra', filter: es('t', 'l'), layout: redondo,
+      paint: { 'line-color': '#ffffff', 'line-width': 8 } },
     // zonas agrupadas (muchas calles rojas juntas): solo de lejos
     { id: 'r-agrupada', type: 'fill', source: 'restr', maxzoom: AGRUPAR.zoomCalles, filter: ['all', GEO_AREAS, ['has', 'zg']],
       paint: { 'fill-color': COLORES.no, 'fill-opacity': 0.14 } },
@@ -1187,6 +1203,9 @@ function ponerCapasPropias() {
       paint: { 'circle-color': COLOR_ESTADO, 'circle-radius': radioZoom(), 'circle-stroke-color': '#ffffff',
                'circle-stroke-width': ['step', ['zoom'], 0.5, 12, 1, 14, 2],
                'circle-opacity': ['case', es('e', 'si'), 0.6, 0.95] } },
+    { id: 'maniobra-punta', type: 'symbol', source: 'maniobra', filter: es('t', 'p'),
+      layout: { 'icon-image': 'ic-punta', 'icon-rotate': ['get', 'rot'], 'icon-rotation-alignment': 'map',
+                'icon-pitch-alignment': 'map', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-size': 1.1 } },
     { id: 'precision-area', type: 'fill', source: 'precision', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.12 } },
     { id: 'precision-borde', type: 'line', source: 'precision', paint: { 'line-color': '#1a73e8', 'line-opacity': 0.4, 'line-width': 1 } },
     // de lejos: solo los que entran sin taparse y con lugar alrededor (MapLibre esconde los que se pisan; en una ciudad
@@ -1209,7 +1228,19 @@ function ponerCapasPropias() {
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true } }
   ].forEach(function (c) { gl.addLayer(c); });
   ponerVisibilidad();
+  ponerCielo();
   if (typeof nav !== 'undefined' && nav.activo) ponerModoViaje(true);   // cambió el mapa (de día a noche) navegando
+}
+// v95: cielo y bruma en el horizonte (MapLibre los dibuja solo con el mapa muy inclinado, o sea navegando)
+function ponerCielo() {
+  if (!gl.setSky) return;
+  try {
+    gl.setSky(fondo.oscuro
+      ? { 'sky-color': '#0a1324', 'horizon-color': '#29406b', 'fog-color': '#1b2638', 'sky-horizon-blend': 0.6,
+          'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.75, 'atmosphere-blend': 0 }
+      : { 'sky-color': '#3d8fe8', 'horizon-color': '#d6e9ff', 'fog-color': '#eef4fb', 'sky-horizon-blend': 0.55,
+          'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.75, 'atmosphere-blend': 0 });
+  } catch (e) { /* MapLibre viejo: sin cielo */ }
 }
 gl.on('style.load', ponerCapasPropias);
 // v94: "modo viaje" al tocar Ir: edificios en 3D, ruta más gruesa y con brillo (se ve de lejos sobre el mapa inclinado)
@@ -5518,6 +5549,8 @@ function empezarNavegacion(rutaElegida) {
   var inicioRuta = L.latLng(r.puntos[0]), d0 = desdeAca ? desdeAca.distanceTo(inicioRuta) : 0;
   nav.alInicio = d0 > NAV.FUERA_DE_RUTA_M && d0 < 500 ? { punto: inicioRuta, d0: d0 } : null;
   nav.sesion = (nav.sesion || 0) + 1;   // un recálculo viejo no pisa una navegación nueva
+  nav.volandoHasta = 0;
+  limpiarTablero();   // v95: ruta nueva (o recalculada): la flecha del giro se vuelve a armar
   volverACentrar(false);
   abrirPanelRuta(false);
   abrirPanel(false);
@@ -5528,6 +5561,7 @@ function empezarNavegacion(rutaElegida) {
   document.body.classList.add('navegando');
   ponerModoViaje(true);   // v94
   if (!ruta.esRecalculo) {   // v94: la pantalla cambia con una animación (los carteles entran desde arriba y abajo)
+    mostrarIntroViaje();   // v95
     document.body.classList.add('entrando-viaje');
     clearTimeout(nav.timerEntrada);
     nav.timerEntrada = setTimeout(function () { document.body.classList.remove('entrando-viaje'); }, 1200);
@@ -5571,6 +5605,7 @@ function terminarNavegacion(mensaje) {
   }
   ponerModoViaje(false);
   document.body.classList.remove('entrando-viaje');
+  limpiarTablero();   // v95
   ponerBrujula();
   nav.recalculando = false;
   nav.sesion = (nav.sesion || 0) + 1;
@@ -5690,6 +5725,7 @@ function seguirNavegacion(pos) {
   }
   if (u.fuera > NAV.FUERA_DE_RUTA_M) {
     nav.fuera++;
+    marcarManiobra(null);   // v95: la flecha del giro ya no sirve
     // fuera de la ruta no hay avisos preparados: se mira lo que hay adelante (lo rojo para tu camión)
     var lista = peligrosAdelante(L.latLng(pos), rumboGps), p0 = lista[0];
     var txtP = p0 ? '⛔ A ' + textoDistancia(p0.d) + ': ' + p0.texto : '';
@@ -5749,6 +5785,7 @@ function seguirNavegacion(pos) {
       decir.push((a.rojo ? 'Cuidado. ' : 'Atención. ') + 'En ' + vozDistancia(Math.max(50, hasta)) + ', ' + (a.voz || a.texto) + '.');
     }
   });
+  actualizarTablero(u.recorrido, prox);   // v95: lo que viene, el giro en el mapa, la calle, la máxima
   if (!prox) {
     mostrarCartelNav(textoDistancia(falta), 'Seguí hasta el destino', peligro);
     if (decir.length) hablar(decir.join(' '));
@@ -5778,12 +5815,160 @@ function seguirNavegacion(pos) {
   seguirConCamara(verPos);
 }
 
+
+// ===== v95: SÚPER MODO VIAJE (pedido del chofer: "que entres más a la pantalla, un súper modo y que tenga más cosas") =====
+// Al tocar Ir: cartel "Modo viaje" y la cámara se zambulle hasta el camión; mapa casi acostado con cielo y horizonte.
+// Navegando: el próximo giro dibujado sobre la ruta (flecha blanca) y una barra que se llena al acercarte; en el cartel de
+// arriba, lo que viene en el camino (estación, parador, gomería, radar o control, peligro) con los km; abajo, la calle por
+// donde vas, la máxima para tu camión al lado del velocímetro y una barra con cuánto del viaje hiciste.
+var TABLERO = { acercaM: 500, maniobraAntesM: 700, maxKm: 400 };
+function mostrarIntroViaje() {
+  var viejo = document.getElementById('viaje-intro');
+  if (viejo) viejo.remove();
+  var d = document.createElement('div');
+  d.id = 'viaje-intro';
+  d.className = 'viaje-intro';
+  d.setAttribute('aria-hidden', 'true');
+  var t = document.getElementById('nav-falta-tiempo'), r = document.getElementById('nav-falta-resto');
+  d.innerHTML = '<div class="vi-caja"><div class="vi-icono">🚛</div><div class="vi-titulo">Modo viaje</div>' +
+    '<div class="vi-dato">' + esc((t && t.textContent) || '') + ' · ' + esc((r && r.textContent) || '') + '</div></div>';
+  document.body.appendChild(d);
+  setTimeout(function () { d.remove(); }, 2600);
+}
+// El pedazo de la ruta entre dos distancias (metros desde la salida)
+function tramoRuta(m1, m2) {
+  var pts = nav.r.puntos, ac = nav.acum, a = puntoEnRuta(m1), b = puntoEnRuta(m2), res = [[a.lng, a.lat]];
+  for (var i = 0; i < pts.length; i++) {
+    if (ac[i] > m1 && ac[i] < m2) res.push([pts[i][1], pts[i][0]]);
+    if (ac[i] >= m2) break;
+  }
+  res.push([b.lng, b.lat]);
+  return res;
+}
+function marcarManiobra(prox, recorrido) {
+  var clave = prox && !prox.llegada && prox.dist - recorrido <= TABLERO.maniobraAntesM ? prox.n : null;
+  if (clave === nav.maniobraN) return;
+  nav.maniobraN = clave;
+  if (clave == null) { ponerDatos('maniobra', []); return; }
+  var total = nav.acum[nav.acum.length - 1], m1 = Math.max(0, prox.dist - 45), m2 = Math.min(total, prox.dist + 35);
+  var fin = puntoEnRuta(m2), antes = puntoEnRuta(Math.max(m1, m2 - 6));
+  ponerDatos('maniobra', [
+    { type: 'Feature', properties: { t: 'l' }, geometry: { type: 'LineString', coordinates: tramoRuta(m1, m2) } },
+    { type: 'Feature', properties: { t: 'p', rot: rumboEntre(antes, fin) }, geometry: { type: 'Point', coordinates: [fin.lng, fin.lat] } }
+  ]);
+}
+// La calle por donde vas: sale de la última indicación que ya pasaste ("Doblá a la derecha en Avenida Jara")
+function calleDeTexto(t) {
+  var m = /(?:\ben|\bpor|\bhacia|^Seguí(?: recto)?)\s+((?:la |el )?[A-ZÁÉÍÓÚÑ0-9][^,]*)$/.exec(String(t || ''));
+  if (!m) return '';
+  var c = m[1].replace(/\s*\(.*$/, '').trim();
+  return /^(el|la) (norte|sur|este|oeste|noreste|noroeste|sudeste|sudoeste|sureste|suroeste)$/i.test(c) ? '' : c;
+}
+function calleActual(recorrido) {
+  var pasados = nav.r.pasos.filter(function (p) {
+    return p.ini != null && nav.acum[Math.min(p.ini, nav.acum.length - 1)] <= recorrido + 5;
+  });
+  for (var i = pasados.length - 1; i >= 0 && i >= pasados.length - 3; i--) {
+    var c = calleDeTexto(pasados[i].texto);
+    if (c) return c;
+  }
+  return '';
+}
+function elementoTablero(id, clase, padre) {
+  var el = document.getElementById(id);
+  if (!el && padre) {
+    el = document.createElement('div');
+    el.id = id;
+    el.className = clase;
+    padre.appendChild(el);
+  }
+  return el;
+}
+function actualizarTablero(recorrido, prox) {
+  var cartel = document.getElementById('nav-cartel'), abajo = document.getElementById('nav-abajo');
+  var total = nav.acum[nav.acum.length - 1] || 1;
+  // 1) próximo giro en el mapa y barra de acercamiento
+  marcarManiobra(prox, recorrido);
+  var barra = elementoTablero('nav-acerca', 'nav-acerca', cartel);
+  if (barra) {
+    var d = prox ? prox.dist - recorrido : Infinity;
+    var ver = prox && !prox.llegada && d <= TABLERO.acercaM;
+    barra.hidden = !ver;
+    if (ver) barra.innerHTML = '<i style="width:' + Math.round(Math.max(0, Math.min(1, 1 - d / TABLERO.acercaM)) * 100) + '%"></i>';
+  }
+  // 2) lo que viene en el camino
+  var caja = elementoTablero('nav-proximos', 'nav-proximos', cartel);
+  if (caja) {
+    var hecho = recorrido / 1000, items = [];
+    var lugares = nav.r.lugares || [];
+    var primero = function (tipos) {
+      return lugares.filter(function (x) { return tipos[x.l.feature.properties.tipo] && x.km > hecho + 0.15 && x.km - hecho < TABLERO.maxKm; })[0];
+    };
+    [[{ combustible: 1 }, '⛽', 'Próxima estación de servicio'], [{ parador: 1, estacionamiento: 1 }, '☕', 'Próximo parador'],
+     [{ gomeria: 1 }, '🛞', 'Próxima gomería']].forEach(function (q) {
+      var x = primero(q[0]);
+      if (x) items.push({ icono: q[1], km: x.km - hecho, titulo: q[2] + ': ' + (x.l.feature.properties.nombre || '') });
+    });
+    var ctl = nav.avisos.filter(function (a) { return a.icono && /^ctl/.test(String(a.n)) && a.dist > recorrido + 50; })
+      .sort(function (a, b) { return a.dist - b.dist; })[0];
+    if (ctl) items.push({ icono: ctl.icono.trim(), km: (ctl.dist - recorrido) / 1000, titulo: ctl.texto, clase: 'control' });
+    var pel = nav.avisos.filter(function (a) { return !/^ctl/.test(String(a.n)) && a.dist > recorrido + 50; })
+      .sort(function (a, b) { return a.dist - b.dist; })[0];
+    if (pel) items.push({ icono: pel.rojo ? '⛔' : (pel.icono || '⚠️').trim() || '⚠️', km: (pel.dist - recorrido) / 1000, titulo: pel.texto,
+                          clase: pel.rojo ? 'rojo' : 'ojo' });
+    var html = items.map(function (it) {
+      return '<span class="np ' + (it.clase || '') + '" title="' + esc(it.titulo) + '"><b>' + it.icono + '</b>' +
+             esc(distanciaChip(it.km)) + '</span>';
+    }).join('');
+    if (caja.getAttribute('data-html') !== html) { caja.setAttribute('data-html', html); caja.innerHTML = html; }
+    caja.hidden = !items.length;
+  }
+  // 3) la calle por donde vas
+  var calle = elementoTablero('nav-calle', 'nav-calle', document.body);
+  if (calle) {
+    var c = calleActual(recorrido);
+    calle.textContent = c.replace(/^Avenida/i, 'Av.').replace(/\s*\/\s*/g, ' · ');
+    calle.hidden = !c;
+  }
+  // 4) barra del viaje (cuánto hiciste)
+  var prog = elementoTablero('nav-progreso', 'nav-progreso', abajo);
+  if (prog) prog.innerHTML = '<i style="width:' + Math.round(Math.min(1, recorrido / total) * 1000) / 10 + '%"></i>';
+  // 5) la máxima para tu camión al lado del velocímetro (la del radar que viene, si es menor)
+  var vel = document.getElementById('velocimetro');
+  if (vel) {
+    var max = vel.querySelector('.vel-max');
+    if (!max) { max = document.createElement('i'); max.className = 'vel-max'; vel.appendChild(max); }
+    var lim = nav.limite || maximaCamion(1000);
+    lim = lim && lim < 1000 ? lim : null;
+    max.textContent = lim || '';
+    max.hidden = !lim;
+  }
+}
+// "600 m", "1,2 km", "38 km" (cortito: entra en los botoncitos)
+function distanciaChip(km) {
+  if (km < 0.95) return Math.max(50, Math.round(km * 20) * 50) + ' m';
+  if (km < 9.95) return (Math.round(km * 10) / 10).toFixed(1).replace('.', ',') + ' km';
+  return Math.round(km) + ' km';
+}
+function limpiarTablero() {
+  nav.maniobraN = undefined;
+  ponerDatos('maniobra', []);
+  ['nav-acerca', 'nav-proximos', 'nav-calle'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.hidden = true; el.removeAttribute('data-html'); }
+  });
+  var prog = document.getElementById('nav-progreso');
+  if (prog) prog.innerHTML = '';
+  var max = document.querySelector('#velocimetro .vel-max');
+  if (max) max.hidden = true;
+}
+
 // La cámara sigue al camión: en un solo movimiento suave se corre y (con "rumbo arriba") gira hacia donde vas.
 // El camión queda más abajo del centro, así se ve más de lo que viene (como Google Maps).
 // "Modo viaje" (pedido del chofer, 20/11/2026: "que se acerque y se ponga como navegador, como hace Maps"):
 // mapa inclinado (VIAJE.inclinacion), de cerca, girando hacia donde vas y con una flecha en vez del punto azul.
 // El zoom depende de la velocidad: en la ciudad más cerca, en la ruta un poco más lejos para ver lo que viene.
-var VIAJE = { inclinacion: 62 };   // v94: más inclinado (se ve en 3D, con los edificios parados)
+var VIAJE = { inclinacion: 68, vuelo: 2800 };   // v95: tan inclinado que se ve el horizonte y el cielo (súper modo)
 function zoomDeViaje() {
   var kmh = velocidad.kmh;
   if (kmh == null || kmh < 35) return 17;
@@ -5827,12 +6012,18 @@ function seguirConCamara(pos) {
   o.bearing = nav.rumbo ? (nav.ultimoRumbo != null ? nav.ultimoRumbo : gl.getBearing()) : 0;
   var z = zoomDeViaje();
   if (Math.abs(gl.getZoom() - z) > 0.25) o.zoom = z;
-  if (nav.primeraCamara) {   // al tocar "Ir": se acerca de a poco (como Google Maps)
+  if (nav.primeraCamara) {   // v95: al tocar "Ir": la cámara se zambulle desde arriba hasta el camión (como en una película)
     nav.primeraCamara = false;
-    o.duration = 1600;
+    o.duration = VIAJE.vuelo;
     delete o.easing;
     o.zoom = z;
+    o.curve = 1.5;
+    o.essential = true;
+    nav.volandoHasta = Date.now() + VIAJE.vuelo;
+    gl.flyTo(o);
+    return;
   }
+  if (Date.now() < (nav.volandoHasta || 0)) return;   // no cortar el vuelo de entrada (el camión igual se mueve)
   gl.easeTo(o);
 }
 

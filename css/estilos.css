@@ -1195,3 +1195,66 @@ body.navegando .punto-ubicacion::after {
 /* el camión un poco más grande (ahora se ve derecho, no acostado) y sin la marca verde de salida encima */
 body.navegando .punto-ubicacion { width: 28px; height: 58px; }
 body.navegando .ruta-marca.desde { display: none; }
+
+/* ===== v95: SÚPER MODO VIAJE ===== */
+/* cartel "Modo viaje" al tocar Ir */
+.viaje-intro {
+  position: fixed; inset: 0; z-index: 1140; pointer-events: none; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(15, 27, 45, 0.55) 0%, rgba(15, 27, 45, 0) 70%);
+  animation: introFondo 2.6s ease both;
+}
+.vi-caja { text-align: center; color: #fff; animation: introCaja 2.6s cubic-bezier(0.2, 0.9, 0.25, 1) both; }
+.vi-icono { font-size: 64px; line-height: 1; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45)); }
+.vi-titulo {
+  margin-top: 6px; font-size: 2.4rem; font-weight: 900; letter-spacing: 1px; text-transform: uppercase;
+  background: linear-gradient(90deg, #ffffff, #9fd0ff 50%, #ffb070); -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.55));
+}
+.vi-dato { margin-top: 4px; font-size: 1.05rem; font-weight: 700; color: #e3ecff; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7); }
+@keyframes introFondo { 0% { opacity: 0; } 15% { opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes introCaja { 0% { transform: scale(0.6); opacity: 0; } 18% { transform: scale(1.06); opacity: 1; } 28% { transform: scale(1); }
+                       72% { transform: scale(1); opacity: 1; } 100% { transform: scale(1.25); opacity: 0; } }
+
+/* barra que se llena al acercarte al giro */
+.nav-acerca { margin-top: 10px; height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.nav-acerca[hidden] { display: none; }
+.nav-acerca i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #2bd47d, #b6ff6a); transition: width 0.9s linear; }
+
+/* lo que viene en el camino */
+.nav-proximos { display: flex; gap: 6px; margin-top: 10px; overflow-x: auto; scrollbar-width: none; }
+.nav-proximos::-webkit-scrollbar { display: none; }
+.nav-proximos[hidden] { display: none; }
+.np {
+  flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px 5px 6px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e8f0ff; font-size: 0.9rem; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.np b { font-size: 1rem; font-weight: 400; }
+.np.rojo { background: rgba(255, 59, 48, 0.28); border-color: rgba(255, 99, 88, 0.6); }
+.np.ojo { background: rgba(255, 179, 64, 0.22); border-color: rgba(255, 179, 64, 0.5); }
+.np.control { background: rgba(77, 155, 255, 0.22); border-color: rgba(77, 155, 255, 0.5); }
+
+/* la calle por donde vas (arriba de la barra de abajo) */
+.nav-calle {
+  position: fixed; z-index: 1150; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--alto-hoja, 0px) + 14px); max-width: calc(100vw - 190px);
+  padding: 7px 14px; border-radius: 999px; background: rgba(15, 27, 45, 0.9); color: #fff;
+  font-size: 0.95rem; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  box-shadow: 0 4px 14px rgba(5, 12, 25, 0.4); border: 1px solid rgba(255, 255, 255, 0.12); pointer-events: none;
+}
+.nav-calle[hidden], body:not(.navegando) .nav-calle { display: none; }
+
+/* cuánto del viaje hiciste (borde de arriba de la barra) */
+.nav-abajo { position: fixed; }
+.nav-progreso { position: absolute; left: 22px; right: 22px; top: 0; height: 4px; border-radius: 0 0 4px 4px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.nav-progreso i { display: block; height: 100%; background: linear-gradient(90deg, #2bd47d, #4d9bff); transition: width 0.9s linear; }
+
+/* máxima para tu camión, pegada al velocímetro */
+.velocimetro { overflow: visible; }
+.vel-max {
+  position: absolute; right: -14px; top: -12px; width: 32px; height: 32px; border-radius: 50%;
+  background: #fff; border: 3.5px solid #d50000; color: #111; font-style: normal; font-weight: 900; font-size: 0.82rem;
+  display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+.vel-max[hidden], body:not(.navegando) .vel-max { display: none; }
+@media (prefers-reduced-motion: reduce) { .viaje-intro, .vi-caja { animation-duration: 0.01s; } }

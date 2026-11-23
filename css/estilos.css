@@ -1304,3 +1304,142 @@ body.navegando .punto-ubicacion::after {
   #form-camion .boton-dibujo-form { grid-column: 1 / -1; grid-row: 5; }
   #form-camion .ventana-botones { grid-row: 6; }
 }
+
+/* ===== v97: carriles, carteles, buscar en el camino, avisar en un toque y botones nuevos ===== */
+/* cartel verde de ruta (como los de las autopistas) */
+.nav-verde[hidden], .nav-carriles[hidden], .nav-despues[hidden] { display: none; }
+.cartel-verde {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 10px; padding: 8px 10px;
+  border-radius: 10px; background: linear-gradient(180deg, #0f7a3d, #0b6532); border: 2px solid #e9f5ee;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); color: #fff; font-weight: 800;
+}
+.cv-salida { padding: 2px 7px; border-radius: 5px; background: #ffd400; color: #111; font-size: 0.85rem; letter-spacing: 0.3px; }
+.cv-rutas { display: inline-flex; gap: 5px; }
+.cv-hacia { font-size: 1.05rem; line-height: 1.2; }
+.escudo {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-width: 34px; height: 34px;
+  padding: 0 4px; border-radius: 6px 6px 12px 12px; background: #fff; color: #111; border: 2px solid #111;
+  font-size: 0.95rem; font-weight: 900; line-height: 1; vertical-align: middle;
+}
+.escudo small { font-size: 0.5rem; font-weight: 800; letter-spacing: 0.3px; margin-bottom: 1px; }
+.escudo.rn { border-color: #0d3c8c; box-shadow: inset 0 9px 0 #0d3c8c; }
+.escudo.rn small { color: #fff; }
+.escudo.au { background: #0b6532; color: #fff; border-color: #fff; border-radius: 8px; }
+/* carriles */
+.nav-carriles { margin-top: 10px; }
+.nav-carriles:not(:empty) { display: flex; justify-content: center; gap: 4px; padding: 6px; border-radius: 12px; background: rgba(0, 0, 0, 0.28); }
+.carril { display: inline-flex; width: 40px; height: 44px; align-items: center; justify-content: center; border-radius: 8px;
+          border-left: 2px dashed rgba(255, 255, 255, 0.25); }
+.carril:first-child { border-left: 0; }
+.carril svg { width: 30px; height: 30px; fill: rgba(255, 255, 255, 0.32); }
+.carril.usar { background: rgba(43, 212, 125, 0.22); }
+.carril.usar svg { fill: #fff; }
+.carril-pista { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; font-size: 1rem; color: #fff; }
+.carril-pista svg { width: 28px; height: 28px; fill: #3ddc84; }
+/* "Después" */
+.nav-despues:not(:empty) {
+  display: flex; align-items: center; gap: 8px; margin: 10px -2px 0; padding: 6px 10px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08); color: #cfe0ff; font-size: 0.92rem; font-weight: 700;
+}
+.nav-despues span { color: #8fa6c8; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.4px; }
+.nav-despues svg { width: 22px; height: 22px; fill: #fff; flex: none; }
+.nav-despues em { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* barra de abajo: arriba los botones de lo que viene, abajo el tiempo y Salir */
+body.navegando .nav-abajo { flex-wrap: wrap; row-gap: 10px; padding-top: 14px; }
+.nav-proximos { order: -1; flex: 1 1 100%; display: flex; gap: 8px; margin: 0; overflow-x: auto; scrollbar-width: none; }
+.nav-proximos[hidden] { display: none; }
+.nav-proximos::-webkit-scrollbar { display: none; }
+.np {
+  flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 5px 12px 5px 5px;
+  border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(255, 255, 255, 0.08);
+  color: #fff; cursor: pointer; text-align: left; font: inherit; transition: transform 0.1s, background 0.2s;
+}
+.np:active { transform: scale(0.95); background: rgba(255, 255, 255, 0.18); }
+.np b { width: 38px; height: 38px; border-radius: 11px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;
+        font-weight: 400; background: rgba(255, 255, 255, 0.12); }
+.np span { display: flex; flex-direction: column; line-height: 1.1; }
+.np strong { font-size: 1rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.np small { font-size: 0.72rem; color: #a9b8cf; font-weight: 700; }
+.np.combustible b { background: linear-gradient(145deg, #ff7a59, #e0402a); }
+.np.descanso b { background: linear-gradient(145deg, #c08a5b, #8a5a32); }
+.np.gomeria b { background: linear-gradient(145deg, #59677d, #2d3748); }
+.np.control b { background: linear-gradient(145deg, #4d9bff, #1668f2); }
+.np.ojo b { background: linear-gradient(145deg, #ffc247, #f08c00); }
+.np.rojo b { background: linear-gradient(145deg, #ff5a4f, #c21717); }
+.np.rojo { border-color: rgba(255, 90, 79, 0.6); }
+
+/* botones grandes a la derecha (solo navegando): Avisar y Buscar */
+.nav-acciones { display: none; }
+body.navegando .nav-acciones {
+  display: flex; flex-direction: column; gap: 10px; position: fixed; z-index: 1140;
+  right: calc(var(--m-der, 10px) + 4px); bottom: calc(var(--alto-hoja, 0px) + 140px);
+}
+.nav-accion {
+  width: 64px; height: 64px; border: 0; border-radius: 20px; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 1px; color: #fff; cursor: pointer; font: inherit; box-shadow: 0 6px 18px rgba(5, 12, 25, 0.35);
+  transition: transform 0.1s;
+}
+.nav-accion:active { transform: scale(0.93); }
+.nav-accion b { font-size: 1.5rem; line-height: 1; font-weight: 400; }
+.nav-accion span { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.2px; }
+.nav-accion.avisar { background: linear-gradient(145deg, #ffb340, #f06a00); }
+.nav-accion.buscar { background: linear-gradient(145deg, #2f80ff, #1452c9); }
+body.hoja-abierta .nav-acciones { display: none; }
+
+/* la calle por donde vas, con escudo */
+.nav-calle:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; padding: 5px 14px 5px 6px; }
+.nav-calle .escudo { min-width: 28px; height: 28px; font-size: 0.8rem; }
+.nav-calle span { overflow: hidden; text-overflow: ellipsis; }
+body:not(.navegando) .nav-calle { display: none; }
+
+/* hoja de abajo (Buscar / Avisar) */
+.hoja-viaje-fondo { position: fixed; inset: 0; z-index: 1250; background: rgba(5, 12, 25, 0.35); display: flex; align-items: flex-end; justify-content: center; }
+.hoja-viaje-fondo[hidden] { display: none; }
+.hoja-viaje {
+  width: 100%; max-width: 560px; max-height: 78vh; overflow-y: auto; background: #fff; border-radius: 22px 22px 0 0;
+  padding: 6px 16px max(16px, env(safe-area-inset-bottom)); box-shadow: 0 -10px 30px rgba(5, 12, 25, 0.35);
+  animation: subirHoja 0.25s ease-out;
+}
+@keyframes subirHoja { from { transform: translateY(40%); opacity: 0.4; } to { transform: none; opacity: 1; } }
+.hv-manija { width: 44px; height: 5px; border-radius: 3px; background: #d5dbe3; margin: 4px auto 8px; }
+.hv-cabeza { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.hv-cabeza b { font-size: 1.2rem; color: var(--noche, #0f1b2d); }
+.hv-cerrar { width: 44px; height: 44px; border: 0; border-radius: 50%; background: #eef1f5; font-size: 1.2rem; color: #3d4652; cursor: pointer; }
+.hv-ayuda, .hv-nada { margin: 0 0 12px; color: #5b6470; font-size: 0.95rem; line-height: 1.35; }
+.hv-tipos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.hv-tipo, .hv-aviso {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: 76px;
+  border: 2px solid #e3e8ee; border-radius: 16px; background: #f8fafc; color: var(--noche, #0f1b2d); font: inherit; font-weight: 800;
+  font-size: 0.92rem; cursor: pointer; transition: transform 0.1s;
+}
+.hv-tipo:active, .hv-aviso:active { transform: scale(0.95); }
+.hv-tipo b, .hv-aviso b { font-size: 1.8rem; font-weight: 400; line-height: 1; }
+.hv-tipo.elegido { border-color: var(--primario, #1668f2); background: #eef4ff; }
+.hv-avisos { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.hv-aviso { min-height: 92px; text-align: center; padding: 6px; }
+.hv-aviso[disabled] { opacity: 0.45; }
+.hv-aviso.control { background: #eaf2ff; border-color: #b9d3ff; }
+.hv-aviso.accidente, .hv-aviso.prohibido { background: #fff0ef; border-color: #ffc9c4; }
+.hv-aviso.cortada, .hv-aviso.obra { background: #fff6e8; border-color: #ffdca8; }
+.hv-lista { list-style: none; margin: 0; padding: 0; }
+.hv-lista li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid #edf0f4; }
+.hv-lista li.rojo .hv-texto b { color: #c21717; }
+.hv-icono { flex: none; width: 44px; height: 44px; border-radius: 12px; background: #f1f4f8; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; }
+.hv-texto { flex: 1; min-width: 0; }
+.hv-texto b { display: block; font-size: 1rem; color: var(--noche, #0f1b2d); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hv-texto small { color: #5b6470; font-size: 0.85rem; font-weight: 600; }
+.hv-botones { flex: none; display: flex; gap: 6px; }
+.hv-ver, .hv-parar { min-height: 44px; padding: 0 12px; border-radius: 12px; font: inherit; font-weight: 800; cursor: pointer; }
+.hv-ver { border: 2px solid #d5dde8; background: #fff; color: var(--noche, #0f1b2d); }
+.hv-parar { border: 0; background: linear-gradient(135deg, #ff8a3d, #e24f00); color: #fff; }
+
+/* avisito de abajo (aviso enviado / deshacer) */
+.tostada {
+  position: fixed; z-index: 1260; left: 50%; transform: translateX(-50%); bottom: calc(var(--alto-hoja, 0px) + 70px);
+  display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 24px); padding: 10px 10px 10px 16px; border-radius: 16px;
+  background: #0f1b2d; color: #fff; font-size: 0.95rem; box-shadow: 0 8px 24px rgba(5, 12, 25, 0.45);
+}
+.tostada[hidden] { display: none; }
+.tostada b { margin-right: 4px; }
+.tostada button { flex: none; min-height: 44px; padding: 0 14px; border: 0; border-radius: 12px; background: #ffb340; color: #1d1200; font: inherit; font-weight: 900; cursor: pointer; }

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 96;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 97;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1862,7 +1862,7 @@ function cargarReportes() {
         return r.text();
       });
     })
-    .then(function (csv) { if (csv) mostrarReportes(leerCSV(csv)); })
+    .then(function (csv) { if (csv) mostrarReportes(leerCSV(csv)); else dibujarReportes(); mandarPendientes(); })
     .catch(function (e) { console.warn('Reportes:', e.message); })
     .then(armarPanelReportes);
 }
@@ -1952,9 +1952,23 @@ function mostrarReportes(filas) {
   grupoReportes = L.geoJSON({ type: 'FeatureCollection', features: features }, {
     pointToLayer: function (f, latlng) { return L.circleMarker(latlng); }
   });
+  dibujarReportes();
+}
+// v97: los aprobados (de la planilla) + mis avisos rápidos (solo en este teléfono, hasta que vencen)
+function dibujarReportes() {
   var feats = [];
   reportePorId = {};
-  grupoReportes.eachLayer(function (l) {
+  if (grupoReportes) grupoReportes.eachLayer(function (l) {
+    var id = L.stamp(l);
+    reportePorId[id] = l;
+    feats.push({ type: 'Feature', geometry: l.feature.geometry, properties: { k: 'r', id: id } });
+  });
+  if (typeof misAvisosVigentes === 'function') misAvisosVigentes().forEach(function (a) {
+    var t = AVISOS_RAPIDOS.filter(function (x) { return x.id === a.id; })[0], d = new Date(a.t);
+    var l = L.circleMarker([a.lat, a.lng]);
+    l.feature = { type: 'Feature', geometry: { type: 'Point', coordinates: [a.lng, a.lat] },
+                  properties: { tipo: t.icono + ' ' + t.nombre, mio: true,
+                                fecha: ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) } };
     var id = L.stamp(l);
     reportePorId[id] = l;
     feats.push({ type: 'Feature', geometry: l.feature.geometry, properties: { k: 'r', id: id } });
@@ -1983,6 +1997,8 @@ function armarCartelReporte(p) {
   if (p.lugar && p.lugar !== 'Nada marcado en el mapa') {
     html += '<div class="cartel-linea">En el mapa figuraba: ' + esc(p.lugar.replace(/\s*\((node|way)\/\d+\)$/, '')) + '</div>';
   }
+  if (p.mio) return html + '<div class="veredicto sin_dato">Tu aviso de las ' + esc(p.fecha) +
+    '<small>Lo ves solo vos hasta que se apruebe en la planilla de reportes.</small></div>';
   html += '<div class="veredicto sin_dato">Verificá en el lugar<small>Lo informó un chofer' +
           (p.fecha ? ' el ' + esc(p.fecha) : '') + ' y fue revisado, pero puede haber cambiado.</small></div>';
   return html;
@@ -3134,8 +3150,8 @@ function prepararCampo(cual) {
 // Hasta 5 lugares entre A y B. La ruta se arma por partes (A → 1 → 2 → ... → B), cada parte con el mismo cálculo
 // de siempre (esquiva lo rojo, viajes largos por partes) y después se revisa entera.
 var MAX_PARADAS = 5, numeroParada = 0;
-function agregarParada() {
-  if (ruta.paradas.length >= MAX_PARADAS) return;
+function agregarParada(sinFoco) {
+  if (ruta.paradas.length >= MAX_PARADAS) return null;
   var cual = 'p' + (++numeroParada);
   ruta.paradas.push(cual);
   var fila = document.createElement('div');
@@ -3156,8 +3172,10 @@ function agregarParada() {
   prepararCampo(cual);
   numerarParadas();
   document.getElementById('agregar-parada').hidden = ruta.paradas.length >= MAX_PARADAS;
+  if (sinFoco) return cual;
   if (panelRuta.classList.contains('con-resultado')) modoResultado(false);
   document.getElementById('ruta-' + cual).focus();
+  return cual;
 }
 function sacarParada(cual, sinCalcular) {
   var habia = !!ruta[cual];
@@ -3958,7 +3976,8 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
             // OpenRouteService a veces dice "Camina hacia..." aunque sea en camión
             var esVuelta = p.type >= 0 && p.type <= 3;   // izquierda, derecha, cerrada a la izq./der.
             pasos.push({ texto: aCastellano(String(p.instruction).replace(/^Camin[ae] /, 'Salí ')), km: p.distance,
-                         ini: p.way_points ? p.way_points[0] : null, vuelta: esVuelta });
+                         ini: p.way_points ? p.way_points[0] : null, vuelta: esVuelta,
+                         calle: p.name && p.name !== '-' ? p.name : null });
             if (esVuelta) vueltas++;
           });
         });
@@ -4049,7 +4068,8 @@ function rutaValhalla(evitar, a, b) {
           // "rough" es de la maniobra entera: en una de 150 km con un poco de ripio marcaba todo como tierra
           if (m.rough && m.end_shape_index != null && m.length <= 3) rangosTierra.push([base + (m.begin_shape_index || 0), base + m.end_shape_index]);
           var esVuelta = [10, 11, 14, 15].indexOf(m.type) !== -1;   // derecha, cerrada der., cerrada izq., izquierda
-          pasos.push({ texto: aCastellano(m.instruction), km: m.length, ini: base + (m.begin_shape_index || 0), vuelta: esVuelta });
+          pasos.push({ texto: aCastellano(m.instruction), km: m.length, ini: base + (m.begin_shape_index || 0), vuelta: esVuelta,
+                       calle: (m.street_names || [])[0] || null, cartel: cartelValhalla(m.sign) });
           if (esVuelta) vueltas++;
         });
       });
@@ -4082,7 +4102,7 @@ function rutaTomTom(evitar, a, b, conAlternativas) {
   var q = 'key=' + encodeURIComponent(claveTomTom()) + '&travelMode=truck&vehicleCommercial=true' +
           '&vehicleWeight=' + Math.round(camion.peso * 1000) + '&vehicleHeight=' + camion.altura +
           '&vehicleLength=' + camion.largo + '&vehicleWidth=' + CAMION_ANCHO +
-          '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false&sectionType=unpaved&avoid=unpavedRoads' +
+          '&instructionsType=text&language=es-ES&routeType=fastest&traffic=false&sectionType=unpaved&sectionType=lanes&avoid=unpavedRoads' +
           (ruta.sinPeajes ? '&avoid=tollRoads' : '') +
           (conAlternativas ? '&maxAlternatives=2' : '') + (a.rumbo != null ? '&vehicleHeading=' + a.rumbo : '');
   var url = 'https://api.tomtom.com/routing/1/calculateRoute/' + a.lat.toFixed(6) + ',' + a.lng.toFixed(6) + ':' +
@@ -4100,6 +4120,7 @@ function rutaTomTom(evitar, a, b, conAlternativas) {
       rt.legs.forEach(function (leg) { leg.points.forEach(function (p) { puntos.push([p.latitude, p.longitude]); }); });
       anotarTierra(puntos, (rt.sections || []).filter(function (s) { return s.sectionType === 'UNPAVED'; })
         .map(function (s) { return [s.startPointIndex, s.endPointIndex]; }));
+      anotarCarriles(puntos, (rt.sections || []).filter(function (s) { return s.sectionType === 'LANES'; }));   // v97
       var ins = (rt.guidance && rt.guidance.instructions) || [], pasos = [], vueltas = 0;
       // a veces trae dos "Ha llegado" (uno antes de tiempo): queda solo el último
       ins = ins.filter(function (it, k) { return !/^ARRIVE/.test(it.maneuver || '') || k === ins.length - 1; });
@@ -4108,7 +4129,10 @@ function rutaTomTom(evitar, a, b, conAlternativas) {
         if (esVuelta) vueltas++;
         pasos.push({ texto: aCastellano(String(it.message || '').replace(/^Salga de /, 'Salí por ')),
                      km: ((sig ? sig.routeOffsetInMeters : rt.summary.lengthInMeters) - (it.routeOffsetInMeters || 0)) / 1000,
-                     ini: it.pointIndex != null ? Math.min(it.pointIndex, puntos.length - 1) : null, vuelta: esVuelta });
+                     ini: it.pointIndex != null ? Math.min(it.pointIndex, puntos.length - 1) : null, vuelta: esVuelta,
+                     calle: it.street || null,
+                     cartel: it.exitNumber || (it.roadNumbers && it.roadNumbers.length) || it.signpostText
+                       ? { salida: it.exitNumber || '', rutas: it.roadNumbers || [], hacia: it.signpostText || '' } : null });
       });
       return { servicio: 'TomTom (camión)', puntos: puntos, km: rt.summary.lengthInMeters / 1000,
                segundos: rt.summary.travelTimeInSeconds, pasos: pasos, vueltas: vueltas, kmChicas: null };
@@ -5682,7 +5706,7 @@ function empezarNavegacion(rutaElegida) {
     var idx = p.ini == null ? null : Math.min(p.ini, r.puntos.length - 1);
     var llegada = /^(Llegar|Su destino|Tu destino|Has llegado|Llegaste|Lleg[óo])/i.test(p.texto || '');
     var lado = /izquierda/i.test(p.texto) ? ', a la izquierda' : /derecha/i.test(p.texto) ? ', a la derecha' : '';
-    return { n: n, texto: llegada ? 'Llegás a destino' + lado : p.texto, llegada: llegada,
+    return { n: n, texto: llegada ? 'Llegás a destino' + lado : p.texto, llegada: llegada, cartel: p.cartel || null,
              idx: idx, dist: idx == null ? null : nav.acum[idx] };
   }).filter(function (m) { return m.dist != null && m.n > 0; });   // la primera es "salí hacia..."
   nav.avisos = (r.avisos || []).map(function (a, n) {
@@ -5724,6 +5748,8 @@ function empezarNavegacion(rutaElegida) {
   nav.alInicio = d0 > NAV.FUERA_DE_RUTA_M && d0 < 500 ? { punto: inicioRuta, d0: d0 } : null;
   nav.sesion = (nav.sesion || 0) + 1;   // un recálculo viejo no pisa una navegación nueva
   nav.volandoHasta = 0;
+  nav.grilla = null;
+  try { nav.carriles = mapearCarriles(); } catch (e) { nav.carriles = []; }   // v97
   limpiarTablero();   // v95: ruta nueva (o recalculada): la flecha del giro se vuelve a armar
   volverACentrar(false);
   abrirPanelRuta(false);
@@ -5990,6 +6016,380 @@ function seguirNavegacion(pos) {
 }
 
 
+
+// ===== v97: carriles, carteles de ruta, buscar en el camino, parar en un lugar y avisar en un toque =====
+// Pedido del chofer (23/11/2026): "los botones de arriba los aprieto y no hacen nada", "le faltan cosas": carriles y
+// carteles, botones grandes para buscar gomería / estación / parador, reportar rápido (como Waze) y más lindo.
+
+// --- Carriles (solo los da TomTom: sectionType=lanes). Se guardan por POSICIÓN (sirven después de unir pedazos) ---
+var carriles = { lista: [], vistos: {} };
+function anotarCarriles(puntos, secciones) {
+  secciones.forEach(function (s) {
+    if (!s.lanes || !s.lanes.length || s.startPointIndex == null || s.endPointIndex == null) return;
+    var a = puntos[Math.min(s.startPointIndex, puntos.length - 1)], b = puntos[Math.min(s.endPointIndex, puntos.length - 1)];
+    var k = a[0].toFixed(5) + ',' + a[1].toFixed(5) + '|' + b[0].toFixed(5) + ',' + b[1].toFixed(5);
+    if (carriles.vistos[k]) return;
+    carriles.vistos[k] = true;
+    carriles.lista.push({ a: a, b: b, lanes: s.lanes.map(function (l) { return { dirs: l.directions || [], sigue: l.follow || null }; }) });
+  });
+  if (carriles.lista.length > 3000) carriles.lista = carriles.lista.slice(-2000);
+}
+// Dónde cae un punto sobre la ruta que se está navegando: metros desde la salida y distancia a la línea
+function grillaNav() {
+  if (nav.grilla && nav.grilla.r === nav.r) return nav.grilla;
+  var pts = nav.r.puntos, C = 0.004, celdas = {};
+  for (var i = 1; i < pts.length; i++) {
+    for (var x = Math.floor(Math.min(pts[i - 1][1], pts[i][1]) / C); x <= Math.floor(Math.max(pts[i - 1][1], pts[i][1]) / C); x++) {
+      for (var y = Math.floor(Math.min(pts[i - 1][0], pts[i][0]) / C); y <= Math.floor(Math.max(pts[i - 1][0], pts[i][0]) / C); y++) {
+        var k = x + ',' + y;
+        if ((celdas[k] || (celdas[k] = [])).length < 400) celdas[k].push(i);
+      }
+    }
+  }
+  nav.grilla = { r: nav.r, C: C, celdas: celdas };
+  return nav.grilla;
+}
+function proyectarEnNav(ll) {
+  var g = grillaNav(), pts = nav.r.puntos, lat = ll[0] != null ? ll[0] : ll.lat, lng = ll[1] != null ? ll[1] : ll.lng;
+  var kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540, mejor = { d: Infinity, m: 0 };
+  var cx = Math.floor(lng / g.C), cy = Math.floor(lat / g.C), visto = {};
+  for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+    (g.celdas[(cx + dx) + ',' + (cy + dy)] || []).forEach(function (i) {
+      if (visto[i]) return;
+      visto[i] = true;
+      var ax = pts[i - 1][1] * kx, ay = pts[i - 1][0] * ky, vx = pts[i][1] * kx - ax, vy = pts[i][0] * ky - ay;
+      var L2 = vx * vx + vy * vy, t = L2 ? Math.max(0, Math.min(1, ((lng * kx - ax) * vx + (lat * ky - ay) * vy) / L2)) : 0;
+      var d = Math.hypot(ax + t * vx - lng * kx, ay + t * vy - lat * ky);
+      if (d < mejor.d) mejor = { d: d, m: nav.acum[i - 1] + t * (nav.acum[i] - nav.acum[i - 1]) };
+    });
+  }
+  return mejor;
+}
+function mapearCarriles() {
+  var res = [];
+  carriles.lista.forEach(function (s) {
+    var a = proyectarEnNav(s.a), b = proyectarEnNav(s.b);
+    if (a.d <= 20 && b.d <= 20 && b.m >= a.m) res.push({ d0: a.m, d1: b.m, lanes: s.lanes });
+  });
+  return res.sort(function (x, y) { return x.d0 - y.d0; });
+}
+var FLECHA_CARRIL = { STRAIGHT: 'recto', SLIGHT_RIGHT: 'leveDer', RIGHT: 'der', SHARP_RIGHT: 'der', SLIGHT_LEFT: 'leveIzq',
+                      LEFT: 'izq', SHARP_LEFT: 'izq', U_TURN_LEFT: 'vuelta', U_TURN_RIGHT: 'vuelta' };
+function htmlCarriles(lanes) {
+  return lanes.map(function (l) {
+    var d = l.sigue || l.dirs[0] || 'STRAIGHT';
+    return '<span class="carril' + (l.sigue ? ' usar' : '') + '"><svg viewBox="0 0 24 24" aria-hidden="true">' +
+           FLECHAS_NAV[FLECHA_CARRIL[d] || 'recto'] + '</svg></span>';
+  }).join('');
+}
+
+// --- Carteles de ruta (verde, como los de las autopistas): número de salida, escudos de ruta y "hacia" ---
+function cartelValhalla(s) {
+  if (!s) return null;
+  function t(x) { return (x || []).map(function (e) { return e.text; }).filter(Boolean); }
+  var c = { salida: t(s.exit_number_elements).join(' / '), rutas: t(s.exit_branch_elements),
+            hacia: t(s.exit_toward_elements).concat(t(s.exit_name_elements)).join(', ') };
+  return c.salida || c.rutas.length || c.hacia ? c : null;
+}
+// "RN 9", "RP-2", "Ruta Nacional 3", "Ruta Provincial 88" -> escudos
+function rutasDeTexto(t) {
+  var res = [], visto = {}, m, re = /\b(RN|RP|R\.N\.|R\.P\.|Ruta Nacional|Ruta Provincial|Ruta|AU)\s*(?:N[º°o]\.?\s*)?-?\s*(\d{1,4}[A-Z]?)\b/gi;
+  while ((m = re.exec(String(t || '')))) {
+    var tipo = /^(RN|R\.N\.|Ruta Nacional)$/i.test(m[1]) ? 'rn' : /^(RP|R\.P\.|Ruta Provincial)$/i.test(m[1]) ? 'rp' : /^AU$/i.test(m[1]) ? 'au' : 'r';
+    var k = tipo + m[2].toUpperCase();
+    if (!visto[k]) { visto[k] = true; res.push({ tipo: tipo, num: m[2].toUpperCase() }); }
+  }
+  return res;
+}
+function escudo(r) {
+  return '<span class="escudo ' + r.tipo + '"><small>' + ({ rn: 'RN', rp: 'RP', au: 'AU', r: 'RUTA' }[r.tipo]) + '</small>' + esc(r.num) + '</span>';
+}
+function htmlCartelVerde(prox) {
+  var c = prox.cartel || {}, rutas = [];
+  (c.rutas || []).forEach(function (x) { rutas = rutas.concat(rutasDeTexto(x).length ? rutasDeTexto(x) : [{ tipo: 'r', num: String(x) }]); });
+  if (!rutas.length) rutas = rutasDeTexto(prox.texto);
+  var hacia = c.hacia || '';
+  if (!hacia) {
+    var m = /\bhacia\s+([^,]+)$/i.exec(prox.texto || '');
+    if (m && !/^(el|la)\s+(norte|sur|este|oeste|noreste|noroeste|sudeste|sudoeste|sureste|suroeste)$/i.test(m[1].trim())) hacia = m[1].trim();
+  }
+  var salida = c.salida || '';
+  var deRuta = /salida|autopista|autov[ií]a|ruta|acceso|mantenete|manten[eé]|bifurcaci|incorpor/i.test(prox.texto || '') || c.salida || (c.rutas || []).length;
+  if (!deRuta || (!rutas.length && !hacia && !salida)) return '';
+  // los escudos ya repetidos en "hacia" no se escriben dos veces
+  return '<div class="cartel-verde">' + (salida ? '<span class="cv-salida">SALIDA ' + esc(salida) + '</span>' : '') +
+    '<span class="cv-rutas">' + rutas.slice(0, 3).map(escudo).join('') + '</span>' +
+    (hacia ? '<span class="cv-hacia">➜ ' + esc(hacia) + '</span>' : '') + '</div>';
+}
+// "Avenida Juan B. Justo/RP-88" -> escudo RP 88 + "Av. Juan B. Justo"
+function htmlCalle(c) {
+  var partes = String(c || '').split(/\s*\/\s*/), rutas = [], nombres = [];
+  partes.forEach(function (p) {
+    var r = rutasDeTexto(p);
+    if (r.length && p.replace(/\b(RN|RP|R\.N\.|R\.P\.|Ruta Nacional|Ruta Provincial|Ruta|AU)\s*(N[º°o]\.?\s*)?-?\s*\d{1,4}[A-Z]?\b/gi, '').trim() === '') rutas = rutas.concat(r);
+    else if (p) nombres.push(p.replace(/^Avenida\b/i, 'Av.'));
+  });
+  return rutas.slice(0, 2).map(escudo).join('') + (nombres.length ? '<span>' + esc(nombres.join(' · ')) + '</span>' : '');
+}
+
+// --- Hoja de abajo para "Buscar en el camino" y "Avisar" ---
+function hojaViaje() {
+  var h = document.getElementById('hoja-viaje');
+  if (h) return h;
+  h = document.createElement('div');
+  h.id = 'hoja-viaje';
+  h.className = 'hoja-viaje-fondo';
+  h.hidden = true;
+  h.innerHTML = '<div class="hoja-viaje" role="dialog" aria-modal="true" aria-labelledby="hv-titulo">' +
+    '<div class="hv-manija" aria-hidden="true"></div><div class="hv-cabeza"><b id="hv-titulo"></b>' +
+    '<button type="button" class="hv-cerrar" aria-label="Cerrar">✕</button></div><div class="hv-cuerpo"></div></div>';
+  document.body.appendChild(h);
+  h.addEventListener('click', function (ev) {
+    if (ev.target === h || ev.target.closest('.hv-cerrar')) { cerrarHoja(); return; }
+    var b = ev.target.closest('[data-accion]');
+    if (!b) return;
+    var acc = b.getAttribute('data-accion'), v = b.getAttribute('data-valor');
+    if (acc === 'buscar') abrirBuscar(v);
+    else if (acc === 'ver') verEnCamino(+v);
+    else if (acc === 'parar') pararEnLista(+v);
+    else if (acc === 'avisar') avisarRapido(v);
+  });
+  return h;
+}
+function abrirHoja(titulo, html, clase) {
+  var h = hojaViaje();
+  h.querySelector('#hv-titulo').textContent = titulo;
+  h.querySelector('.hv-cuerpo').innerHTML = html;
+  h.querySelector('.hoja-viaje').className = 'hoja-viaje' + (clase ? ' ' + clase : '');
+  h.hidden = false;
+  document.body.classList.add('hoja-abierta');
+}
+function cerrarHoja() {
+  var h = document.getElementById('hoja-viaje');
+  if (h) h.hidden = true;
+  document.body.classList.remove('hoja-abierta');
+}
+document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') cerrarHoja(); });
+
+var BUSCAR_TIPOS = [
+  { id: 'combustible', icono: '⛽', nombre: 'Estación', tipos: { combustible: 1 } },
+  { id: 'descanso', icono: '☕', nombre: 'Parador', tipos: { parador: 1, estacionamiento: 1 } },
+  { id: 'gomeria', icono: '🛞', nombre: 'Gomería', tipos: { gomeria: 1 } },
+  { id: 'taller', icono: '🔧', nombre: 'Taller', tipos: { taller: 1 } },
+  { id: 'balanza', icono: '⚖️', nombre: 'Balanza', tipos: { balanza: 1 } },
+  { id: 'peligros', icono: '⚠️', nombre: 'Peligros', avisos: true }
+];
+var buscarLista = [];   // lo que se muestra en la hoja (para los botones Ver / Parar acá)
+function rutaDelViaje() { return nav.activo ? nav.r : ruta.linea; }
+function abrirBuscar(tipoId) {
+  var r = rutaDelViaje();
+  if (!r) return;
+  var tipo = BUSCAR_TIPOS.filter(function (t) { return t.id === tipoId; })[0];
+  var hecho = nav.activo ? (nav.recorrido || 0) / 1000 : 0;
+  var html = '<div class="hv-tipos">' + BUSCAR_TIPOS.map(function (t) {
+    return '<button type="button" class="hv-tipo' + (tipo === t ? ' elegido' : '') + '" data-accion="buscar" data-valor="' + t.id + '">' +
+           '<b>' + t.icono + '</b><span>' + t.nombre + '</span></button>';
+  }).join('') + '</div>';
+  buscarLista = [];
+  if (tipo && !tipo.avisos) {
+    buscarLista = (r.lugares || []).filter(function (x) { return tipo.tipos[x.l.feature.properties.tipo] && x.km > hecho + 0.1; }).slice(0, 10)
+      .map(function (x) {
+        var p = x.l.feature.properties, t = LUGAR_POR_ID[p.tipo] || {};
+        var extra = [];
+        if (p.camiones) extra.push('para camiones');
+        if (p.extras && p.extras.indexOf('gasoil') !== -1) extra.push('gasoil');
+        return { l: x.l, ll: x.l.getLatLng(), km: x.km - hecho, nombre: p.nombre || t.uno || 'Lugar', icono: t.icono || tipo.icono, extra: extra.join(' · ') };
+      });
+    if (!buscarLista.length) {
+      html += '<p class="hv-nada">No encontré ' + tipo.nombre.toLowerCase() + 's en lo que falta del camino (a menos de 150 m de la ruta). ' +
+              'El mapa puede no tenerlas cargadas.</p>';
+    }
+  } else if (tipo && tipo.avisos && nav.activo) {
+    buscarLista = nav.avisos.filter(function (a) { return a.dist > (nav.recorrido || 0) + 20; })
+      .sort(function (a, b) { return a.dist - b.dist; }).slice(0, 10).map(function (a) {
+        return { ll: puntoEnRuta(a.dist), km: (a.dist - nav.recorrido) / 1000, nombre: a.texto,
+                 icono: a.icono ? a.icono.trim() : a.rojo ? '⛔' : '⚠️', extra: a.rojo ? 'tu camión NO pasa' : '', aviso: true, rojo: a.rojo };
+      });
+    if (!buscarLista.length) html += '<p class="hv-nada">No hay peligros marcados en lo que falta del camino.</p>';
+  } else if (!tipo) {
+    html += '<p class="hv-nada">Tocá qué buscás: te muestro los que hay más adelante en tu camino, con los km.</p>';
+  }
+  html += '<ul class="hv-lista">' + buscarLista.map(function (x, i) {
+    return '<li class="' + (x.rojo ? 'rojo' : '') + '"><span class="hv-icono">' + x.icono + '</span><div class="hv-texto"><b>' + esc(x.nombre) + '</b>' +
+      '<small>a ' + esc(distanciaChip(x.km)) + (x.extra ? ' · ' + esc(x.extra) : '') + '</small></div>' +
+      '<div class="hv-botones"><button type="button" class="hv-ver" data-accion="ver" data-valor="' + i + '">Ver</button>' +
+      (x.aviso || !nav.activo ? '' : '<button type="button" class="hv-parar" data-accion="parar" data-valor="' + i + '">Parar acá</button>') +
+      '</div></li>';
+  }).join('') + '</ul>';
+  abrirHoja(tipo ? tipo.icono + ' ' + (tipo.avisos ? 'Peligros en el camino' : tipo.nombre + ' en el camino') : '🔍 Buscar en el camino', html, 'buscar');
+}
+// Llevar la cámara a un lugar sin cortar la navegación (vuelve sola, o con "Centrar")
+function verEnCamino(i) {
+  var x = buscarLista[i];
+  if (!x) return;
+  cerrarHoja();
+  if (nav.activo) {
+    nav.libre = true;
+    botonCentrar.hidden = false;
+    clearTimeout(nav.timerLibre);
+    nav.timerLibre = setTimeout(function () { volverACentrar(true); }, 25000);
+  }
+  gl.easeTo({ center: [x.ll.lng, x.ll.lat], zoom: Math.max(gl.getZoom(), 15.5), pitch: 40, duration: 900 });
+  if (x.l) setTimeout(function () { abrirCartelLugar(x.l); }, 950);
+}
+function pararEnLista(i) {
+  var x = buscarLista[i];
+  if (!x) return;
+  cerrarHoja();
+  pararEn(x.ll, x.nombre);
+}
+// Agregar una parada en el camino y rehacer la ruta desde donde estás (sigue navegando)
+function pararEn(ll, nombre) {
+  if (!nav.activo || !ruta.hasta) return;
+  if (ruta.paradas.length >= MAX_PARADAS) { mostrarMensaje('Ya tenés ' + MAX_PARADAS + ' paradas en la ruta.'); setTimeout(ocultarMensaje, 4000); return; }
+  var cual = agregarParada(true);
+  if (!cual) return;
+  // va antes de las paradas que todavía no pasaste y quedan más adelante
+  var mio = proyectarEnNav(ll).m, otras = ruta.paradas.filter(function (c) { return c !== cual; }), pos = otras.length;
+  for (var k = 0; k < otras.length; k++) {
+    if (ruta[otras[k]] && !ruta[otras[k]].pasada && proyectarEnNav(ruta[otras[k]].latlng).m > mio) { pos = k; break; }
+  }
+  otras.splice(pos, 0, cual);
+  ruta.paradas = otras;
+  var cont = document.getElementById('ruta-paradas'), sig = otras[pos + 1] && document.getElementById('fila-' + otras[pos + 1]);
+  if (cont && sig) { cont.insertBefore(document.getElementById('fila-' + cual), sig); cont.insertBefore(document.getElementById('resultados-' + cual), sig); }
+  ponerPunto(cual, ll, nombre);
+  numerarParadas();
+  var aca = nav.ultimaPos || ubicacion.ultima;
+  nav.recalculando = true;
+  nav.ultimoRecalculo = Date.now();
+  mostrarCartelNav('Recalculando...', 'Agrego la parada: ' + nombre);
+  hablar('Recalculando la ruta.', true);
+  if (aca) {
+    marcarParadasPasadas(aca);
+    ruta[cual].pasada = false;
+    ponerPunto('desde', aca, 'Mi ubicación');
+    if (nav.ultimoRumbo != null) ruta.desde.latlng.rumbo = Math.round((nav.ultimoRumbo + 360) % 360);
+  }
+  recalcularTodo();
+}
+
+// --- Avisar en un toque (como Waze): va al formulario de reportes con tu ubicación. Lo ve todo el mundo cuando lo
+// aprobás en la planilla (como los otros reportes); vos lo ves enseguida. 5 segundos para deshacer (toque sin querer).
+var OTRO_REPORTE = 'El mapa está mal acá (otro)';
+var AVISOS_RAPIDOS = [
+  { id: 'control', icono: '👮', nombre: 'Control policial', que: OTRO_REPORTE, horas: 3 },
+  { id: 'accidente', icono: '💥', nombre: 'Accidente', que: OTRO_REPORTE, horas: 3 },
+  { id: 'cortada', icono: '🚧', nombre: 'Calle o ruta cortada', que: 'Calle cortada u obra', horas: 24 },
+  { id: 'obra', icono: '🦺', nombre: 'Obra en la ruta', que: 'Calle cortada u obra', horas: 72 },
+  { id: 'pozo', icono: '🕳️', nombre: 'Pozo o ruta rota', que: OTRO_REPORTE, horas: 168 },
+  { id: 'balanza', icono: '⚖️', nombre: 'Balanza / control de peso', que: OTRO_REPORTE, horas: 6 },
+  { id: 'puente', icono: '🌉', nombre: 'Puente o paso bajo', que: 'Puente o paso bajo', horas: 720 },
+  { id: 'prohibido', icono: '⛔', nombre: 'Prohibido para camiones', que: 'Calle prohibida para camiones', horas: 720 }
+];
+var CLAVE_MIS_AVISOS = 'mapa-camiones:mis-avisos', CLAVE_AVISOS_PENDIENTES = 'mapa-camiones:avisos-pendientes';
+var avisoEnEspera = null;
+function abrirAvisar() {
+  var aca = (typeof nav !== 'undefined' && nav.ultimaPos) || ubicacion.ultima;
+  var html = '<p class="hv-ayuda">' + (aca ? 'Tocá lo que ves <b>acá, donde estás ahora</b>. Lo ven los demás choferes cuando se aprueba.'
+                                          : 'Necesito tu ubicación (GPS) para avisar.') + '</p>' +
+    '<div class="hv-avisos">' + AVISOS_RAPIDOS.map(function (a) {
+      return '<button type="button" class="hv-aviso ' + a.id + '" data-accion="avisar" data-valor="' + a.id + '"' + (aca ? '' : ' disabled') + '>' +
+             '<b>' + a.icono + '</b><span>' + a.nombre + '</span></button>';
+    }).join('') + '</div>';
+  abrirHoja('⚠️ Avisar a otros choferes', html, 'avisar');
+}
+function avisarRapido(id) {
+  var a = AVISOS_RAPIDOS.filter(function (x) { return x.id === id; })[0];
+  var aca = (typeof nav !== 'undefined' && nav.ultimaPos) || ubicacion.ultima;
+  if (!a || !aca) return;
+  cerrarHoja();
+  if (avisoEnEspera) { clearTimeout(avisoEnEspera.timer); avisoEnEspera = null; }
+  var aviso = { id: a.id, lat: +L.latLng(aca).lat.toFixed(5), lng: +L.latLng(aca).lng.toFixed(5), t: Date.now(),
+                rumbo: nav && nav.ultimoRumbo != null ? Math.round((nav.ultimoRumbo + 360) % 360) : null,
+                kmh: velocidad.kmh != null ? Math.round(velocidad.kmh) : null };
+  avisoEnEspera = { aviso: aviso, timer: setTimeout(function () { confirmarAviso(aviso); }, 5000) };
+  mostrarTostada('<b>' + a.icono + ' ' + esc(a.nombre) + '</b> Avisando en 5 segundos...', 'Deshacer', function () {
+    if (avisoEnEspera) clearTimeout(avisoEnEspera.timer);
+    avisoEnEspera = null;
+    mostrarTostada('Aviso cancelado.', null, null, 2500);
+  }, 5000);
+}
+function confirmarAviso(aviso) {
+  avisoEnEspera = null;
+  var mios = (leerGuardado(CLAVE_MIS_AVISOS) || []).concat([aviso]).slice(-50);
+  guardar(CLAVE_MIS_AVISOS, mios);
+  dibujarReportes();
+  enviarAviso(aviso).then(function (ok) {
+    var a = AVISOS_RAPIDOS.filter(function (x) { return x.id === aviso.id; })[0];
+    mostrarTostada(ok ? '✓ Aviso enviado: ' + esc(a.nombre) + '. ¡Gracias!' : '📶 Sin señal: el aviso se manda solo cuando vuelva.', null, null, 4000);
+    if (nav.voz) pitido();
+  });
+}
+function enviarAviso(aviso) {
+  var a = AVISOS_RAPIDOS.filter(function (x) { return x.id === aviso.id; })[0];
+  if (!reportesConfig || !a) { guardarPendiente(aviso); return Promise.resolve(false); }
+  var c = reportesConfig.campos, d = new Date(aviso.t);
+  var datos = new URLSearchParams();
+  datos.append(c.que || 'entry.1501759450', a.que);
+  datos.append(c.ubicacion, aviso.lat.toFixed(5) + ', ' + aviso.lng.toFixed(5));
+  datos.append(c.lugar, 'Aviso rápido desde la navegación');
+  datos.append(c.comentario || 'entry.1498323086', 'AVISO RÁPIDO: ' + a.nombre + ' (' + ('0' + d.getDate()).slice(-2) + '/' +
+               ('0' + (d.getMonth() + 1)).slice(-2) + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) +
+               (aviso.rumbo != null ? ', yendo hacia ' + aviso.rumbo + '°' : '') + (aviso.kmh != null ? ', a ' + aviso.kmh + ' km/h' : '') + ')');
+  var url = reportesConfig.formulario.replace(/\/viewform.*$/, '/formResponse');
+  return fetch(url, { method: 'POST', mode: 'no-cors', body: datos }).then(function () { return true; })
+    .catch(function () { guardarPendiente(aviso); return false; });
+}
+function guardarPendiente(aviso) {
+  var p = (leerGuardado(CLAVE_AVISOS_PENDIENTES) || []).filter(function (x) { return x.t !== aviso.t; });
+  p.push(aviso);
+  guardar(CLAVE_AVISOS_PENDIENTES, p.slice(-20));
+}
+function mandarPendientes() {
+  var p = leerGuardado(CLAVE_AVISOS_PENDIENTES) || [];
+  if (!p.length || !reportesConfig || (navigator.onLine === false)) return;
+  guardar(CLAVE_AVISOS_PENDIENTES, []);
+  p.forEach(function (a) { if (Date.now() - a.t < 48 * 3600000) enviarAviso(a); });
+}
+window.addEventListener('online', mandarPendientes);
+setInterval(mandarPendientes, 120000);
+// Mis avisos en el mapa (solo en este teléfono, hasta que se aprueben o se venzan)
+function misAvisosVigentes() {
+  return (leerGuardado(CLAVE_MIS_AVISOS) || []).filter(function (a) {
+    var t = AVISOS_RAPIDOS.filter(function (x) { return x.id === a.id; })[0];
+    return t && Date.now() - a.t < t.horas * 3600000;
+  });
+}
+var tostada = { timer: null };
+function mostrarTostada(html, boton, alTocar, ms) {
+  var el = document.getElementById('tostada');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'tostada';
+    el.className = 'tostada';
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<span>' + html + '</span>' + (boton ? '<button type="button">' + esc(boton) + '</button>' : '');
+  if (boton) el.querySelector('button').addEventListener('click', function () { el.hidden = true; if (alTocar) alTocar(); });
+  el.hidden = false;
+  clearTimeout(tostada.timer);
+  tostada.timer = setTimeout(function () { el.hidden = true; }, ms || 4000);
+}
+
+// --- Botones grandes navegando (a la derecha): Avisar y Buscar ---
+(function () {
+  var c = document.createElement('div');
+  c.id = 'nav-acciones';
+  c.className = 'nav-acciones';
+  c.innerHTML = '<button type="button" id="nav-avisar" class="nav-accion avisar"><b aria-hidden="true">⚠️</b><span>Avisar</span></button>' +
+                '<button type="button" id="nav-buscar" class="nav-accion buscar"><b aria-hidden="true">🔍</b><span>Buscar</span></button>';
+  document.body.appendChild(c);
+  document.getElementById('nav-avisar').addEventListener('click', abrirAvisar);
+  document.getElementById('nav-buscar').addEventListener('click', function () { abrirBuscar(null); });
+})();
+
 // ===== v95: SÚPER MODO VIAJE (pedido del chofer: "que entres más a la pantalla, un súper modo y que tenga más cosas") =====
 // Al tocar Ir: cartel "Modo viaje" y la cámara se zambulle hasta el camión; mapa casi acostado con cielo y horizonte.
 // Navegando: el próximo giro dibujado sobre la ruta (flecha blanca) y una barra que se llena al acercarte; en el cartel de
@@ -6043,7 +6443,7 @@ function calleActual(recorrido) {
     return p.ini != null && nav.acum[Math.min(p.ini, nav.acum.length - 1)] <= recorrido + 5;
   });
   for (var i = pasados.length - 1; i >= 0 && i >= pasados.length - 3; i--) {
-    var c = calleDeTexto(pasados[i].texto);
+    var c = pasados[i].calle || calleDeTexto(pasados[i].texto);
     if (c) return c;
   }
   return '';
@@ -6060,54 +6460,90 @@ function elementoTablero(id, clase, padre) {
 }
 function actualizarTablero(recorrido, prox) {
   var cartel = document.getElementById('nav-cartel'), abajo = document.getElementById('nav-abajo');
-  var total = nav.acum[nav.acum.length - 1] || 1;
+  var total = nav.acum[nav.acum.length - 1] || 1, d = prox ? prox.dist - recorrido : Infinity;
   // 1) próximo giro en el mapa y barra de acercamiento
   marcarManiobra(prox, recorrido);
+  // 2) cartel verde (salida, escudos de ruta, hacia dónde) — v97
+  var verde = elementoTablero('nav-verde', 'nav-verde', cartel);
+  if (verde) {
+    var hv = prox && !prox.llegada && d <= 2500 ? htmlCartelVerde(prox) : '';
+    if (verde.getAttribute('data-html') !== hv) { verde.setAttribute('data-html', hv); verde.innerHTML = hv; }
+    verde.hidden = !hv;
+  }
+  // 3) carriles: los de TomTom si hay; si no, del texto de la indicación ("mantenete a la derecha", "salida...")
+  var car = elementoTablero('nav-carriles', 'nav-carriles', cartel);
+  if (car) {
+    var sec = (nav.carriles || []).filter(function (x) { return recorrido >= x.d0 - 500 && recorrido <= x.d1; })[0], hc = '';
+    if (sec && sec.lanes.length > 1 && sec.lanes.some(function (l) { return l.sigue; })) hc = htmlCarriles(sec.lanes);
+    else if (prox && d <= 1200 && /mantenete|manten[eé]|salida|bifurcaci|desv[ií]o|carril|incorpor/i.test(prox.texto) && /(izquierda|derecha)/i.test(prox.texto)) {
+      var lado = /izquierda/i.test(prox.texto) ? 'izquierda' : 'derecha';
+      hc = '<span class="carril-pista ' + lado + '"><svg viewBox="0 0 24 24" aria-hidden="true">' + FLECHAS_NAV[lado === 'izquierda' ? 'leveIzq' : 'leveDer'] +
+           '</svg>Andá por el carril de la ' + lado.toUpperCase() + '</span>';
+    }
+    if (car.getAttribute('data-html') !== hc) { car.setAttribute('data-html', hc); car.innerHTML = hc; }
+    car.hidden = !hc;
+  }
   var barra = elementoTablero('nav-acerca', 'nav-acerca', cartel);
   if (barra) {
-    var d = prox ? prox.dist - recorrido : Infinity;
     var ver = prox && !prox.llegada && d <= TABLERO.acercaM;
     barra.hidden = !ver;
     if (ver) barra.innerHTML = '<i style="width:' + Math.round(Math.max(0, Math.min(1, 1 - d / TABLERO.acercaM)) * 100) + '%"></i>';
   }
-  // 2) lo que viene en el camino
-  var caja = elementoTablero('nav-proximos', 'nav-proximos', cartel);
+  // 4) "Después": si el giro siguiente viene enseguida
+  var desp = elementoTablero('nav-despues', 'nav-despues', cartel);
+  if (desp) {
+    var k = prox ? nav.maniobras.indexOf(prox) : -1, sig = k >= 0 ? nav.maniobras[k + 1] : null, hd = '';
+    if (sig && d <= 1500 && sig.dist - prox.dist <= 400) {
+      hd = '<span>Después</span><svg viewBox="0 0 24 24" aria-hidden="true">' + FLECHAS_NAV[flechaNav('', sig.texto)] + '</svg>' +
+           '<em>' + esc(sig.texto.length > 38 ? sig.texto.slice(0, 36) + '…' : sig.texto) + '</em>';
+    }
+    if (desp.getAttribute('data-html') !== hd) { desp.setAttribute('data-html', hd); desp.innerHTML = hd; }
+    desp.hidden = !hd;
+  }
+  // 5) lo que viene en el camino: botones (abren "Buscar en el camino") en la barra de abajo
+  var caja = document.getElementById('nav-proximos');
+  if (caja && caja.parentNode !== abajo && abajo) caja.remove(), caja = null;
+  if (!caja && abajo) {
+    caja = document.createElement('div');
+    caja.id = 'nav-proximos';
+    caja.className = 'nav-proximos';
+    abajo.insertBefore(caja, abajo.firstChild);
+    caja.addEventListener('click', function (ev) {
+      var b = ev.target.closest('[data-buscar]');
+      if (b) abrirBuscar(b.getAttribute('data-buscar'));
+    });
+  }
   if (caja) {
-    var hecho = recorrido / 1000, items = [];
-    var lugares = nav.r.lugares || [];
+    var hecho = recorrido / 1000, items = [], lugares = nav.r.lugares || [];
     var primero = function (tipos) {
       return lugares.filter(function (x) { return tipos[x.l.feature.properties.tipo] && x.km > hecho + 0.15 && x.km - hecho < TABLERO.maxKm; })[0];
     };
-    [[{ combustible: 1 }, '⛽', 'Próxima estación de servicio'], [{ parador: 1, estacionamiento: 1 }, '☕', 'Próximo parador'],
-     [{ gomeria: 1 }, '🛞', 'Próxima gomería']].forEach(function (q) {
-      var x = primero(q[0]);
-      if (x) items.push({ icono: q[1], km: x.km - hecho, titulo: q[2] + ': ' + (x.l.feature.properties.nombre || '') });
+    BUSCAR_TIPOS.slice(0, 3).forEach(function (t) {
+      var x = primero(t.tipos);
+      if (x) items.push({ icono: t.icono, km: x.km - hecho, nombre: t.nombre, buscar: t.id, clase: t.id });
     });
-    var ctl = nav.avisos.filter(function (a) { return a.icono && /^ctl/.test(String(a.n)) && a.dist > recorrido + 50; })
-      .sort(function (a, b) { return a.dist - b.dist; })[0];
-    if (ctl) items.push({ icono: ctl.icono.trim(), km: (ctl.dist - recorrido) / 1000, titulo: ctl.texto, clase: 'control' });
-    var pel = nav.avisos.filter(function (a) { return !/^ctl/.test(String(a.n)) && a.dist > recorrido + 50; })
-      .sort(function (a, b) { return a.dist - b.dist; })[0];
-    if (pel) items.push({ icono: pel.rojo ? '⛔' : (pel.icono || '⚠️').trim() || '⚠️', km: (pel.dist - recorrido) / 1000, titulo: pel.texto,
-                          clase: pel.rojo ? 'rojo' : 'ojo' });
+    var pel = nav.avisos.filter(function (a) { return a.dist > recorrido + 50; }).sort(function (a, b) { return a.dist - b.dist; })[0];
+    if (pel) items.push({ icono: pel.icono ? pel.icono.trim() : pel.rojo ? '⛔' : '⚠️', km: (pel.dist - recorrido) / 1000,
+                          nombre: /^ctl/.test(String(pel.n)) ? 'Control' : pel.rojo ? 'No pasás' : 'Ojo', buscar: 'peligros',
+                          clase: pel.rojo ? 'rojo' : /^ctl/.test(String(pel.n)) ? 'control' : 'ojo' });
     var html = items.map(function (it) {
-      return '<span class="np ' + (it.clase || '') + '" title="' + esc(it.titulo) + '"><b>' + it.icono + '</b>' +
-             esc(distanciaChip(it.km)) + '</span>';
+      return '<button type="button" class="np ' + it.clase + '" data-buscar="' + it.buscar + '"><b>' + it.icono + '</b>' +
+             '<span><strong>' + esc(distanciaChip(it.km)) + '</strong><small>' + esc(it.nombre) + '</small></span></button>';
     }).join('');
     if (caja.getAttribute('data-html') !== html) { caja.setAttribute('data-html', html); caja.innerHTML = html; }
     caja.hidden = !items.length;
   }
-  // 3) la calle por donde vas
+  // 6) la calle por donde vas (con escudo si es una ruta)
   var calle = elementoTablero('nav-calle', 'nav-calle', document.body);
   if (calle) {
-    var c = calleActual(recorrido);
-    calle.textContent = c.replace(/^Avenida/i, 'Av.').replace(/\s*\/\s*/g, ' · ');
-    calle.hidden = !c;
+    var hcl = htmlCalle(calleActual(recorrido));
+    if (calle.getAttribute('data-html') !== hcl) { calle.setAttribute('data-html', hcl); calle.innerHTML = hcl; }
+    calle.hidden = !hcl;
   }
-  // 4) barra del viaje (cuánto hiciste)
+  // 7) barra del viaje (cuánto hiciste)
   var prog = elementoTablero('nav-progreso', 'nav-progreso', abajo);
   if (prog) prog.innerHTML = '<i style="width:' + Math.round(Math.min(1, recorrido / total) * 1000) / 10 + '%"></i>';
-  // 5) la máxima para tu camión al lado del velocímetro (la del radar que viene, si es menor)
+  // 8) la máxima para tu camión al lado del velocímetro (la del radar que viene, si es menor)
   var vel = document.getElementById('velocimetro');
   if (vel) {
     var max = vel.querySelector('.vel-max');
@@ -6127,7 +6563,8 @@ function distanciaChip(km) {
 function limpiarTablero() {
   nav.maniobraN = undefined;
   ponerDatos('maniobra', []);
-  ['nav-acerca', 'nav-proximos', 'nav-calle'].forEach(function (id) {
+  cerrarHoja();
+  ['nav-acerca', 'nav-proximos', 'nav-calle', 'nav-verde', 'nav-carriles', 'nav-despues'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) { el.hidden = true; el.removeAttribute('data-html'); }
   });
@@ -6181,7 +6618,7 @@ function seguirConCamara(pos) {
   moverCamion(pos, nav.ultimoRumbo, nav.libre ? 400 : nav.primeraCamara ? 0 : 900);
   if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")
   var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; }, pitch: VIAJE.inclinacion,
-            offset: [0, Math.round(gl.getContainer().clientHeight * 0.22)] };
+            offset: [0, Math.round(gl.getContainer().clientHeight * 0.14)] };
   // siempre se dice el giro: con "rumbo arriba" apagado, 0 (si no, un giro al norte a medias quedaba torcido)
   o.bearing = nav.rumbo ? (nav.ultimoRumbo != null ? nav.ultimoRumbo : gl.getBearing()) : 0;
   var z = zoomDeViaje();

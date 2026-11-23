@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 102;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 103;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -305,6 +305,7 @@ gl.on('styleimagemissing', function (ev) {
   if (gl.hasImage(ev.id)) return;
   if (ev.id === 'ic-sin-salida') { gl.addImage(ev.id, dibujarSinSalida(), { pixelRatio: 2 }); return; }
   if (ev.id === 'ic-punta') { gl.addImage(ev.id, dibujarPunta(), { pixelRatio: 2 }); return; }
+  if (ev.id === 'ic-peaje') { gl.addImage(ev.id, dibujarPeaje(), { pixelRatio: 2 }); return; }
   var d = datosIcono(ev.id);
   if (d && d.length === 1) gl.addImage(ev.id, dibujarLimite(d[0].slice(1)), { pixelRatio: 2 });
   else if (d) gl.addImage(ev.id, dibujarIcono(d[0], d[1], d[2]), { pixelRatio: 2 });
@@ -672,6 +673,23 @@ function aplicarDibujoCamion() {
   r.setProperty('--camion-img', urlSvg(svgCamion(dibujoCamion.tipo, dibujoCamion.color)));
   r.setProperty('--camion-alto', (H * 0.6).toFixed(1) + 'px');
   r.setProperty('--camion-h-img', urlSvg(svgCamion(dibujoCamion.tipo, dibujoCamion.color, true)));
+  // v103: colores de los costados del camión en 3D
+  var c = (COLORES_CABINA.filter(function (x) { return x.id === dibujoCamion.color; })[0] || COLORES_CABINA[0]).c;
+  var cc = dibujoCamion.color === 'azul' ? '#b7412e' : '#2c6db3';
+  var LADOS = {
+    furgon: 'linear-gradient(to right, #b9c2cc, #f4f6f9)', chasis: 'linear-gradient(to right, #b9c2cc, #f4f6f9)',
+    termico: 'linear-gradient(to right, #cfd6de, #ffffff 62%, ' + c + ' 62% 74%, #ffffff 74%)',
+    cisterna: 'linear-gradient(to right, #6f7983, #dfe4e9 45%, #ffffff 65%, #a7b0b9)',
+    cerealero: 'linear-gradient(to right, #34552a, #6c9a55)', batea: 'linear-gradient(to right, #5d646d, #8f97a1)',
+    contenedor: 'repeating-linear-gradient(to bottom, ' + cc + ' 0 3px, ' + tonoColor(cc, -0.3) + ' 3px 4px)',
+    jaula: 'repeating-linear-gradient(to right, #c3cad2 0 1.6px, #3a2b20 1.6px 4px)'
+  };
+  r.setProperty('--camion-color', c);
+  r.setProperty('--camion-lado', LADOS[dibujoCamion.tipo] || LADOS.furgon);
+  var semi = dibujoCamion.tipo !== 'chasis', ini = semi ? 31 : 30;
+  r.setProperty('--acoplado-top', (3 + ini * 0.6).toFixed(1) + 'px');
+  r.setProperty('--acoplado-img-y', (-ini * 0.6).toFixed(1) + 'px');
+  r.setProperty('--acoplado-largo', ((H - 2 - ini) * 0.6).toFixed(1) + 'px');
 }
 aplicarDibujoCamion();
 function abrirElegirCamion() {
@@ -1306,7 +1324,7 @@ function ponerCapasPropias() {
   ponerRelieveYSatelite();   // v98: relieve y satélite (debajo de las calles)
   var nombres = gl.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0];
   var debajo = nombres ? nombres.id : undefined;
-  ['red', 'ruta', 'maniobra', 'restr', 'feriados', 'precision', 'lugares', 'controles', 'reportes'].forEach(function (id) {
+  ['red', 'ruta', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'lugares', 'controles', 'reportes'].forEach(function (id) {
     gl.addSource(id, { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 });
   });
   var redondo = { 'line-cap': 'round', 'line-join': 'round' };
@@ -1319,6 +1337,19 @@ function ponerCapasPropias() {
                            'fill-extrusion-base': ['get', 'render_min_height'], 'fill-extrusion-opacity': 0.88 } }, debajo);
   }
   [
+    // v103: puentes y peajes en 3D (de cerca)
+    { id: 'puentes-sombra', type: 'fill', source: 'puentes3d', minzoom: 14.7, filter: es('t', 'sombra'),
+      paint: { 'fill-color': '#0b1a33', 'fill-opacity': 0.16 } },
+    { id: 'puentes-3d', type: 'fill-extrusion', source: 'puentes3d', minzoom: 14.7, filter: ['!=', ['get', 't'], 'sombra'],
+      paint: { 'fill-extrusion-color': ['match', ['get', 't'], 'tablero', ['case', ['==', ['get', 'ruta'], 1], '#1a6dff', '#b4bcc6'],
+                                        'baranda', '#f3f5f8', 'pilar', '#7d8792', '#b4bcc6'],
+               'fill-extrusion-base': ['get', 'b'], 'fill-extrusion-height': ['get', 'h'] } },
+    { id: 'peajes-sombra', type: 'fill', source: 'peajes3d', minzoom: 14, filter: es('t', 'p-sombra'),
+      paint: { 'fill-color': '#0b1a33', 'fill-opacity': 0.14 } },
+    { id: 'peajes-3d', type: 'fill-extrusion', source: 'peajes3d', minzoom: 14, filter: ['!=', ['get', 't'], 'p-sombra'],
+      paint: { 'fill-extrusion-color': ['match', ['get', 't'], 'p-techo', '#1f5fbf', 'p-techo-arriba', '#f4f6f9', 'p-pilar', '#9aa3ad',
+                                        'p-isla', '#f2c94c', 'p-cabina', '#eef2f6', '#c3c9d1'],
+               'fill-extrusion-base': ['get', 'b'], 'fill-extrusion-height': ['get', 'h'] } },
     { id: 'red-pesada', type: 'line', source: 'red', layout: redondo,
       paint: { 'line-color': '#2e7d32', 'line-opacity': 0.5, 'line-width': ['step', ['zoom'], 2, 12, 4, 14, 7] } },
     { id: 'ruta-alt', type: 'line', source: 'ruta', filter: es('t', 'alt'),
@@ -1401,6 +1432,9 @@ function ponerCapasPropias() {
     { id: 'lugares', type: 'symbol', source: 'lugares', minzoom: ZOOM_LUGARES - 1,
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
                 'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_LUGARES - 1, 1, 15, 1.15] } },
+    { id: 'peajes-icono', type: 'symbol', source: 'peajes', minzoom: 9,
+      layout: { 'icon-image': 'ic-peaje', 'icon-allow-overlap': false, 'icon-padding': 6,
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.7, 14, 1] } },
     { id: 'reportes', type: 'symbol', source: 'reportes',
       layout: { 'icon-image': 'ic-reporte', 'icon-allow-overlap': true, 'icon-ignore-placement': true } },
     { id: 'controles', type: 'symbol', source: 'controles', minzoom: ZOOM_CONTROLES - 1, filter: ['!=', ['get', 'r'], 1],
@@ -2660,9 +2694,12 @@ mapa.on('locationfound', function (e) {
   if (!ubicacion.punto) {
     var el = document.createElement('div');
     el.className = 'punto-ubicacion';
-    el.innerHTML = '<i class="cam-acoplado"></i><i class="cam-cabina"></i>';   // v102: navegando, camión articulado
+    // v103: navegando, camión en 3D: dos cajas (acoplado y cabina) con techo y costados, acostadas sobre el mapa
+    el.innerHTML = '<i class="cam-acoplado"><b class="c3 izq"></b><b class="c3 der"></b><b class="c3 atras"></b><b class="c3 techo"></b></i>' +
+                   '<i class="cam-cabina"><b class="c3 izq"></b><b class="c3 der"></b><b class="c3 atras"></b><b class="c3 frente"></b>' +
+                   '<b class="c3 techo"></b></i>';
     // v94: 'viewport' = el camión se ve derecho aunque el mapa esté inclinado (acostado en 3D quedaba aplastado)
-    ubicacion.punto = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'viewport' })
+    ubicacion.punto = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
       .setLngLat([e.latlng.lng, e.latlng.lat]).addTo(gl);
   } else if (!(typeof nav !== 'undefined' && nav.activo)) ubicacion.punto.setLngLat([e.latlng.lng, e.latlng.lat]);
   // navegando no se dibuja el círculo de precisión (alrededor del camión molestaba)
@@ -6139,7 +6176,7 @@ function htmlCartelVerde(prox) {
   var salida = c.salida || '';
   var deRuta = /salida|autopista|autov[ií]a|ruta|acceso|mantenete|manten[eé]|bifurcaci|incorpor/i.test(prox.texto || '') || c.salida || (c.rutas || []).length;
   if (!deRuta || (!rutas.length && !hacia && !salida)) return '';
-  if (!hacia && !salida && /^Segu[ií]/i.test(prox.texto || '')) return '';   // v102: "Seguí por la RP 88": solo el escudo quedaba vacío
+  if (!hacia && !salida) return '';   // v103: con solo el escudo el cartel verde quedaba vacío (la ruta ya se lee en la indicación)
   // los escudos ya repetidos en "hacia" no se escriben dos veces
   return '<div class="cartel-verde">' + (salida ? '<span class="cv-salida">SALIDA ' + esc(salida) + '</span>' : '') +
     '<span class="cv-rutas">' + rutas.slice(0, 3).map(escudo).join('') + '</span>' +
@@ -6510,6 +6547,179 @@ function ponerTerreno(pos) {
   }
 })();
 
+
+// ===== v103: puentes y peajes en 3D (pedido del chofer: "los puentes que sean como puentes de verdad, tipo 3D, y los
+// peajes también, todo más realista"). Solo de cerca (zoom GL ≥ 15): de lejos no se ven y gastarían.
+// - Puentes: se toman los tramos marcados como puente del mapa de fondo (OpenMapTiles, brunnel=bridge) que ya están en el
+//   teléfono (querySourceFeatures: nada que bajar) y se arma: tablero elevado con rampas en las puntas, barandas a los
+//   costados y pilares cada 28 m. Si tu ruta va POR el puente, el tablero es azul (la ruta sigue arriba del puente).
+//   Se rearma cada 2,5 s solo si el mapa se movió > 250 m o cambió el zoom.
+// - Peajes: datos/peajes.geojson (scripts/descargar_peajes.py): techo de la estación cruzado sobre la ruta (azul con
+//   techo blanco), pilares y cabinas abajo. Ícono 💲 para tocarlo (nombre, empresa, formas de pago).
+var PUENTES = { zoomMin: 15, alto: 6, tablero: 1.4, baranda: 1.1, cadaPilar: 30, pedazo: 11, cadaMs: 2500, radioM: 700, tope: 3000 };
+var ANCHO_PUENTE = { motorway: 13, trunk: 11, primary: 10, secondary: 9, tertiary: 8, minor: 7, service: 5, track: 4,
+                     rail: 5, transit: 4.5, path: 3, busway: 7 };
+var puentes3d = { firma: '', timer: null };
+// Pasar a metros alrededor de un punto y volver
+function aMetros(coords) {
+  var lng0 = coords[0][0], lat0 = coords[0][1], kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+  return { P: coords.map(function (c) { return [(c[0] - lng0) * kx, (c[1] - lat0) * ky]; }),
+           vuelta: function (q) { return [lng0 + q[0] / kx, lat0 + q[1] / ky]; } };
+}
+// Polígono de una línea con un ancho (en metros), entre los metros s0 y s1 de la línea; corrimiento = de costado
+function franja(P, ac, s0, s1, ancho, corrimiento) {
+  function en(s) {
+    var i = 1;
+    while (i < P.length - 1 && ac[i] < s) i++;
+    var t = Math.max(0, Math.min(1, (s - ac[i - 1]) / ((ac[i] - ac[i - 1]) || 1)));
+    var x = P[i - 1][0] + (P[i][0] - P[i - 1][0]) * t, y = P[i - 1][1] + (P[i][1] - P[i - 1][1]) * t;
+    var dx = P[i][0] - P[i - 1][0], dy = P[i][1] - P[i - 1][1], l = Math.hypot(dx, dy) || 1;
+    return { x: x, y: y, nx: -dy / l, ny: dx / l };
+  }
+  var pts = [en(s0)];
+  for (var i = 0; i < P.length; i++) if (ac[i] > s0 && ac[i] < s1) pts.push(en(ac[i]));
+  pts.push(en(s1));
+  var c = corrimiento || 0, w = ancho / 2, izq = [], der = [];
+  pts.forEach(function (q) {
+    izq.push([q.x + q.nx * (c + w), q.y + q.ny * (c + w)]);
+    der.push([q.x + q.nx * (c - w), q.y + q.ny * (c - w)]);
+  });
+  var anillo = izq.concat(der.reverse());
+  anillo.push(anillo[0]);
+  return anillo;
+}
+function armarPuentes3D() {
+  if (!gl.getSource('openmaptiles') || !gl.getSource('puentes3d')) return;
+  if (gl.getZoom() < PUENTES.zoomMin - 0.3) {
+    if (puentes3d.firma) { puentes3d.firma = ''; ponerDatos('puentes3d', []); }
+    return;
+  }
+  var c = gl.getCenter(), firma = (c.lng / 0.003).toFixed(0) + ',' + (c.lat / 0.003).toFixed(0) + ',' + Math.round(gl.getZoom() * 2) + ',' + (nav.activo ? L.stamp(nav.r) : 0);
+  var ckx = 111320 * Math.cos(c.lat * Math.PI / 180);
+  function cerca(q) { return Math.hypot((q[0] - c.lng) * ckx, (q[1] - c.lat) * 110540) < PUENTES.radioM; }
+  if (firma === puentes3d.firma) return;
+  puentes3d.firma = firma;
+  var feats;
+  try {
+    feats = gl.querySourceFeatures('openmaptiles', { sourceLayer: 'transportation', filter: ['==', ['get', 'brunnel'], 'bridge'] });
+  } catch (e) { return; }
+  var salida = [], visto = {};
+  feats.forEach(function (f) {
+    var clase = f.properties['class'];
+    if (clase === 'ferry' || clase === 'path' && gl.getZoom() < 16) return;
+    var lineas = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [];
+    lineas.forEach(function (coords) {
+      if (coords.length < 2 || salida.length > PUENTES.tope) return;
+      if (!coords.some(cerca)) return;   // solo los de cerca (los de lejos, con el mapa inclinado, ni se ven)
+      var k = coords[0][0].toFixed(5) + coords[0][1].toFixed(5) + coords[coords.length - 1][0].toFixed(5) + clase;
+      if (visto[k]) return;
+      visto[k] = true;
+      var m = aMetros(coords), P = m.P, ac = [0];
+      for (var i = 1; i < P.length; i++) ac.push(ac[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+      var largo = ac[ac.length - 1];
+      if (largo < 6) return;
+      var ancho = ANCHO_PUENTE[clase] || 6;
+      // ¿tu ruta va por este puente? (las dos puntas pegadas a la ruta)
+      var enRuta = 0;
+      if (nav.activo && nav.r) {
+        var a = proyectarEnNav([coords[0][1], coords[0][0]]), b = proyectarEnNav([coords[coords.length - 1][1], coords[coords.length - 1][0]]);
+        if (a.d < 12 && b.d < 12 && Math.abs(Math.abs(b.m - a.m) - largo) < largo * 0.3 + 10) enRuta = 1;
+      }
+      // tablero en pedazos: sube en las puntas (rampas) y queda alto en el medio
+      var rampa = Math.min(22, largo / 3), n = Math.max(1, Math.ceil(largo / PUENTES.pedazo));
+      for (var j = 0; j < n; j++) {
+        var s0 = largo * j / n, s1 = largo * (j + 1) / n, sm = (s0 + s1) / 2;
+        var h = Math.max(0.4, PUENTES.alto * Math.min(1, sm / rampa, (largo - sm) / rampa));
+        var props = { t: 'tablero', ruta: enRuta, b: +h.toFixed(2), h: +(h + PUENTES.tablero).toFixed(2) };
+        salida.push({ type: 'Feature', properties: props, geometry: { type: 'Polygon', coordinates: [franja(P, ac, s0, s1, ancho).map(m.vuelta)] } });
+        [-1, 1].forEach(function (lado) {
+          salida.push({ type: 'Feature', properties: { t: 'baranda', b: props.h, h: +(props.h + PUENTES.baranda).toFixed(2) },
+                        geometry: { type: 'Polygon', coordinates: [franja(P, ac, s0, s1, 0.5, lado * (ancho / 2 - 0.25)).map(m.vuelta)] } });
+        });
+        if (j === 0) salida.push({ type: 'Feature', properties: { t: 'sombra' }, geometry: { type: 'Polygon',
+          coordinates: [franja(P, ac, 0, largo, ancho + 2, 1.5).map(m.vuelta)] } });
+      }
+      // pilares
+      for (var s = PUENTES.cadaPilar / 2; s < largo - 4; s += PUENTES.cadaPilar) {
+        var hp = PUENTES.alto * Math.min(1, s / rampa, (largo - s) / rampa);
+        if (hp < 1.5) continue;
+        salida.push({ type: 'Feature', properties: { t: 'pilar', b: 0, h: +hp.toFixed(2) },
+                      geometry: { type: 'Polygon', coordinates: [franja(P, ac, Math.max(0, s - 0.9), Math.min(largo, s + 0.9), ancho * 0.55).map(m.vuelta)] } });
+      }
+    });
+  });
+  ponerDatos('puentes3d', salida);
+}
+setInterval(function () { if (document.visibilityState === 'visible') armarPuentes3D(); }, PUENTES.cadaMs);
+
+// --- Peajes ---
+var peajes = { feats: [] };
+fetch('datos/peajes.geojson', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+  if (!d || !d.features) return;
+  peajes.feats = d.features;
+  armarPeajes3D();
+}).catch(function () { /* sin peajes: no pasa nada */ });
+// Una estación de peaje: techo cruzado sobre la ruta, pilares en las puntas y cabinas abajo
+function armarPeajes3D() {
+  if (!peajes.feats.length) return;
+  var salida = [], iconos = [];
+  peajes.feats.forEach(function (f, i) {
+    var c = f.geometry.coordinates, p = f.properties, r = (p.rumbo || 0) * Math.PI / 180;
+    iconos.push({ type: 'Feature', geometry: f.geometry, properties: { k: 'p', i: i } });
+    var carriles = Math.max(2, Math.min(12, p.carriles ? p.carriles * 2 : 6));   // las dos manos
+    var ancho = carriles * 4 + 6, fondo = 12;
+    var lng0 = c[0], lat0 = c[1], kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+    var ux = Math.sin(r), uy = Math.cos(r), nx = uy, ny = -ux;   // u = hacia donde va la ruta, n = a lo ancho
+    function caja(cu, cn, du, dn, props) {   // rectángulo centrado en (cu, cn), du de largo y dn de ancho (metros)
+      var q = [[-du / 2, -dn / 2], [du / 2, -dn / 2], [du / 2, dn / 2], [-du / 2, dn / 2], [-du / 2, -dn / 2]].map(function (e) {
+        var a = cu + e[0], b = cn + e[1];
+        return [lng0 + (ux * a + nx * b) / kx, lat0 + (uy * a + ny * b) / ky];
+      });
+      salida.push({ type: 'Feature', properties: props, geometry: { type: 'Polygon', coordinates: [q] } });
+    }
+    caja(0, 0, fondo + 4, ancho + 4, { t: 'p-sombra' });
+    caja(0, 0, fondo, ancho, { t: 'p-techo', b: 5.4, h: 6.6 });
+    caja(0, 0, fondo - 1.5, ancho - 1.5, { t: 'p-techo-arriba', b: 6.6, h: 6.9 });
+    [-1, 1].forEach(function (lado) { caja(0, lado * (ancho / 2 - 0.8), 1.2, 1.2, { t: 'p-pilar', b: 0, h: 5.4 }); });
+    for (var k = 0; k <= carriles; k++) {   // islas con cabina entre carril y carril
+      var cn = -ancho / 2 + 3 + k * 4;
+      if (cn > ancho / 2 - 2) break;
+      caja(0, cn, 9, 1.2, { t: 'p-isla', b: 0, h: 0.3 });
+      caja(0, cn, 2.6, 1.6, { t: 'p-cabina', b: 0.3, h: 2.9 });
+    }
+  });
+  ponerDatos('peajes3d', salida);
+  ponerDatos('peajes', iconos);
+}
+function abrirCartelPeaje(i) {
+  var f = peajes.feats[i];
+  if (!f) return;
+  var p = f.properties, ll = L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0]);
+  var PAGO = { cash: 'efectivo', credit_cards: 'tarjeta de crédito', debit_cards: 'tarjeta de débito', telepeaje: 'TelePeaje',
+               'Telepeaje': 'TelePeaje', TelePASE: 'TelePASE', telepase: 'TelePASE', mercadopago: 'Mercado Pago' };
+  var html = '<div class="cartel-tipo">💲 Peaje</div><div class="cartel-valor">' + esc(p.nombre || 'Peaje') + '</div>';
+  if (p.ruta || p.ref) html += '<div class="cartel-calle">' + esc([p.ruta, p.ref].filter(Boolean).join(' · ')) + '</div>';
+  if (p.operador) html += '<div class="cartel-linea"><b>Lo cobra:</b> ' + esc(p.operador) + '</div>';
+  if (p.pago && p.pago.length) html += '<div class="cartel-linea"><b>Se paga con:</b> ' + esc(p.pago.map(function (x) { return PAGO[x] || x; }).join(', ')) + '</div>';
+  html += '<div class="cartel-detalle">Para camiones la tarifa depende de los ejes. En la mayoría de los peajes nacionales se paga con TelePASE ' +
+          '(sin barrera): verificá antes de salir. Si no querés pagar peajes, en la ruta tocá "Evitar peajes".</div>' +
+          '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm || '') +
+          '" target="_blank" rel="noopener">ver</a></div>';
+  abrirCartel(ll, html);
+}
+function dibujarPeaje() {   // ícono: círculo azul con el signo $ blanco
+  var k = 2, t = 32 * k, c = document.createElement('canvas');
+  c.width = c.height = t;
+  var x = c.getContext('2d');
+  x.shadowColor = 'rgba(0,0,0,0.35)'; x.shadowBlur = 4 * k; x.shadowOffsetY = k;
+  x.beginPath(); x.arc(t / 2, t / 2, 13 * k, 0, 2 * Math.PI); x.fillStyle = '#ffffff'; x.fill();
+  x.shadowColor = 'transparent';
+  x.beginPath(); x.arc(t / 2, t / 2, 11 * k, 0, 2 * Math.PI); x.fillStyle = '#1452c9'; x.fill();
+  x.fillStyle = '#ffffff'; x.font = 'bold ' + (15 * k) + 'px Arial, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('$', t / 2, t / 2 + k);
+  return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
+}
+
 // ===== v95: SÚPER MODO VIAJE (pedido del chofer: "que entres más a la pantalla, un súper modo y que tenga más cosas") =====
 // Al tocar Ir: cartel "Modo viaje" y la cámara se zambulle hasta el camión; mapa casi acostado con cielo y horizonte.
 // Navegando: el próximo giro dibujado sobre la ruta (flecha blanca) y una barra que se llena al acercarte; en el cartel de
@@ -6649,7 +6859,10 @@ function actualizarTablero(recorrido, prox) {
   // 3) carriles: los de TomTom si hay; si no, del texto de la indicación ("mantenete a la derecha", "salida...")
   var car = elementoTablero('nav-carriles', 'nav-carriles', cartel);
   if (car) {
-    var sec = (nav.carriles || []).filter(function (x) { return recorrido >= x.d0 - 500 && recorrido <= x.d1; })[0], hc = '';
+    // v103: solo los carriles de ESTE giro (los del giro siguiente confundían: "mantenete a la derecha" y marcaba la izquierda)
+    var sec = prox ? (nav.carriles || []).filter(function (x) {
+      return recorrido >= x.d0 - 500 && recorrido <= x.d1 && Math.abs(x.d1 - prox.dist) < 150;
+    })[0] : null, hc = '';
     if (sec && sec.lanes.length > 1 && sec.lanes.some(function (l) { return l.sigue; })) hc = htmlCarriles(sec.lanes);
     else if (prox && d <= 1200 && /mantenete|manten[eé]|salida|bifurcaci|desv[ií]o|carril|incorpor/i.test(prox.texto) && /(izquierda|derecha)/i.test(prox.texto)) {
       var lado = /izquierda/i.test(prox.texto) ? 'izquierda' : 'derecha';
@@ -7154,7 +7367,7 @@ gl.on('click', function (e) {
     var hay = capas.filter(function (id) { return gl.getLayer(id); });
     return hay.length ? gl.queryRenderedFeatures([[pt.x - t, pt.y - t], [pt.x + t, pt.y + t]], { layers: hay }) : [];
   }
-  var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos'], 18);
+  var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos', 'peajes-icono'], 18);
   if (iconos.length) {
     // el más cercano al dedo (antes ganaba siempre el control o el reporte aunque el lugar estuviera más cerca)
     var lejos = function (f) {
@@ -7163,7 +7376,8 @@ gl.on('click', function (e) {
     };
     iconos.sort(function (a, b) { return lejos(a) - lejos(b); });
     var q = iconos[0].properties;
-    if (q.k === 'l' && lugarPorId[q.id]) abrirCartelLugar(lugarPorId[q.id]);
+    if (q.k === 'p') abrirCartelPeaje(q.i);   // v103
+    else if (q.k === 'l' && lugarPorId[q.id]) abrirCartelLugar(lugarPorId[q.id]);
     else if (q.k === 'c' && controles.lista[q.i]) abrirCartelControl(controles.lista[q.i]);
     else if (q.k === 'r' && reportePorId[q.id]) abrirCartel(reportePorId[q.id].getLatLng(), armarCartelReporte(reportePorId[q.id].feature.properties));
     return;

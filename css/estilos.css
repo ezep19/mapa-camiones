@@ -1472,3 +1472,45 @@ body.navegando .cam-acoplado {
   top: 21px; height: calc(var(--camion-alto, 70.8px) - 18px); background-position: 0 -18px; z-index: 1;
   transform-origin: 50% 0;
 }
+
+/* ===== v103: camión en 3D (dos cajas con techo y costados), acostado sobre el mapa: con la inclinación se ve el volumen ===== */
+body.navegando .punto-ubicacion { transform-style: preserve-3d; }
+body.navegando .cam-cabina, body.navegando .cam-acoplado { transform-style: preserve-3d; background: none; filter: none; }
+body.navegando .cam-cabina { left: 3.6px; top: 4.2px; width: 16.8px; height: 15.6px; --h: 11px; }
+body.navegando .cam-acoplado { left: 3px; top: var(--acoplado-top, 21.6px); width: 18px; height: var(--acoplado-largo, 51px);
+                               transform-origin: 50% 0; --h: 13px; }
+.c3 { position: absolute; display: block; }
+.c3.techo { left: 0; top: 0; width: 100%; height: 100%; transform: translateZ(var(--h)); background-repeat: no-repeat;
+            background-image: var(--camion-img); background-size: 24px var(--camion-alto, 70.8px); }
+.cam-cabina .c3.techo { background-position: -3.6px -1.2px; }
+.cam-acoplado .c3.techo { background-position: -3px var(--acoplado-img-y, -18.6px); }
+/* costados: el borde izquierdo del costado es el piso (rotateY), el de arriba del frente/atrás también (rotateX) */
+.c3.izq, .c3.der { top: 0; height: 100%; width: var(--h); transform-origin: 0 0; transform: rotateY(-90deg); }
+.c3.izq { left: 0; }
+.c3.der { left: 100%; }
+.c3.frente, .c3.atras { left: 0; width: 100%; height: var(--h); transform-origin: 0 0; transform: rotateX(90deg); }
+.c3.frente { top: 0; }
+.c3.atras { top: 100%; }
+.cam-acoplado .c3.izq, .cam-acoplado .c3.der {
+  background:
+    linear-gradient(to bottom, transparent 0 66%, #15171b 66% 92%, transparent 92%) left top / 28% 100% no-repeat,
+    linear-gradient(to right, rgba(0, 0, 0, 0.5) 0 9%, transparent 9%),
+    var(--camion-lado, #e9edf2);
+}
+.cam-acoplado .c3.der { box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.16); }
+.cam-acoplado .c3.atras {
+  background: linear-gradient(to bottom, #15171b 0 26%, transparent 26%),
+              linear-gradient(to right, transparent 49%, rgba(0, 0, 0, 0.35) 49% 51%, transparent 51%),
+              var(--camion-lado, #e9edf2);
+  box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.1);
+}
+.cam-cabina .c3.izq, .cam-cabina .c3.der {
+  background:
+    linear-gradient(to bottom, transparent 0 18%, #15171b 18% 46%, transparent 46%) left top / 34% 100% no-repeat,
+    linear-gradient(to right, #23272e 0 18%, var(--camion-color, #ff6b00) 18% 55%, #2b3d55 55% 86%, var(--camion-color, #ff6b00) 86%);
+}
+.cam-cabina .c3.der { box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.16); }
+.cam-cabina .c3.frente {
+  background: linear-gradient(to bottom, #2a2e35 0 24%, var(--camion-color, #ff6b00) 24% 42%, #23344a 42% 86%, var(--camion-color, #ff6b00) 86%);
+}
+.cam-cabina .c3.atras { background: var(--camion-color, #ff6b00); box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.28); }

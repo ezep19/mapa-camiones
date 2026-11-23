@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v10';
+var VERSION = 'v11';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;
@@ -141,6 +141,10 @@ self.addEventListener('fetch', function (ev) {
   if (pedido.method !== 'GET') return;
   var url = new URL(pedido.url);
   if (url.hostname === 'tile.openstreetmap.org') { ev.respondWith(primeroGuardado(pedido, CACHE_TILES)); return; }
+  // v98: relieve (altura del terreno) y fotos satelitales: igual que los pedazos del mapa común (tope MAX_TILES)
+  if (url.hostname === 'elevation-tiles-prod.s3.amazonaws.com' || url.hostname === 'tiles.maps.eox.at') {
+    ev.respondWith(primeroGuardado(pedido, CACHE_TILES)); return;
+  }
   if (url.hostname === 'tiles.openfreemap.org') {
     // el estilo y el índice cambian (cada semana hay mapa nuevo): primero internet. Pedazos, letras e íconos: guardado
     if (/\.pbf$/.test(url.pathname) && /\/planet\//.test(url.pathname)) {

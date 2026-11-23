@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 97;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 98;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1301,6 +1301,7 @@ function radioZoom() {
 }
 function ponerCapasPropias() {
   if (gl.getSource('restr')) return;
+  ponerRelieveYSatelite();   // v98: relieve y satélite (debajo de las calles)
   var nombres = gl.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0];
   var debajo = nombres ? nombres.id : undefined;
   ['red', 'ruta', 'maniobra', 'restr', 'feriados', 'precision', 'lugares', 'controles', 'reportes'].forEach(function (id) {
@@ -5797,6 +5798,7 @@ function empezarNavegacion(rutaElegida) {
 function terminarNavegacion(mensaje) {
   volverACentrar(false);
   nav.activo = false;
+  ponerTerreno(null);   // v98
   gl.easeTo({ bearing: 0, pitch: 0, duration: 600 });   // al terminar: mapa derecho y el norte arriba
   pararCamion();
   if (ubicacion.punto) {
@@ -6390,6 +6392,99 @@ function mostrarTostada(html, boton, alTocar, ms) {
   document.getElementById('nav-buscar').addEventListener('click', function () { abrirBuscar(null); });
 })();
 
+
+// ===== v98: relieve, satélite y montañas en 3D (pedido del chofer: "sigue muy vacío el mapa, se puede poner relieve") =====
+// - Relieve: sombras de sierras y montañas (capa "hillshade") con la altura del terreno de Mapzen / AWS Terrain Tiles
+//   (gratis, sin cuenta; elevation-tiles-prod en S3, formato "terrarium"). Va debajo del agua y de las calles.
+// - Satélite: fotos EOxCloudless 2024 (EOX, Copernicus Sentinel-2, 10 m; gratis para uso NO comercial, CC BY-NC-SA 4.0,
+//   citando la fuente en el mapa). Va debajo de las calles y los nombres: se ven los campos, los cerros, los ríos.
+// - Montañas en 3D al manejar: navegando en zona de sierras o cordillera, el terreno se levanta (setTerrain).
+var CLAVE_VISTA_FONDO = 'mapa-camiones:vista-fondo', CLAVE_MONTANAS = 'mapa-camiones:montanas-3d';
+var vistaFondo = (function () { var v = leerGuardado(CLAVE_VISTA_FONDO); return /^(relieve|satelite|plano)$/.test(v) ? v : 'relieve'; })();
+var montanas3D = leerGuardado(CLAVE_MONTANAS) !== false;
+var URL_DEM = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
+var URL_SATELITE = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg';
+var terreno = { prendido: false };
+function ponerRelieveYSatelite() {
+  if (!gl.getSource('openmaptiles') || gl.getSource('relieve-dem')) return;
+  var capas = gl.getStyle().layers, agua = null, calles = null;
+  capas.forEach(function (l) {
+    if (!agua && /^(water|waterway)/.test(l.id)) agua = l.id;
+    if (!calles && (/^(aeroway|tunnel|road|highway|bridge|railway|building)/.test(l.id) || l.type === 'symbol')) calles = l.id;
+  });
+  gl.addSource('relieve-dem', { type: 'raster-dem', tiles: [URL_DEM], tileSize: 256, maxzoom: 14, encoding: 'terrarium' });
+  gl.addSource('relieve-3d', { type: 'raster-dem', tiles: [URL_DEM], tileSize: 256, maxzoom: 13, encoding: 'terrarium' });
+  gl.addSource('satelite', { type: 'raster', tiles: [URL_SATELITE], tileSize: 256, maxzoom: 15 });
+  var noche = !!fondo.oscuro;
+  gl.addLayer({ id: 'satelite', type: 'raster', source: 'satelite', layout: { visibility: 'none' },
+                paint: { 'raster-saturation': 0.12, 'raster-contrast': 0.06, 'raster-brightness-max': noche ? 0.55 : 1,
+                         'raster-fade-duration': 0 } }, calles || undefined);
+  gl.addLayer({ id: 'relieve', type: 'hillshade', source: 'relieve-dem', layout: { visibility: 'none' },
+                paint: { 'hillshade-exaggeration': ['interpolate', ['linear'], ['zoom'], 3, 0.6, 8, 0.55, 12, 0.4, 15, 0.25],
+                         'hillshade-shadow-color': noche ? '#03060c' : '#5a4630',
+                         'hillshade-highlight-color': noche ? '#41536f' : '#fffaf0',
+                         'hillshade-accent-color': noche ? '#0b1322' : '#6d5a3d' } }, agua || calles || undefined);
+  terreno.prendido = false;   // el estilo nuevo viene sin terreno
+  ponerVistaFondo();
+}
+function ponerVistaFondo() {
+  if (!gl.getLayer('relieve')) return;
+  gl.setLayoutProperty('relieve', 'visibility', vistaFondo === 'relieve' ? 'visible' : 'none');
+  gl.setLayoutProperty('satelite', 'visibility', vistaFondo === 'satelite' ? 'visible' : 'none');
+  // sobre la foto, los edificios planos tapan menos
+  if (gl.getLayer('building')) gl.setPaintProperty('building', 'fill-opacity', vistaFondo === 'satelite' ? 0.35 : 1);
+  document.body.classList.toggle('vista-satelite', vistaFondo === 'satelite');
+  var pr = document.getElementById('pie-relieve'), ps = document.getElementById('pie-satelite');
+  if (pr) pr.hidden = vistaFondo !== 'relieve' && !terreno.prendido;
+  if (ps) ps.hidden = vistaFondo !== 'satelite';
+}
+// Zonas con sierras o montañas (el resto del país es llano: ahí el 3D no suma y gasta batería)
+function enSierras(ll) {
+  if (!ll) return false;
+  var lat = ll.lat, lng = ll.lng;
+  return lng < -63.4 ||                                                   // oeste y noroeste: Córdoba, Cuyo, NOA, Patagonia andina
+         (lat > -38.4 && lat < -37.5 && lng > -62.7 && lng < -61.3) ||    // Sierra de la Ventana
+         (lat > -38.2 && lat < -36.9 && lng > -60.6 && lng < -57.9);      // Tandil y Balcarce
+}
+function ponerTerreno(pos) {
+  if (!gl.getSource('relieve-3d') || !gl.setTerrain) return;
+  var quiero = !!(nav.activo && montanas3D && enSierras(pos));
+  if (quiero === terreno.prendido) return;
+  terreno.prendido = quiero;
+  try { gl.setTerrain(quiero ? { source: 'relieve-3d', exaggeration: 1.4 } : null); } catch (e) { terreno.prendido = false; }
+  ponerVistaFondo();
+}
+// créditos al pie
+(function () {
+  var pie = document.querySelector('.atribucion');
+  if (!pie) return;
+  var a = document.createElement('span');
+  a.id = 'pie-relieve';
+  a.innerHTML = ' · Relieve: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">Mapzen/AWS</a>';
+  var b = document.createElement('span');
+  b.id = 'pie-satelite';
+  b.hidden = true;
+  b.innerHTML = ' · <a href="https://cloudless.eox.at" target="_blank" rel="noopener">EOxCloudless 2024</a> by EOX (Copernicus Sentinel 2024)';
+  pie.appendChild(a);
+  pie.appendChild(b);
+})();
+// opciones en "Qué mostrar"
+(function () {
+  var sel = document.getElementById('vista-mapa'), m3 = document.getElementById('montanas-3d');
+  if (sel) {
+    sel.value = vistaFondo;
+    sel.addEventListener('change', function () { vistaFondo = sel.value; guardar(CLAVE_VISTA_FONDO, vistaFondo); ponerVistaFondo(); });
+  }
+  if (m3) {
+    m3.value = montanas3D ? 'si' : 'no';
+    m3.addEventListener('change', function () {
+      montanas3D = m3.value === 'si';
+      guardar(CLAVE_MONTANAS, montanas3D);
+      if (nav.activo) ponerTerreno(nav.ultimaPos ? L.latLng(nav.ultimaPos) : null);
+    });
+  }
+})();
+
 // ===== v95: SÚPER MODO VIAJE (pedido del chofer: "que entres más a la pantalla, un súper modo y que tenga más cosas") =====
 // Al tocar Ir: cartel "Modo viaje" y la cámara se zambulle hasta el camión; mapa casi acostado con cielo y horizonte.
 // Navegando: el próximo giro dibujado sobre la ruta (flecha blanca) y una barra que se llena al acercarte; en el cartel de
@@ -6614,6 +6709,7 @@ function pararCamion() {
   clearTimeout(camionAnim.fin);
 }
 function seguirConCamara(pos) {
+  ponerTerreno(pos);   // v98: montañas en 3D si estás en zona de sierras
   // el camión (flecha) va al mismo ritmo que la cámara; con el mapa suelto (botón Centrar), igual se mueve
   moverCamion(pos, nav.ultimoRumbo, nav.libre ? 400 : nav.primeraCamara ? 0 : 900);
   if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")

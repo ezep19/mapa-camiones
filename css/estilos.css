@@ -1443,3 +1443,18 @@ body:not(.navegando) .nav-calle { display: none; }
 .tostada[hidden] { display: none; }
 .tostada b { margin-right: 4px; }
 .tostada button { flex: none; min-height: 44px; padding: 0 14px; border: 0; border-radius: 12px; background: #ffb340; color: #1d1200; font: inherit; font-weight: 900; cursor: pointer; }
+
+/* v99: navegando, los mensajes van debajo del cartel de arriba (abajo tapaban el camión) */
+body.navegando .mensaje, body.con-velocimetro.navegando .mensaje {
+  top: calc(var(--fin-cartel, 110px) + 10px); bottom: auto; left: var(--m-izq, 10px); right: var(--m-der, 10px);
+  transform: none; width: auto; max-width: none;
+}
+@media (min-width: 601px) {
+  body.navegando .mensaje, body.con-velocimetro.navegando .mensaje { left: var(--m-izq, 10px); right: auto; width: 420px; }
+}
+/* pantallas bajas (iPhone SE, celular con barras): los botones de la derecha más chicos para que no toquen el cartel */
+@media (max-height: 700px) {
+  .nav-accion { width: 54px; height: 54px; border-radius: 17px; }
+  .nav-accion b { font-size: 1.25rem; }
+  body.navegando .nav-acciones { gap: 8px; bottom: calc(var(--alto-hoja, 0px) + 128px); }
+}

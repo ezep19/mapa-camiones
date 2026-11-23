@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 98;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 99;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -120,6 +120,8 @@ function estiloLiviano(est) {
   // edificios planos (sin 3D, que pesa mucho en el celular) y sin los negocios chiquitos (ensucian el mapa)
   est.layers = est.layers.filter(function (l) { return l.id !== 'building-3d' && l.id !== 'poi_r20'; });
   est.layers.forEach(function (l) {
+    // v99: los escudos de ruta ("RN9") salían cada pocos metros sobre la ruta (con el mapa inclinado, uno arriba del otro)
+    if (/shield/.test(l.id) && l.layout) { l.layout['symbol-spacing'] = 700; l.layout['icon-padding'] = 20; }
     if (l.id === 'building') delete l.maxzoom;
     // calles en blanco y autopistas en gris azulado (como Google Maps): el amarillo y el naranja del estilo original
     // se confundían con lo amarillo ("verificar") y lo rojo del camión
@@ -6125,12 +6127,15 @@ function htmlCartelVerde(prox) {
 }
 // "Avenida Juan B. Justo/RP-88" -> escudo RP 88 + "Av. Juan B. Justo"
 function htmlCalle(c) {
-  var partes = String(c || '').split(/\s*\/\s*/), rutas = [], nombres = [];
+  var partes = String(c || '').split(/\s*[\/,;]\s*/), rutas = [], nombres = [], largo = '', vistas = {};
   partes.forEach(function (p) {
     var r = rutasDeTexto(p);
-    if (r.length && p.replace(/\b(RN|RP|R\.N\.|R\.P\.|Ruta Nacional|Ruta Provincial|Ruta|AU)\s*(N[º°o]\.?\s*)?-?\s*\d{1,4}[A-Z]?\b/gi, '').trim() === '') rutas = rutas.concat(r);
-    else if (p) nombres.push(p.replace(/^Avenida\b/i, 'Av.'));
+    if (r.length && p.replace(/\b(RN|RP|R\.N\.|R\.P\.|Ruta Nacional|Ruta Provincial|Ruta|AU)\s*(N[º°o]\.?\s*)?-?\s*\d{1,4}[A-Z]?\b/gi, '').trim() === '') {
+      r.forEach(function (x) { if (!vistas[x.tipo + x.num]) { vistas[x.tipo + x.num] = true; rutas.push(x); } });
+      if (!largo && p.length > 6) largo = p;   // "Ruta Nacional 9" (mejor que "RN9" escrito)
+    } else if (p) nombres.push(p.replace(/^Avenida\b/i, 'Av.'));
   });
+  if (!nombres.length && largo) nombres.push(largo);
   return rutas.slice(0, 2).map(escudo).join('') + (nombres.length ? '<span>' + esc(nombres.join(' · ')) + '</span>' : '');
 }
 
@@ -6648,6 +6653,13 @@ function actualizarTablero(recorrido, prox) {
     max.textContent = lim || '';
     max.hidden = !lim;
   }
+  // v99: la barra creció o se achicó (aparecieron los botones de "lo que viene"): la calle, el velocímetro y los botones
+  // redondos se acomodan arriba de ella (en el iPhone el ResizeObserver no avisaba y quedaba todo encimado)
+  var altoBarra = abajo ? Math.round(abajo.getBoundingClientRect().height) : 0;
+  if (altoBarra !== nav.altoBarra) { nav.altoBarra = altoBarra; medirHoja(); }
+  // los mensajes van debajo del cartel de arriba (abajo tapaban el camión)
+  var finCartel = cartel ? Math.round(cartel.getBoundingClientRect().bottom) : 0;
+  if (finCartel !== nav.finCartel) { nav.finCartel = finCartel; document.documentElement.style.setProperty('--fin-cartel', finCartel + 'px'); }
 }
 // "600 m", "1,2 km", "38 km" (cortito: entra en los botoncitos)
 function distanciaChip(km) {
@@ -6657,6 +6669,7 @@ function distanciaChip(km) {
 }
 function limpiarTablero() {
   nav.maniobraN = undefined;
+  nav.altoBarra = nav.finCartel = null;   // v99: en la próxima navegación se vuelven a medir
   ponerDatos('maniobra', []);
   cerrarHoja();
   ['nav-acerca', 'nav-proximos', 'nav-calle', 'nav-verde', 'nav-carriles', 'nav-despues'].forEach(function (id) {

@@ -1458,3 +1458,17 @@ body.navegando .mensaje, body.con-velocimetro.navegando .mensaje {
   .nav-accion b { font-size: 1.25rem; }
   body.navegando .nav-acciones { gap: 8px; bottom: calc(var(--alto-hoja, 0px) + 128px); }
 }
+
+/* v102: navegando, el camión en dos partes: la cabina y el acoplado, que gira detrás en las curvas (articulado).
+   El acoplado gira desde la quinta rueda (su borde de arriba). */
+body.navegando .punto-ubicacion::after { content: none; }
+.cam-cabina, .cam-acoplado { display: none; }
+body.navegando .cam-cabina, body.navegando .cam-acoplado {
+  display: block; position: absolute; left: 0; width: 24px; background-image: var(--camion-img); background-repeat: no-repeat;
+  background-size: 24px var(--camion-alto, 70.8px); filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.45));
+}
+body.navegando .cam-cabina { top: 3px; height: 18px; background-position: 0 0; z-index: 2; }
+body.navegando .cam-acoplado {
+  top: 21px; height: calc(var(--camion-alto, 70.8px) - 18px); background-position: 0 -18px; z-index: 1;
+  transform-origin: 50% 0;
+}

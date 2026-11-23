@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 101;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 102;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2660,6 +2660,7 @@ mapa.on('locationfound', function (e) {
   if (!ubicacion.punto) {
     var el = document.createElement('div');
     el.className = 'punto-ubicacion';
+    el.innerHTML = '<i class="cam-acoplado"></i><i class="cam-cabina"></i>';   // v102: navegando, camión articulado
     // v94: 'viewport' = el camión se ve derecho aunque el mapa esté inclinado (acostado en 3D quedaba aplastado)
     ubicacion.punto = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'viewport' })
       .setLngLat([e.latlng.lng, e.latlng.lat]).addTo(gl);
@@ -5814,6 +5815,9 @@ function terminarNavegacion(mensaje) {
   ponerTerreno(null);   // v98
   gl.easeTo({ bearing: 0, pitch: 0, duration: 600 });   // al terminar: mapa derecho y el norte arriba
   pararCamion();
+  cancelAnimationFrame(anim.raf); anim.raf = 0; anim.r = null; anim.mDisp = null;   // v102
+  sacarMargenViaje();
+  acopladoDerecho();
   if (ubicacion.punto) {
     ubicacion.punto.setRotation(0);
     if (ubicacion.ultima) ubicacion.punto.setLngLat([ubicacion.ultima.lng, ubicacion.ultima.lat]);
@@ -5965,6 +5969,7 @@ function seguirNavegacion(pos) {
   nav.recorrido = u.recorrido;   // metros hechos sobre la ruta (para volver a ella si te salís)
   // v94: el camión se dibuja SOBRE la línea azul (el GPS del teléfono erra 5–20 m: quedaba al costado de la ruta)
   var verPos = u.fuera <= NAV.PEGAR_M ? puntoEnRuta(u.recorrido) : pos;
+  var verM = u.fuera <= NAV.PEGAR_M ? u.recorrido : null;   // v102
   if (nav.ultimaVuelta && nav.recorrido > nav.ultimaVuelta.hastaM) nav.ultimaVuelta = null;
   if (true) {
     var rumbo = rumboEnRuta(u);
@@ -6006,7 +6011,7 @@ function seguirNavegacion(pos) {
     nav.distProx = null;
     mostrarCartelNav(textoDistancia(falta), 'Seguí hasta el destino', peligro);
     if (decir.length) hablar(decir.join(' '));
-    seguirConCamara(verPos);
+    seguirConCamara(verPos, verM);
     return;
   }
   var dist = prox.dist - u.recorrido;
@@ -6030,7 +6035,7 @@ function seguirNavegacion(pos) {
   }
   // los peligros van primero; no se corta lo que se estaba diciendo
   if (decir.length) hablar(decir.join(' '));
-  seguirConCamara(verPos);
+  seguirConCamara(verPos, verM);
 }
 
 
@@ -6134,6 +6139,7 @@ function htmlCartelVerde(prox) {
   var salida = c.salida || '';
   var deRuta = /salida|autopista|autov[ií]a|ruta|acceso|mantenete|manten[eé]|bifurcaci|incorpor/i.test(prox.texto || '') || c.salida || (c.rutas || []).length;
   if (!deRuta || (!rutas.length && !hacia && !salida)) return '';
+  if (!hacia && !salida && /^Segu[ií]/i.test(prox.texto || '')) return '';   // v102: "Seguí por la RP 88": solo el escudo quedaba vacío
   // los escudos ya repetidos en "hacia" no se escriben dos veces
   return '<div class="cartel-verde">' + (salida ? '<span class="cv-salida">SALIDA ' + esc(salida) + '</span>' : '') +
     '<span class="cv-rutas">' + rutas.slice(0, 3).map(escudo).join('') + '</span>' +
@@ -6793,13 +6799,16 @@ function pararCamion() {
   cancelAnimationFrame(camionAnim.raf);
   clearTimeout(camionAnim.fin);
 }
-function seguirConCamara(pos) {
+function seguirConCamara(pos, m) {
   ponerTerreno(pos);   // v98: montañas en 3D si estás en zona de sierras
+  if (m != null && nav.r && animarEnRuta(m, pos)) return;   // v102: el camión va POR la ruta, doblando con las curvas
+  cancelAnimationFrame(anim.raf); anim.raf = 0; anim.mDisp = null;   // fuera de la ruta: como antes
+  acopladoDerecho();
   // el camión (flecha) va al mismo ritmo que la cámara; con el mapa suelto (botón Centrar), igual se mueve
   moverCamion(pos, nav.ultimoRumbo, nav.libre ? 400 : nav.primeraCamara ? 0 : 900);
   if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")
-  var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; }, pitch: VIAJE.inclinacion,
-            offset: [0, Math.round(gl.getContainer().clientHeight * 0.14)] };
+  ponerMargenViaje();
+  var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; }, pitch: VIAJE.inclinacion };
   // siempre se dice el giro: con "rumbo arriba" apagado, 0 (si no, un giro al norte a medias quedaba torcido)
   o.bearing = nav.rumbo ? (nav.ultimoRumbo != null ? nav.ultimoRumbo : gl.getBearing()) : 0;
   var z = zoomDeViaje();
@@ -6817,6 +6826,90 @@ function seguirConCamara(pos) {
   }
   if (Date.now() < (nav.volandoHasta || 0)) return;   // no cortar el vuelo de entrada (el camión igual se mueve)
   gl.easeTo(o);
+}
+
+
+// ===== v102: el camión avanza POR la ruta y dobla con las curvas (pedido del chofer con captura: en la curva el camión
+// quedaba derecho y el acoplado se salía de la línea). Antes iba en línea recta de una lectura del GPS a la otra (1 s) y la
+// cámara hacía lo mismo. Ahora, entre lecturas, el camión recorre la ruta metro a metro (cuadro a cuadro): la cabina mira
+// para donde va la ruta ahí mismo y el acoplado sigue detrás (articulado: mira la ruta 3–16 m atrás). La cámara lo sigue
+// cuadro a cuadro y gira suave hacia la ruta 60 m adelante. Si el GPS no está sobre la ruta, se mueve como antes.
+var anim = { raf: 0 };
+function ponerMargenViaje() {
+  // el camión más abajo del centro (14% de la pantalla): el centro del mapa se corre con un margen arriba
+  var alto = Math.round(gl.getContainer().clientHeight * 0.28);
+  if (anim.margen !== alto) { anim.margen = alto; gl.setPadding({ top: alto, bottom: 0, left: 0, right: 0 }); }
+}
+function sacarMargenViaje() { anim.margen = null; gl.setPadding({ top: 0, bottom: 0, left: 0, right: 0 }); }
+function difAngulo(a, b) { return ((((a - b) % 360) + 540) % 360) - 180; }   // a - b, entre -180 y 180
+function acopladoDerecho() {
+  var a = ubicacion.punto && ubicacion.punto.getElement().querySelector('.cam-acoplado');
+  if (a) a.style.transform = '';
+}
+function animarEnRuta(m, pos) {
+  var marca = ubicacion.punto;
+  if (!marca) return false;
+  pararCamion();   // que no lo mueva también la animación de antes (fuera de la ruta)
+  ponerMargenViaje();
+  var ahora = performance.now();
+  if (anim.r !== nav.r || anim.mDisp == null || m - anim.mDisp > 400 || m < anim.mDisp - 15 || nav.primeraCamara) {
+    anim.r = nav.r; anim.mDisp = anim.m0 = anim.m1 = m; anim.t0 = ahora; anim.dur = 0; anim.bCam = null; anim.z = null;
+    if (nav.primeraCamara) {   // al tocar "Ir": la cámara se zambulle hasta el camión (como en una película)
+      nav.primeraCamara = false;
+      var total = nav.acum[nav.acum.length - 1], p = puntoEnRuta(m);
+      var b = nav.rumbo ? rumboEntre(p, puntoEnRuta(Math.min(total, m + 60))) : 0;
+      nav.volandoHasta = Date.now() + VIAJE.vuelo;
+      anim.bCam = b;
+      gl.flyTo({ center: [p.lng, p.lat], zoom: zoomDeViaje(), bearing: b, pitch: VIAJE.inclinacion, duration: VIAJE.vuelo,
+                 curve: 1.5, essential: true });
+    }
+  } else {
+    var entre = anim.tUlt ? ahora - anim.tUlt : 1000;
+    anim.m0 = anim.mDisp;
+    anim.m1 = Math.max(m, anim.mDisp);   // el GPS que salta un poco para atrás no lo hace retroceder (mucho para atrás: se acomoda de una)
+    anim.t0 = ahora;
+    anim.dur = Math.max(500, Math.min(2000, entre));   // llega justo cuando viene la lectura siguiente: movimiento continuo
+  }
+  anim.tUlt = ahora;
+  if (!anim.raf) anim.raf = requestAnimationFrame(cuadroViaje);
+  return true;
+}
+function cuadroViaje() {
+  anim.raf = 0;
+  if (!nav.activo || anim.r !== nav.r || !ubicacion.punto) return;
+  var ahora = performance.now(), t = anim.dur ? Math.min(1, (ahora - anim.t0) / anim.dur) : 1;
+  var mc = anim.m0 + (anim.m1 - anim.m0) * t, total = nav.acum[nav.acum.length - 1];
+  anim.mDisp = mc;
+  var p = puntoEnRuta(mc);
+  var bCab = rumboEntre(puntoEnRuta(Math.max(0, mc - 3)), puntoEnRuta(Math.min(total, mc + 6)));
+  var marca = ubicacion.punto, el = marca.getElement();
+  marca.setLngLat([p.lng, p.lat]);
+  marca.setRotation(bCab);
+  var aco = el.querySelector('.cam-acoplado');
+  if (aco) {
+    var gira = 0;
+    if (dibujoCamion.tipo !== 'chasis' && mc > 18) {
+      var bAco = rumboEntre(puntoEnRuta(mc - 16), puntoEnRuta(mc - 3));
+      gira = Math.max(-65, Math.min(65, difAngulo(bAco, bCab)));
+    }
+    aco.style.transform = gira ? 'rotate(' + gira.toFixed(1) + 'deg)' : '';
+  }
+  nav.ultimoRumbo = bCab;
+  var sigue = t < 1;
+  if (!nav.libre && Date.now() >= (nav.volandoHasta || 0)) {
+    var dt = anim.tCuadro ? Math.min(0.1, (ahora - anim.tCuadro) / 1000) : 0.016;
+    var objetivo = nav.rumbo ? rumboEntre(p, puntoEnRuta(Math.min(total, mc + 60))) : 0;
+    if (anim.bCam == null) anim.bCam = gl.getBearing();
+    var dif = difAngulo(objetivo, anim.bCam);
+    anim.bCam += dif * Math.min(1, dt * 2.5);
+    var zObj = zoomDeViaje();
+    if (anim.z == null) anim.z = gl.getZoom();
+    anim.z += (zObj - anim.z) * Math.min(1, dt * 1.5);
+    gl.jumpTo({ center: [p.lng, p.lat], bearing: anim.bCam, zoom: anim.z, pitch: VIAJE.inclinacion });
+    if (Math.abs(dif) > 0.3 || Math.abs(zObj - anim.z) > 0.01) sigue = true;   // la cámara todavía se está acomodando
+  }
+  anim.tCuadro = sigue ? ahora : null;
+  if (sigue) anim.raf = requestAnimationFrame(cuadroViaje);
 }
 
 // Lo que hay adelante (hasta 150 m) donde tu camión NO pasa, del más cercano al más lejano (uno por calle).
@@ -7110,6 +7203,7 @@ botonCentrar.addEventListener('click', function () { volverACentrar(true); });
 function volverACentrar(mover) {
   clearTimeout(nav.timerLibre);
   nav.libre = false;
+  anim.bCam = null; anim.z = null;   // v102: la cámara arranca desde donde la dejó el chofer
   botonCentrar.hidden = true;
   if (mover && nav.activo && nav.ultimaPos) seguirConCamara(nav.ultimaPos);
 }

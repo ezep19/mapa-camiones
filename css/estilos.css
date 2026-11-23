@@ -1258,3 +1258,49 @@ body.navegando .ruta-marca.desde { display: none; }
 }
 .vel-max[hidden], body:not(.navegando) .vel-max { display: none; }
 @media (prefers-reduced-motion: reduce) { .viaje-intro, .vi-caja { animation-duration: 0.01s; } }
+
+/* ===== v96: dibujo del camión elegido (tipo y color de cabina) ===== */
+/* navegando: el punto de giro es la cabina (donde va el GPS); el acoplado sale para atrás */
+body.navegando .punto-ubicacion { width: 24px; height: 24px; }
+body.navegando .punto-ubicacion::before { width: 64px; height: 64px; margin: -32px 0 0 -32px; }
+body.navegando .punto-ubicacion::after {
+  inset: auto; left: 0; top: 3px; width: 24px; height: var(--camion-alto, 70.8px);
+  background: var(--camion-img) center top / 100% 100% no-repeat;
+  filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.45));
+}
+.mini-camion {
+  display: inline-block; flex: none; width: 54px; height: 18px; vertical-align: middle;
+  background: var(--camion-h-img) center / contain no-repeat;
+}
+.boton-dibujo { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 8px; background: #fff4ec; color: #b34700; font-weight: 700; }
+.boton-dibujo-form {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; margin-top: 8px; padding: 6px 12px;
+  border: 2px dashed #ffc49b; border-radius: 12px; background: #fff8f2; color: #b34700; font-size: 0.95rem; font-weight: 700; cursor: pointer;
+}
+.ventana-dibujo-fondo { z-index: 1310; }
+.ventana-dibujo { max-width: 440px; }
+.dibujo-vista {
+  height: 86px; margin: 4px 0 6px; border-radius: 14px;
+  background: linear-gradient(180deg, #eef2f6, #dfe5ec) ; background-repeat: no-repeat; background-position: center; background-size: 82% auto;
+  box-shadow: inset 0 0 0 1px #d6dde5;
+}
+.dibujo-vista { background-color: #e9eef3; }
+.dibujo-sub { margin: 10px 0 6px; font-size: 0.85rem; font-weight: 800; color: #5b6470; text-transform: uppercase; letter-spacing: 0.4px; }
+.dibujo-tipos { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.dibujo-tipo {
+  display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 8px; border: 2px solid #e3e8ee; border-radius: 12px;
+  background: #fff; color: var(--noche, #0f1b2d); font-size: 0.95rem; font-weight: 700; text-align: left; cursor: pointer;
+}
+.dibujo-tipo i { flex: none; width: 66px; height: 22px; background: center / contain no-repeat; }
+.dibujo-tipo.elegido { border-color: var(--primario, #1668f2); background: #eef4ff; }
+.dibujo-colores { display: flex; flex-wrap: wrap; gap: 10px; }
+.dibujo-color {
+  width: 44px; height: 44px; border-radius: 50%; border: 3px solid #fff; cursor: pointer;
+  box-shadow: 0 0 0 1px #c8d0da, 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+.dibujo-color.elegido { box-shadow: 0 0 0 3px var(--primario, #1668f2), 0 2px 6px rgba(0, 0, 0, 0.2); }
+@media (max-width: 359px) { .dibujo-tipo i { width: 52px; } .dibujo-color { width: 40px; height: 40px; } }
+@media (max-height: 560px) and (min-width: 560px) {
+  #form-camion .boton-dibujo-form { grid-column: 1 / -1; grid-row: 5; }
+  #form-camion .ventana-botones { grid-row: 6; }
+}

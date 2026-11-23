@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
         integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=95">
+  <link rel="stylesheet" href="css/estilos.css?v=96">
 </head>
 <body>
   <main id="mapa" aria-label="Mapa"></main>
@@ -40,6 +40,7 @@
       <strong>Qué mostrar</strong>
       <button id="cerrar-capas" class="boton-x" type="button" aria-label="Cerrar">×</button>
     </div>
+    <button id="btn-dibujo-camion" class="boton-chico boton-ancho boton-dibujo" type="button"><span class="mini-camion" aria-hidden="true"></span>Elegir mi camión (dibujo y color)</button>
     <button id="btn-probar-voz" class="boton-chico boton-ancho boton-voz" type="button">🔊 Probar la voz</button>
     <label class="voz-motor" for="voz-motor">Voz al navegar
       <select id="voz-motor">
@@ -136,6 +137,8 @@
       <input id="c-largo" name="largo" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 18,60">
       <div id="e-largo" class="campo-error" aria-live="polite"></div>
 
+      <button id="abrir-dibujo" class="boton-dibujo-form" type="button"><span class="mini-camion" aria-hidden="true"></span>Cambiar el dibujo de tu camión</button>
+
       <div class="ventana-botones">
         <button id="cancelar-camion" class="boton boton-secundario" type="button">Cancelar</button>
         <button class="boton boton-principal" type="submit">Guardar</button>
@@ -183,6 +186,6 @@
   <!-- MapLibre dibuja todo el mapa (como Google Maps) -->
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
           integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin=""></script>
-  <script src="js/app.js?v=95"></script>
+  <script src="js/app.js?v=96"></script>
 </body>
 </html>

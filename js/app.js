@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 95;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 96;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -544,6 +544,180 @@ botonCancelar.addEventListener('click', cerrarVentanaCamion);
 document.getElementById('btn-camion').addEventListener('click', abrirVentanaCamion);
 document.addEventListener('keydown', function (ev) {
   if (ev.key === 'Escape' && !ventana.hidden && camion) cerrarVentanaCamion();
+});
+
+// ===== v96: elegir el dibujo del camión (pedido del chofer: "un lugar donde pueda cambiar el camión, camiones más
+// realistas"). Dibujos vistos desde arriba (SVG armado acá): cabina con parabrisas, espejos, luces, escapes y ruedas que
+// asoman; atrás, el tipo de carrocería. Color de la cabina a elección. Se guarda en "mapa-camiones:dibujo".
+// Navegando, el camión se pone con la cabina sobre tu posición (el GPS va en la cabina) y el acoplado para atrás.
+var DIBUJOS_CAMION = [
+  { id: 'furgon', nombre: 'Furgón' }, { id: 'termico', nombre: 'Térmico' }, { id: 'cisterna', nombre: 'Cisterna' },
+  { id: 'cerealero', nombre: 'Cerealero' }, { id: 'batea', nombre: 'Batea' }, { id: 'contenedor', nombre: 'Contenedor' },
+  { id: 'jaula', nombre: 'Jaula' }, { id: 'chasis', nombre: 'Chasis' }
+];
+var COLORES_CABINA = [
+  { id: 'naranja', nombre: 'Naranja', c: '#ff6b00' }, { id: 'rojo', nombre: 'Rojo', c: '#d62828' },
+  { id: 'blanco', nombre: 'Blanco', c: '#eef1f4' }, { id: 'azul', nombre: 'Azul', c: '#1f5fbf' },
+  { id: 'negro', nombre: 'Negro', c: '#2a2f37' }, { id: 'verde', nombre: 'Verde', c: '#1f8a4c' },
+  { id: 'amarillo', nombre: 'Amarillo', c: '#f2b705' }, { id: 'gris', nombre: 'Gris', c: '#8a949f' }
+];
+var dibujoCamion = (function () {
+  var d = leerGuardado('mapa-camiones:dibujo') || {};
+  return { tipo: DIBUJOS_CAMION.some(function (x) { return x.id === d.tipo; }) ? d.tipo : 'furgon',
+           color: COLORES_CABINA.some(function (x) { return x.id === d.color; }) ? d.color : 'naranja' };
+})();
+// Aclara (f > 0) u oscurece (f < 0) un color
+function tonoColor(hex, f) {
+  var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255, a = f < 0 ? 0 : 255, k = Math.abs(f);
+  function m(v) { return Math.round(v + (a - v) * k); }
+  return '#' + ((1 << 24) + (m(r) << 16) + (m(g) << 8) + m(b)).toString(16).slice(1);
+}
+function largoDibujo(tipo) { return tipo === 'chasis' ? 82 : 118; }
+function svgCamion(tipo, colorId, horizontal) {
+  var c = (COLORES_CABINA.filter(function (x) { return x.id === colorId; })[0] || COLORES_CABINA[0]).c;
+  var H = largoDibujo(tipo), osc = tonoColor(c, -0.38), cla = tonoColor(c, 0.3), semi = tipo !== 'chasis';
+  var g = '';
+  function grad(id, stops, vertical) {
+    return '<linearGradient id="' + id + '" x1="0" y1="0" x2="' + (vertical ? 0 : 1) + '" y2="' + (vertical ? 1 : 0) + '">' +
+      stops.map(function (s) { return '<stop offset="' + s[0] + '" stop-color="' + s[1] + '"/>'; }).join('') + '</linearGradient>';
+  }
+  var defs = grad('gc', [[0, osc], [0.3, cla], [0.62, c], [1, osc]]) +
+    grad('gv', [[0, '#6f8daa'], [1, '#18232f']], true) +
+    grad('gm', [[0, '#6f7983'], [0.45, '#f5f7f9'], [0.62, '#c3c9d0'], [1, '#626c76']]) +
+    grad('gb', [[0, '#aab3be'], [0.1, '#f6f8fa'], [0.9, '#edf0f4'], [1, '#a3adb8']]);
+  var y0 = 31, y1 = H - 2, alto = y1 - y0;
+  // ruedas que asoman (abajo de todo)
+  g += '<rect x="5" y="6" width="30" height="6" rx="1.5" fill="#14161a"/>';
+  if (semi) {
+    // duales del tractor y ejes del semi: las cubiertas a los costados y el eje finito en el medio
+    g += '<rect x="4.6" y="29" width="7" height="12" rx="2" fill="#14161a"/><rect x="28.4" y="29" width="7" height="12" rx="2" fill="#14161a"/>';
+    [H - 27, H - 20, H - 13].forEach(function (y) {
+      g += '<rect x="4" y="' + y + '" width="7.5" height="5" rx="1.3" fill="#14161a"/><rect x="28.5" y="' + y + '" width="7.5" height="5" rx="1.3" fill="#14161a"/>' +
+           '<rect x="11" y="' + (y + 1.8) + '" width="18" height="1.4" fill="#2b2e34"/>';
+    });
+  } else {
+    [H - 22, H - 15].forEach(function (y) { g += '<rect x="4.3" y="' + y + '" width="31.4" height="5" rx="1.3" fill="#14161a"/>'; });
+  }
+  // chasis y quinta rueda (se ve entre la cabina y el semirremolque)
+  if (semi) g += '<rect x="11" y="26" width="18" height="10" fill="#2b2e34"/><circle cx="20" cy="31" r="4" fill="#3d424a" stroke="#5b616b" stroke-width=".8"/>';
+  // --- carrocería ---
+  function caja(relleno, borde) { return '<rect x="5" y="' + y0 + '" width="30" height="' + alto + '" rx="2" fill="' + relleno + '" stroke="' + borde + '" stroke-width=".7"/>'; }
+  var i, y;
+  if (tipo === 'furgon' || tipo === 'chasis' || tipo === 'termico') {
+    g += caja('url(#gb)', '#7d8794');
+    for (y = y0 + 6; y < y1 - 4; y += 6.5) g += '<path d="M6 ' + y + 'H34" stroke="#d3d9e0" stroke-width=".7"/>';
+    g += '<rect x="5.6" y="' + (y1 - 3.4) + '" width="28.8" height="3" fill="#c0c8d1"/><path d="M20 ' + (y1 - 3.4) + 'V' + (y1 - 0.4) + '" stroke="#86909c" stroke-width=".6"/>';
+    if (tipo === 'termico') {   // equipo de frío adelante y franjas del color de la cabina
+      g += '<rect x="6.2" y="' + (y0 + 4) + '" width="1.6" height="' + (alto - 8) + '" fill="' + c + '"/><rect x="32.2" y="' + (y0 + 4) + '" width="1.6" height="' + (alto - 8) + '" fill="' + c + '"/>';
+      g += '<rect x="9" y="' + (y0 - 1) + '" width="22" height="7" rx="1.6" fill="#e3e7ec" stroke="#87919d" stroke-width=".6"/>';
+      for (i = 0; i < 6; i++) g += '<path d="M' + (11 + i * 1.6) + ' ' + y0 + 'v5" stroke="#9aa4af" stroke-width=".5"/>';
+      g += '<circle cx="25.5" cy="' + (y0 + 2.5) + '" r="2.4" fill="#3b4048"/><circle cx="25.5" cy="' + (y0 + 2.5) + '" r=".8" fill="#9aa4af"/>';
+    }
+    if (tipo === 'chasis') g += '<rect x="5.6" y="' + (y0 + 0.4) + '" width="28.8" height="2" fill="' + c + '" opacity=".85"/>';
+  } else if (tipo === 'cisterna') {
+    defs += grad('gt', [[0, '#68727c'], [0.28, '#dfe4e9'], [0.45, '#ffffff'], [0.6, '#c5cbd2'], [1, '#5d6771']]);
+    g += '<rect x="6" y="' + (y0 + 1) + '" width="28" height="' + (alto - 1) + '" rx="13" fill="url(#gt)" stroke="#56606a" stroke-width=".6"/>';
+    [y0 + 22, y0 + 42, y0 + 62].forEach(function (yy) { g += '<path d="M6.6 ' + yy + 'H33.4" stroke="#8b949d" stroke-width=".7"/>'; });
+    g += '<rect x="18" y="' + (y0 + 7) + '" width="4" height="' + (alto - 14) + '" fill="#949da7"/>';
+    for (y = y0 + 8; y < y1 - 7; y += 2.2) g += '<path d="M18 ' + y + 'H22" stroke="#6f7882" stroke-width=".4"/>';
+    [y0 + 13, y0 + 32, y0 + 52, y0 + 72].forEach(function (yy) {
+      g += '<circle cx="20" cy="' + yy + '" r="3.3" fill="#d9dee3" stroke="#5c656f" stroke-width=".8"/><circle cx="20" cy="' + yy + '" r="1.3" fill="#8b949d"/>';
+    });
+  } else if (tipo === 'cerealero') {
+    defs += grad('gl', [[0, '#2c4a24'], [0.5, '#5f904a'], [1, '#2c4a24']]);
+    g += caja('#4c525a', '#33383f') + '<rect x="6.2" y="' + (y0 + 1.2) + '" width="27.6" height="' + (alto - 2.4) + '" rx="3" fill="url(#gl)"/>';
+    for (y = y0 + 7; y < y1 - 3; y += 7) g += '<path d="M6.5 ' + y + 'Q20 ' + (y - 2.2) + ' 33.5 ' + y + '" stroke="#243d1e" stroke-width=".9" fill="none"/>';
+    for (y = y0 + 4; y < y1 - 2; y += 7) g += '<path d="M6.2 ' + y + 'h1.6M32.2 ' + y + 'h1.6" stroke="#d9c98f" stroke-width=".8"/>';
+  } else if (tipo === 'batea') {
+    defs += '<radialGradient id="gr" cx=".5" cy=".5" r=".55"><stop offset="0" stop-color="#d8b985"/><stop offset="1" stop-color="#8a6841"/></radialGradient>';
+    g += caja('#7b838d', '#474e56') + '<rect x="7" y="' + (y0 + 2) + '" width="26" height="' + (alto - 4) + '" rx="1" fill="#5e4a33"/>';
+    g += '<ellipse cx="20" cy="' + (y0 + alto / 2) + '" rx="12.4" ry="' + (alto / 2 - 3) + '" fill="url(#gr)"/>';
+    var piedras = [[13, 12], [24, 18], [17, 27], [28, 33], [11, 40], [21, 46], [26, 55], [14, 60], [19, 68], [25, 74], [12, 78]];
+    piedras.forEach(function (p, k) { g += '<circle cx="' + p[0] + '" cy="' + (y0 + p[1]) + '" r="' + (k % 2 ? 0.9 : 1.2) + '" fill="' + (k % 3 ? '#6f5232' : '#efdcb3') + '"/>'; });
+    for (y = y0 + 10; y < y1 - 4; y += 10) g += '<path d="M5 ' + y + 'h2M33 ' + y + 'h2" stroke="#4a5058" stroke-width="1"/>';
+  } else if (tipo === 'contenedor') {
+    var cc = colorId === 'azul' ? '#b7412e' : '#2c6db3';
+    defs += grad('gk', [[0, tonoColor(cc, -0.3)], [0.5, tonoColor(cc, 0.15)], [1, tonoColor(cc, -0.3)]]);
+    g += caja('url(#gk)', tonoColor(cc, -0.45));
+    for (y = y0 + 2.4; y < y1 - 1; y += 2.4) g += '<path d="M5.6 ' + y + 'H34.4" stroke="#ffffff" stroke-opacity=".16" stroke-width=".8"/>';
+    [[5, y0], [32.6, y0], [5, y1 - 2.4], [32.6, y1 - 2.4]].forEach(function (p) { g += '<rect x="' + p[0] + '" y="' + p[1] + '" width="2.4" height="2.4" fill="#d5dade"/>'; });
+  } else if (tipo === 'jaula') {
+    g += caja('#3a2c21', '#2a1f17');
+    for (y = y0 + 3; y < y1 - 1; y += 3.6) g += '<path d="M6 ' + y + 'H34" stroke="#bac1c9" stroke-width="1.2"/>';
+    g += '<rect x="5" y="' + y0 + '" width="2" height="' + alto + '" fill="#9aa2ab"/><rect x="33" y="' + y0 + '" width="2" height="' + alto + '" fill="#9aa2ab"/>' +
+         '<rect x="19.2" y="' + y0 + '" width="1.6" height="' + alto + '" fill="#8e969f"/>';
+  }
+  // --- cabina (arriba de todo; el frente mira para arriba) ---
+  g += '<path d="M7.5 9.5L3.6 8.6M32.5 9.5L36.4 8.6" stroke="#2a2e35" stroke-width="1"/>' +
+       '<rect x="1.2" y="6.4" width="3" height="5.6" rx="1" fill="#2a2e35"/><rect x="35.8" y="6.4" width="3" height="5.6" rx="1" fill="#2a2e35"/>' +
+       '<rect x="6" y="2" width="28" height="' + (semi ? 26 : 27) + '" rx="5" fill="url(#gc)"/>' +
+       '<rect x="6.5" y="1" width="27" height="3" rx="1.4" fill="#30343b"/>' +
+       '<rect x="8" y="1.4" width="4.2" height="1.6" rx=".6" fill="#fff4c9"/><rect x="27.8" y="1.4" width="4.2" height="1.6" rx=".6" fill="#fff4c9"/>' +
+       '<path d="M8.6 5.4H31.4L30.4 11.2H9.6Z" fill="url(#gv)"/>' +
+       '<path d="M10.4 6.2H16.5L15 10.3" stroke="#a9bfd4" stroke-width=".6" fill="none" opacity=".75"/>' +
+       '<rect x="9" y="12.2" width="22" height="' + (semi ? 13.6 : 14.6) + '" rx="3.5" fill="' + cla + '" opacity=".5"/>' +
+       '<path d="M9.4 13.2Q20 10.6 30.6 13.2V18.4Q20 16.2 9.4 18.4Z" fill="' + tonoColor(c, 0.45) + '" opacity=".65"/>';
+  [13, 16.5, 20, 23.5, 27].forEach(function (x) { g += '<circle cx="' + x + '" cy="12.4" r=".75" fill="#ffb347"/>'; });
+  g += '<rect x="6.4" y="22" width="2.4" height="6" rx="1" fill="url(#gm)"/><rect x="31.2" y="22" width="2.4" height="6" rx="1" fill="url(#gm)"/>';
+  var cuerpo = '<defs>' + defs + '</defs>' + g;
+  if (horizontal) return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + H + ' 40"><g transform="translate(' + H + ' 0) rotate(90)">' + cuerpo + '</g></svg>';
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 ' + H + '">' + cuerpo + '</svg>';
+}
+function urlSvg(svg) { return 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")'; }
+// Pone el dibujo elegido en el camión del mapa (variables de CSS) y en los dibujitos de los botones
+function aplicarDibujoCamion() {
+  var r = document.documentElement.style, H = largoDibujo(dibujoCamion.tipo);
+  r.setProperty('--camion-img', urlSvg(svgCamion(dibujoCamion.tipo, dibujoCamion.color)));
+  r.setProperty('--camion-alto', (H * 0.6).toFixed(1) + 'px');
+  r.setProperty('--camion-h-img', urlSvg(svgCamion(dibujoCamion.tipo, dibujoCamion.color, true)));
+}
+aplicarDibujoCamion();
+function abrirElegirCamion() {
+  var fondoV = document.getElementById('ventana-dibujo');
+  if (!fondoV) {
+    fondoV = document.createElement('div');
+    fondoV.id = 'ventana-dibujo';
+    fondoV.className = 'ventana-fondo ventana-dibujo-fondo';
+    fondoV.innerHTML = '<div class="ventana ventana-dibujo" role="dialog" aria-modal="true" aria-labelledby="titulo-dibujo">' +
+      '<h2 id="titulo-dibujo">Elegí tu camión</h2>' +
+      '<p class="ventana-ayuda">Así se va a ver tu camión en el mapa cuando manejás.</p>' +
+      '<div id="dibujo-vista" class="dibujo-vista" aria-hidden="true"></div>' +
+      '<div class="dibujo-sub">Tipo</div><div id="dibujo-tipos" class="dibujo-tipos"></div>' +
+      '<div class="dibujo-sub">Color de la cabina</div><div id="dibujo-colores" class="dibujo-colores"></div>' +
+      '<div class="ventana-botones"><button id="dibujo-listo" class="boton boton-principal" type="button">Listo</button></div></div>';
+    document.body.appendChild(fondoV);
+    fondoV.addEventListener('click', function (ev) {
+      var t = ev.target.closest('[data-tipo-camion], [data-color-camion]');
+      if (t) {
+        if (t.hasAttribute('data-tipo-camion')) dibujoCamion.tipo = t.getAttribute('data-tipo-camion');
+        else dibujoCamion.color = t.getAttribute('data-color-camion');
+        guardar('mapa-camiones:dibujo', dibujoCamion);
+        aplicarDibujoCamion();
+        armarElegirCamion();
+        return;
+      }
+      if (ev.target === fondoV || ev.target.id === 'dibujo-listo') fondoV.hidden = true;
+    });
+  }
+  armarElegirCamion();
+  fondoV.hidden = false;
+}
+function armarElegirCamion() {
+  document.getElementById('dibujo-vista').style.backgroundImage = urlSvg(svgCamion(dibujoCamion.tipo, dibujoCamion.color, true));
+  document.getElementById('dibujo-tipos').innerHTML = DIBUJOS_CAMION.map(function (d) {
+    var sel = d.id === dibujoCamion.tipo;
+    return '<button type="button" class="dibujo-tipo' + (sel ? ' elegido' : '') + '" data-tipo-camion="' + d.id + '" aria-pressed="' + sel + '">' +
+      '<i style=\'background-image:' + urlSvg(svgCamion(d.id, dibujoCamion.color, true)).replace(/'/g, '%27') + '\'></i>' + esc(d.nombre) + '</button>';
+  }).join('');
+  document.getElementById('dibujo-colores').innerHTML = COLORES_CABINA.map(function (k) {
+    var sel = k.id === dibujoCamion.color;
+    return '<button type="button" class="dibujo-color' + (sel ? ' elegido' : '') + '" data-color-camion="' + k.id + '" aria-pressed="' + sel +
+      '" aria-label="' + k.nombre + '" title="' + k.nombre + '" style="background:' + k.c + '"></button>';
+  }).join('');
+}
+['btn-dibujo-camion', 'abrir-dibujo'].forEach(function (id) {
+  var b = document.getElementById(id);
+  if (b) b.addEventListener('click', function () { if (id === 'btn-dibujo-camion') abrirPanel(false); abrirElegirCamion(); });
 });
 
 // ===== 4. ¿Pasa o no pasa? =====

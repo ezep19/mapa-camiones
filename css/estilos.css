@@ -1514,3 +1514,21 @@ body.navegando .cam-acoplado { left: 3px; top: var(--acoplado-top, 21.6px); widt
   background: linear-gradient(to bottom, #2a2e35 0 24%, var(--camion-color, #ff6b00) 24% 42%, #23344a 42% 86%, var(--camion-color, #ff6b00) 86%);
 }
 .cam-cabina .c3.atras { background: var(--camion-color, #ff6b00); box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.28); }
+
+/* v104: acercar / alejar (en el celular también), a la izquierda arriba del velocímetro */
+.zoom-botones {
+  position: fixed; z-index: 1000; left: var(--m-izq, 10px); bottom: calc(max(var(--m-abajo, 10px), var(--alto-hoja, 0px)) + 104px);
+  display: flex; flex-direction: column; border-radius: 16px; overflow: hidden; background: #fff;
+  box-shadow: 0 4px 14px rgba(5, 12, 25, 0.28); transition: bottom 0.2s;
+}
+.zoom-botones button {
+  width: 52px; height: 52px; border: 0; background: #fff; color: var(--noche, #0f1b2d); font: inherit; font-size: 1.7rem;
+  font-weight: 700; line-height: 1; cursor: pointer;
+}
+.zoom-botones button + button { border-top: 1px solid #e3e8ee; }
+.zoom-botones button:active { background: #eef3fb; }
+body.navegando .zoom-botones { background: #0f1b2d; box-shadow: 0 4px 16px rgba(5, 12, 25, 0.45); }
+body.navegando .zoom-botones button { background: #0f1b2d; color: #fff; }
+body.navegando .zoom-botones button + button { border-top-color: rgba(255, 255, 255, 0.14); }
+body.ruta-escribiendo .zoom-botones, body.hoja-abierta .zoom-botones { display: none; }
+@media (max-height: 700px) { .zoom-botones button { width: 46px; height: 46px; font-size: 1.5rem; } }

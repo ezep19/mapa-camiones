@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 103;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 104;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2643,11 +2643,28 @@ var botonUbicacion = crearBotonMapa('boton-ubicacion', 'Mostrar mi ubicación',
   '<path d="M12 1v4M12 19v4M1 12h4M19 12h4" stroke="currentColor" stroke-width="2"/></svg>',
   function () { tocarUbicacion(); });
 var controlUbicacion = { boton: botonUbicacion };
-// en la PC: botones para acercar y alejar (en el celular se usan los dedos)
-if (!L.Browser.mobile) {
-  crearBotonMapa('boton-zoom', 'Acercar', '+', function () { gl.zoomIn(); });
-  crearBotonMapa('boton-zoom', 'Alejar', '−', function () { gl.zoomOut(); });
-}
+// v104: botones para acercar y alejar, también en el celular (pedido del chofer), a la izquierda, arriba del velocímetro.
+// Manejando no sueltan la cámara: cambian cuánto se acerca (nav.zoomExtra, se suma a zoomDeViaje).
+(function () {
+  var caja = document.createElement('div');
+  caja.id = 'zoom-botones';
+  caja.className = 'zoom-botones';
+  caja.innerHTML = '<button type="button" data-z="1" aria-label="Acercar el mapa">+</button>' +
+                   '<button type="button" data-z="-1" aria-label="Alejar el mapa">−</button>';
+  document.body.appendChild(caja);
+  caja.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-z]');
+    if (!b) return;
+    var paso = +b.getAttribute('data-z');
+    if (typeof nav !== 'undefined' && nav.activo && !nav.libre) {
+      nav.zoomExtra = Math.max(-3, Math.min(2.5, (nav.zoomExtra || 0) + paso * 0.75));
+      if (anim.r === nav.r) { if (!anim.raf) anim.raf = requestAnimationFrame(cuadroViaje); }   // la cámara de viaje se acomoda sola
+      else gl.easeTo({ zoom: zoomDeViaje(), duration: 300 });   // fuera de la ruta: solo el zoom
+    } else {
+      gl.easeTo({ zoom: gl.getZoom() + paso, duration: 250 });
+    }
+  });
+})();
 function ponerBrujula() {
   var g = mapa.getBearing();
   var girado = Math.abs(((g % 360) + 360) % 360) > 0.5 && Math.abs(((g % 360) + 360) % 360 - 360) > 0.5;
@@ -6982,7 +6999,7 @@ function zoomDeViaje() {
   var z = kmh == null || kmh < 35 ? 17 : kmh < 70 ? 16.4 : 15.8;
   // v101: llegando a un giro (a menos de 220 m, no en la ruta a toda velocidad) el mapa se acerca para ver bien la esquina
   if (nav.distProx != null && nav.distProx < 220 && (kmh == null || kmh < 60)) z = Math.max(z, 17.4);
-  return z;
+  return Math.max(10, Math.min(18, z + (nav.zoomExtra || 0)));   // v104: + y − del chofer
 }
 // v94: el camión se mueve suave, al mismo tiempo y con el mismo tiempo que la cámara (antes saltaba a la posición nueva y
 // la cámara llegaba después: se lo veía temblar y torcerse en la pantalla). Al tocar Ir se pone de una sobre la ruta.
@@ -7067,6 +7084,7 @@ function animarEnRuta(m, pos) {
   var ahora = performance.now();
   if (anim.r !== nav.r || anim.mDisp == null || m - anim.mDisp > 400 || m < anim.mDisp - 15 || nav.primeraCamara) {
     anim.r = nav.r; anim.mDisp = anim.m0 = anim.m1 = m; anim.t0 = ahora; anim.dur = 0; anim.bCam = null; anim.z = null;
+    anim.largoPx = null;   // v104: se vuelve a medir (puede haber cambiado el dibujo del camión)
     if (nav.primeraCamara) {   // al tocar "Ir": la cámara se zambulle hasta el camión (como en una película)
       nav.primeraCamara = false;
       var total = nav.acum[nav.acum.length - 1], p = puntoEnRuta(m);
@@ -7094,16 +7112,21 @@ function cuadroViaje() {
   var mc = anim.m0 + (anim.m1 - anim.m0) * t, total = nav.acum[nav.acum.length - 1];
   anim.mDisp = mc;
   var p = puntoEnRuta(mc);
-  var bCab = rumboEntre(puntoEnRuta(Math.max(0, mc - 3)), puntoEnRuta(Math.min(total, mc + 6)));
+  // v104: metros de mapa por pixel del dibujo (el camión está acostado sobre el mapa, así que se mide en el plano del mapa)
+  var mpp = 40075016.686 * Math.cos(p.lat * Math.PI / 180) / (512 * Math.pow(2, gl.getZoom()));
+  if (!anim.largoPx) anim.largoPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--acoplado-largo')) || 51;
+  var mEnganche = mc - 9.6 * mpp;                   // quinta rueda: 9,6 px detrás del centro de la cabina
+  var mCola = mEnganche - anim.largoPx * mpp;       // la cola del acoplado, sobre la ruta
+  var bCab = rumboEntre(puntoEnRuta(Math.max(0, mEnganche)), puntoEnRuta(Math.min(total, mc + 7 * mpp)));
   var marca = ubicacion.punto, el = marca.getElement();
   marca.setLngLat([p.lng, p.lat]);
   marca.setRotation(bCab);
   var aco = el.querySelector('.cam-acoplado');
   if (aco) {
     var gira = 0;
-    if (dibujoCamion.tipo !== 'chasis' && mc > 18) {
-      var bAco = rumboEntre(puntoEnRuta(mc - 16), puntoEnRuta(mc - 3));
-      gira = Math.max(-65, Math.min(65, difAngulo(bAco, bCab)));
+    if (dibujoCamion.tipo !== 'chasis' && mEnganche > 2) {
+      var bAco = rumboEntre(puntoEnRuta(Math.max(0, mCola)), puntoEnRuta(mEnganche));
+      gira = Math.max(-80, Math.min(80, difAngulo(bAco, bCab)));
     }
     aco.style.transform = gira ? 'rotate(' + gira.toFixed(1) + 'deg)' : '';
   }

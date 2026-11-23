@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 100;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 101;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1336,6 +1336,14 @@ function ponerCapasPropias() {
       paint: { 'line-color': '#0b3d91', 'line-width': 13 } },
     { id: 'maniobra-linea', type: 'line', source: 'maniobra', filter: es('t', 'l'), layout: redondo,
       paint: { 'line-color': '#ffffff', 'line-width': 8 } },
+    // v101: flecha 3D del próximo giro, flotando arriba de la calle (como Google Maps): sombra en el piso, borde azul y
+    // la flecha blanca encima. Es UNA figura que cambia solo cuando cambia el giro (liviano)
+    { id: 'maniobra-sombra', type: 'fill', source: 'maniobra', minzoom: 13, filter: es('t', 's'),
+      paint: { 'fill-color': '#0b1a33', 'fill-opacity': 0.22 } },
+    { id: 'maniobra-3d-borde', type: 'fill-extrusion', source: 'maniobra', minzoom: 13, filter: es('t', 'fb'),
+      paint: { 'fill-extrusion-color': '#1452c9', 'fill-extrusion-base': 3, 'fill-extrusion-height': 5, 'fill-extrusion-opacity': 0.95 } },
+    { id: 'maniobra-3d', type: 'fill-extrusion', source: 'maniobra', minzoom: 13, filter: es('t', 'f'),
+      paint: { 'fill-extrusion-color': '#ffffff', 'fill-extrusion-base': 5, 'fill-extrusion-height': 7.5, 'fill-extrusion-opacity': 0.95 } },
     // zonas agrupadas (muchas calles rojas juntas): solo de lejos
     { id: 'r-agrupada', type: 'fill', source: 'restr', maxzoom: AGRUPAR.zoomCalles, filter: ['all', GEO_AREAS, ['has', 'zg']],
       paint: { 'fill-color': COLORES.no, 'fill-opacity': 0.14 } },
@@ -5933,6 +5941,7 @@ function seguirNavegacion(pos) {
   if (u.fuera > NAV.FUERA_DE_RUTA_M) {
     nav.fuera++;
     marcarManiobra(null);   // v95: la flecha del giro ya no sirve
+    nav.distProx = null;
     // fuera de la ruta no hay avisos preparados: se mira lo que hay adelante (lo rojo para tu camión)
     var lista = peligrosAdelante(L.latLng(pos), rumboGps), p0 = lista[0];
     var txtP = p0 ? '⛔ A ' + textoDistancia(p0.d) + ': ' + p0.texto : '';
@@ -5994,12 +6003,14 @@ function seguirNavegacion(pos) {
   });
   actualizarTablero(u.recorrido, prox);   // v95: lo que viene, el giro en el mapa, la calle, la máxima
   if (!prox) {
+    nav.distProx = null;
     mostrarCartelNav(textoDistancia(falta), 'Seguí hasta el destino', peligro);
     if (decir.length) hablar(decir.join(' '));
     seguirConCamara(verPos);
     return;
   }
   var dist = prox.dist - u.recorrido;
+  nav.distProx = prox.llegada ? null : dist;   // v101: para acercar el mapa en el giro
   mostrarCartelNav('En ' + textoDistancia(dist), prox.texto, peligro);
   if (prox.llegada) {
     // del destino se avisa una sola vez; al llegar se dice "Llegaste"
@@ -6528,11 +6539,67 @@ function marcarManiobra(prox, recorrido) {
   nav.maniobraN = clave;
   if (clave == null) { ponerDatos('maniobra', []); return; }
   var total = nav.acum[nav.acum.length - 1], m1 = Math.max(0, prox.dist - 45), m2 = Math.min(total, prox.dist + 35);
-  var fin = puntoEnRuta(m2), antes = puntoEnRuta(Math.max(m1, m2 - 6));
-  ponerDatos('maniobra', [
-    { type: 'Feature', properties: { t: 'l' }, geometry: { type: 'LineString', coordinates: tramoRuta(m1, m2) } },
-    { type: 'Feature', properties: { t: 'p', rot: rumboEntre(antes, fin) }, geometry: { type: 'Point', coordinates: [fin.lng, fin.lat] } }
-  ]);
+  var fin = puntoEnRuta(m2), antes = puntoEnRuta(Math.max(m1, m2 - 6)), tramo = tramoRuta(m1, m2);
+  var feats = [{ type: 'Feature', properties: { t: 'l' }, geometry: { type: 'LineString', coordinates: tramo } }];
+  // v101: flecha 3D (no en la vuelta en U: la figura se cruza sola)
+  var f3 = flechaNav('', prox.texto) !== 'vuelta' ? poligonoFlecha(tramo, FLECHA3D.ancho, FLECHA3D.anchoPunta, FLECHA3D.largoPunta, 0) : null;
+  var f3b = f3 && poligonoFlecha(tramo, FLECHA3D.ancho + 2 * FLECHA3D.borde, FLECHA3D.anchoPunta + 3 * FLECHA3D.borde,
+                                 FLECHA3D.largoPunta + FLECHA3D.borde, FLECHA3D.borde * 1.6);
+  if (f3 && f3b) {
+    feats.push({ type: 'Feature', properties: { t: 's' }, geometry: f3b });
+    feats.push({ type: 'Feature', properties: { t: 'fb' }, geometry: f3b });
+    feats.push({ type: 'Feature', properties: { t: 'f' }, geometry: f3 });
+  } else {
+    feats.push({ type: 'Feature', properties: { t: 'p', rot: rumboEntre(antes, fin) }, geometry: { type: 'Point', coordinates: [fin.lng, fin.lat] } });
+  }
+  ponerDatos('maniobra', feats);
+}
+// v101: la flecha del giro como figura (polígono) siguiendo la ruta: cuerpo de "ancho" metros y punta al final.
+// coords = [[lng, lat]...] del tramo del giro; "extra" estira la punta hacia adelante (para el borde).
+var FLECHA3D = { ancho: 8, anchoPunta: 20, largoPunta: 15, borde: 1.4 };
+function poligonoFlecha(coords, ancho, anchoPunta, largoPunta, extra) {
+  if (!coords || coords.length < 2) return null;
+  var lng0 = coords[0][0], lat0 = coords[0][1], kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540, P = [];
+  coords.forEach(function (c) {
+    var x = (c[0] - lng0) * kx, y = (c[1] - lat0) * ky, u = P[P.length - 1];
+    if (!u || Math.hypot(x - u[0], y - u[1]) > 0.8) P.push([x, y]);
+  });
+  if (P.length < 2) return null;
+  var ac = [0], i;
+  for (i = 1; i < P.length; i++) ac.push(ac[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+  var largo = ac[ac.length - 1];
+  if (largo < largoPunta + 8) return null;
+  var corte = largo - largoPunta, S = [];
+  for (i = 0; i < P.length; i++) {
+    if (ac[i] < corte) { S.push(P[i]); continue; }
+    var t = (corte - ac[i - 1]) / ((ac[i] - ac[i - 1]) || 1);
+    S.push([P[i - 1][0] + (P[i][0] - P[i - 1][0]) * t, P[i - 1][1] + (P[i][1] - P[i - 1][1]) * t]);
+    break;
+  }
+  if (S.length < 2) return null;
+  var punta = P[P.length - 1], base = S[S.length - 1];
+  var dx = punta[0] - base[0], dy = punta[1] - base[1], dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl;
+  punta = [punta[0] + ux * (extra || 0), punta[1] + uy * (extra || 0)];
+  function normal(a, b) { var x = b[0] - a[0], y = b[1] - a[1], l = Math.hypot(x, y) || 1; return [-y / l, x / l]; }
+  var izq = [], der = [];
+  S.forEach(function (q, k) {
+    var n;
+    if (k === S.length - 1) n = [-uy, ux];   // la unión con la punta, derecha
+    else if (k === 0) n = normal(S[0], S[1]);
+    else {
+      var n1 = normal(S[k - 1], q), n2 = normal(q, S[k + 1]), sx = n1[0] + n2[0], sy = n1[1] + n2[1], sl = Math.hypot(sx, sy) || 1;
+      n = [sx / sl, sy / sl];
+      var esc = 1 / Math.max(0.55, n[0] * n1[0] + n[1] * n1[1]);   // esquina en ángulo, sin pasarse
+      n = [n[0] * esc, n[1] * esc];
+    }
+    var w = ancho / 2;
+    izq.push([q[0] + n[0] * w, q[1] + n[1] * w]);
+    der.push([q[0] - n[0] * w, q[1] - n[1] * w]);
+  });
+  var nx = -uy, ny = ux, h = anchoPunta / 2;
+  var anillo = izq.concat([[base[0] + nx * h, base[1] + ny * h], punta, [base[0] - nx * h, base[1] - ny * h]], der.reverse());
+  anillo.push(anillo[0]);
+  return { type: 'Polygon', coordinates: [anillo.map(function (q) { return [lng0 + q[0] / kx, lat0 + q[1] / ky]; })] };
 }
 // La calle por donde vas: sale de la última indicación que ya pasaste ("Doblá a la derecha en Avenida Jara")
 function calleDeTexto(t) {
@@ -6693,8 +6760,10 @@ function limpiarTablero() {
 var VIAJE = { inclinacion: 58, vuelo: 2200 };   // v100: 58° (con 68° se trababa: bajaba y dibujaba mapa hasta el horizonte)
 function zoomDeViaje() {
   var kmh = velocidad.kmh;
-  if (kmh == null || kmh < 35) return 17;
-  return kmh < 70 ? 16.4 : 15.8;
+  var z = kmh == null || kmh < 35 ? 17 : kmh < 70 ? 16.4 : 15.8;
+  // v101: llegando a un giro (a menos de 220 m, no en la ruta a toda velocidad) el mapa se acerca para ver bien la esquina
+  if (nav.distProx != null && nav.distProx < 220 && (kmh == null || kmh < 60)) z = Math.max(z, 17.4);
+  return z;
 }
 // v94: el camión se mueve suave, al mismo tiempo y con el mismo tiempo que la cámara (antes saltaba a la posición nueva y
 // la cámara llegaba después: se lo veía temblar y torcerse en la pantalla). Al tocar Ir se pone de una sobre la ruta.

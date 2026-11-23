@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 99;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 100;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -4353,7 +4353,7 @@ function climaEnRuta(r) {
 // pedazos del mapa (OpenFreeMap) a lo largo del camino: de cerca (nivel 14, lo que se ve navegando) en una franja de
 // ~350 m a cada lado, y de más lejos (12, 10, 8, 6) más ancho. Se guardan aparte (sw.js: 'mapa-camiones-viaje') para
 // que no los borre el tope del mapa común. Los datos de restricciones y lugares del camino ya se guardan al calcular.
-var MAPA_VIAJE = { cache: 'mapa-camiones-viaje', tope: 9000, maxCerca: 3000, aLaVez: 4, kmMinimo: 15 };
+var MAPA_VIAJE = { cache: 'mapa-camiones-viaje', tope: 6000, maxCerca: 600, maxTotal: 2500, aLaVez: 2, kmMinimo: 15, cercaPuntasM: 25000 };
 var mapaViaje = { sesion: 0, listo: {} };
 // la dirección de los pedazos (cambia cada semana: .../planet/20261115_080022_pt/{z}/{x}/{y}.pbf). Si el mapa todavía
 // no la pidió, se lee del índice del estilo
@@ -4369,7 +4369,7 @@ function plantillaTiles() {
   } catch (e) { return Promise.resolve(null); }
 }
 function tilesDelViaje(puntos) {
-  var NIVELES = [{ z: 6, m: 60000 }, { z: 8, m: 20000 }, { z: 10, m: 6000 }, { z: 12, m: 1500 }, { z: 14, m: 350 }];
+  var NIVELES = [{ z: 6, m: 60000 }, { z: 8, m: 20000 }, { z: 10, m: 4000 }, { z: 12, m: 800 }, { z: 14, m: 300 }];
   function tx(lng, z) { return Math.floor((lng + 180) / 360 * Math.pow(2, z)); }
   function ty(lat, z) {
     var r = lat * Math.PI / 180;
@@ -4385,8 +4385,11 @@ function tilesDelViaje(puntos) {
   muestras.push(L.latLng(puntos[puntos.length - 1]));
   var lista = [], visto = {}, cerca = 0, lleno = false;
   NIVELES.forEach(function (n) {
-    muestras.forEach(function (p) {
+    muestras.forEach(function (p, im) {
       if (lleno) return;
+      // v100: de cerca (nivel 14) solo al salir y al llegar (en un viaje de 1.200 km eran miles de pedazos y se trababa)
+      if (n.z === 14 && im * 250 > MAPA_VIAJE.cercaPuntasM && (muestras.length - 1 - im) * 250 > MAPA_VIAJE.cercaPuntasM) return;
+      if (lista.length >= MAPA_VIAJE.maxTotal) { lleno = true; return; }
       var dLat = n.m / 110540, dLng = n.m / (111320 * Math.cos(p.lat * Math.PI / 180));
       for (var x = tx(p.lng - dLng, n.z); x <= tx(p.lng + dLng, n.z); x++) {
         for (var y = ty(p.lat + dLat, n.z); y <= ty(p.lat - dLat, n.z); y++) {
@@ -6406,7 +6409,7 @@ function mostrarTostada(html, boton, alTocar, ms) {
 // - Montañas en 3D al manejar: navegando en zona de sierras o cordillera, el terreno se levanta (setTerrain).
 var CLAVE_VISTA_FONDO = 'mapa-camiones:vista-fondo', CLAVE_MONTANAS = 'mapa-camiones:montanas-3d';
 var vistaFondo = (function () { var v = leerGuardado(CLAVE_VISTA_FONDO); return /^(relieve|satelite|plano)$/.test(v) ? v : 'relieve'; })();
-var montanas3D = leerGuardado(CLAVE_MONTANAS) !== false;
+var montanas3D = leerGuardado(CLAVE_MONTANAS) === true;   // v100: apagadas (trababan el iPhone); se prenden en Qué mostrar
 var URL_DEM = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
 var URL_SATELITE = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg';
 var terreno = { prendido: false };
@@ -6417,14 +6420,14 @@ function ponerRelieveYSatelite() {
     if (!agua && /^(water|waterway)/.test(l.id)) agua = l.id;
     if (!calles && (/^(aeroway|tunnel|road|highway|bridge|railway|building)/.test(l.id) || l.type === 'symbol')) calles = l.id;
   });
-  gl.addSource('relieve-dem', { type: 'raster-dem', tiles: [URL_DEM], tileSize: 256, maxzoom: 14, encoding: 'terrarium' });
+  gl.addSource('relieve-dem', { type: 'raster-dem', tiles: [URL_DEM], tileSize: 256, maxzoom: 11, encoding: 'terrarium' });
   gl.addSource('relieve-3d', { type: 'raster-dem', tiles: [URL_DEM], tileSize: 256, maxzoom: 13, encoding: 'terrarium' });
   gl.addSource('satelite', { type: 'raster', tiles: [URL_SATELITE], tileSize: 256, maxzoom: 15 });
   var noche = !!fondo.oscuro;
   gl.addLayer({ id: 'satelite', type: 'raster', source: 'satelite', layout: { visibility: 'none' },
                 paint: { 'raster-saturation': 0.12, 'raster-contrast': 0.06, 'raster-brightness-max': noche ? 0.55 : 1,
                          'raster-fade-duration': 0 } }, calles || undefined);
-  gl.addLayer({ id: 'relieve', type: 'hillshade', source: 'relieve-dem', layout: { visibility: 'none' },
+  gl.addLayer({ id: 'relieve', type: 'hillshade', source: 'relieve-dem', maxzoom: 13.5, layout: { visibility: 'none' },
                 paint: { 'hillshade-exaggeration': ['interpolate', ['linear'], ['zoom'], 3, 0.6, 8, 0.55, 12, 0.4, 15, 0.25],
                          'hillshade-shadow-color': noche ? '#03060c' : '#5a4630',
                          'hillshade-highlight-color': noche ? '#41536f' : '#fffaf0',
@@ -6447,7 +6450,7 @@ function ponerVistaFondo() {
 function enSierras(ll) {
   if (!ll) return false;
   var lat = ll.lat, lng = ll.lng;
-  return lng < -63.4 ||                                                   // oeste y noroeste: Córdoba, Cuyo, NOA, Patagonia andina
+  return lng < -64.35 ||                                                  // oeste y noroeste: sierras de Córdoba, Cuyo, NOA, Andes
          (lat > -38.4 && lat < -37.5 && lng > -62.7 && lng < -61.3) ||    // Sierra de la Ventana
          (lat > -38.2 && lat < -36.9 && lng > -60.6 && lng < -57.9);      // Tandil y Balcarce
 }
@@ -6687,7 +6690,7 @@ function limpiarTablero() {
 // "Modo viaje" (pedido del chofer, 20/11/2026: "que se acerque y se ponga como navegador, como hace Maps"):
 // mapa inclinado (VIAJE.inclinacion), de cerca, girando hacia donde vas y con una flecha en vez del punto azul.
 // El zoom depende de la velocidad: en la ciudad más cerca, en la ruta un poco más lejos para ver lo que viene.
-var VIAJE = { inclinacion: 68, vuelo: 2800 };   // v95: tan inclinado que se ve el horizonte y el cielo (súper modo)
+var VIAJE = { inclinacion: 58, vuelo: 2200 };   // v100: 58° (con 68° se trababa: bajaba y dibujaba mapa hasta el horizonte)
 function zoomDeViaje() {
   var kmh = velocidad.kmh;
   if (kmh == null || kmh < 35) return 17;

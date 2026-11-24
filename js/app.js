@@ -2169,6 +2169,7 @@ function armarCartelRadar(p) {
   if (p.nombre) html += '<div class="cartel-calle">' + esc(p.nombre) + '</div>';
   if (p.ruta) html += '<div class="cartel-calle">' + esc(p.ruta) + '</div>';
   if (p.operador) html += '<div class="cartel-calle">' + esc(p.operador) + '</div>';
+  if (p.corregido) html += '<div class="cartel-linea">✔ Lugar corregido por un chofer</div>';   // v105
   html += '<div class="cartel-fuente">Figura en OpenStreetMap: puede no estar funcionando, haberse movido, o haber ' +
           'radares que no figuran.</div>';
   html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (controles.radaresActualizado ? ' (' + fecha(controles.radaresActualizado) + ')' : '') +

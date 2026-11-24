@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 109;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 110;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -6173,8 +6173,23 @@ function pedirPantallaPrendida() {
     w.addEventListener('release', function () { nav.wake = null; });
   }).catch(function () { /* el teléfono no deja: se puede apagar la pantalla */ });
 }
+// v110 (el chofer: "¿podemos poner uso en segundo plano?"): una página web en el iPhone NO puede seguir con el GPS ni
+// hablar cuando se cambia de app o se bloquea la pantalla (Apple la congela; solo una app de la tienda puede). Lo que sí:
+// al volver, la navegación sigue sola enseguida: se vuelve a pedir el GPS (el iPhone a veces lo corta), el camión va
+// directo a donde estás (sin arrastrarse) y se avisa con un cartel.
+var segundoPlano = { desde: 0 };
 document.addEventListener('visibilitychange', function () {
-  if (nav.activo && document.visibilityState === 'visible') pedirPantallaPrendida();
+  if (!nav.activo) return;
+  if (document.visibilityState === 'hidden') { segundoPlano.desde = Date.now(); return; }
+  pedirPantallaPrendida();
+  var afuera = segundoPlano.desde ? Date.now() - segundoPlano.desde : 0;
+  segundoPlano.desde = 0;
+  if (afuera < 4000) return;
+  mapa.stopLocate();
+  mapa.locate({ watch: true, enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+  anim.mDisp = null;
+  mostrarMensaje('Volviste al mapa: sigo con la ruta desde donde estás.');
+  setTimeout(ocultarMensaje, 3500);
 });
 
 // Barra de abajo: "14:35 llegada" y "12 min · 7,4 km". El tiempo es el de la ruta (de auto), en proporción a lo que falta.

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 117;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 118;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -171,6 +171,23 @@ function estiloNoche(est) {
   });
   return est;
 }
+// v118: copia las capas de negocios (source-layer 'poi') del mapa claro al oscuro, con letras claras
+function sumarNegociosDeNoche(est, claro) {
+  if (est.layers.some(function (l) { return l['source-layer'] === 'poi'; })) return est;
+  var pois = claro.layers.filter(function (l) { return l['source-layer'] === 'poi'; }).map(function (l) {
+    var n = JSON.parse(JSON.stringify(l));
+    n.paint = n.paint || {};
+    n.paint['text-color'] = l.id === 'poi_transit' ? '#8fb4d9' : '#b8c3d1';
+    n.paint['text-halo-color'] = '#141b26';
+    n.paint['text-halo-width'] = 1.2;
+    n.paint['icon-opacity'] = 0.9;
+    return n;
+  });
+  var antes = est.layers.findIndex(function (l) { return /^highway_name|^place_/.test(l.id); });
+  if (antes < 0) antes = est.layers.length;
+  est.layers.splice.apply(est.layers, [antes, 0].concat(pois));
+  return est;
+}
 // --- Mapa de noche (v75): de noche el mapa oscuro de OpenFreeMap (no encandila manejando), como Google Maps y Waze.
 // "auto" = según la salida y la puesta del sol donde estás; se puede fijar claro u oscuro en Qué mostrar.
 var ESTILO_NOCHE = 'https://tiles.openfreemap.org/styles/dark';
@@ -210,10 +227,15 @@ function ponerFondo() {
   function bajar(url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error('estilo ' + r.status); return r.json(); }); }
   var espera = setTimeout(respaldo, 10000);
   // de noche sin señal (el estilo oscuro nunca se guardó): el claro, que sí está guardado
+  // v118: el mapa oscuro no trae negocios (McDonald's, farmacias...): se le agregan los del mapa claro (mismos íconos)
+  var claro = oscuro ? bajar(ESTILO_FONDO).catch(function () { return null; }) : null;
   bajar(oscuro ? ESTILO_NOCHE : ESTILO_FONDO).catch(function (e) {
     if (!oscuro) throw e;
     oscuro = false;
     return bajar(ESTILO_FONDO);
+  }).then(function (est) {
+    if (!oscuro || !claro) return est;
+    return claro.then(function (c) { return c ? sumarNegociosDeNoche(est, c) : est; });
   }).then(function (est) {
     if (!vigente()) return;
     listo = true;

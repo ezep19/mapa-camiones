@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 104;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 105;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -306,6 +306,7 @@ gl.on('styleimagemissing', function (ev) {
   if (ev.id === 'ic-sin-salida') { gl.addImage(ev.id, dibujarSinSalida(), { pixelRatio: 2 }); return; }
   if (ev.id === 'ic-punta') { gl.addImage(ev.id, dibujarPunta(), { pixelRatio: 2 }); return; }
   if (ev.id === 'ic-peaje') { gl.addImage(ev.id, dibujarPeaje(), { pixelRatio: 2 }); return; }
+  if (ev.id === 'ic-tren') { gl.addImage(ev.id, dibujarCruzTren(), { pixelRatio: 2 }); return; }
   var d = datosIcono(ev.id);
   if (d && d.length === 1) gl.addImage(ev.id, dibujarLimite(d[0].slice(1)), { pixelRatio: 2 });
   else if (d) gl.addImage(ev.id, dibujarIcono(d[0], d[1], d[2]), { pixelRatio: 2 });
@@ -1324,8 +1325,10 @@ function ponerCapasPropias() {
   ponerRelieveYSatelite();   // v98: relieve y satélite (debajo de las calles)
   var nombres = gl.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0];
   var debajo = nombres ? nombres.id : undefined;
-  ['red', 'ruta', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'lugares', 'controles', 'reportes'].forEach(function (id) {
-    gl.addSource(id, { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 });
+  ['red', 'ruta', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'trenes', 'lugares', 'controles', 'reportes'].forEach(function (id) {
+    var op = { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 };
+    if (id === 'ruta') op.lineMetrics = true;   // v105: para pintar de gris lo ya recorrido (line-progress)
+    gl.addSource(id, op);
   });
   var redondo = { 'line-cap': 'round', 'line-join': 'round' };
   // v94: modo viaje (navegando): edificios en 3D (solo de cerca) debajo de todo lo nuestro
@@ -1432,6 +1435,10 @@ function ponerCapasPropias() {
     { id: 'lugares', type: 'symbol', source: 'lugares', minzoom: ZOOM_LUGARES - 1,
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
                 'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_LUGARES - 1, 1, 15, 1.15] } },
+    // v105: pasos a nivel (cruz de San Andrés); de lejos, solo los que entran sin taparse
+    { id: 'trenes', type: 'symbol', source: 'trenes', minzoom: 11,
+      layout: { 'icon-image': 'ic-tren', 'icon-allow-overlap': ['step', ['zoom'], false, 15, true], 'icon-padding': 4,
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.55, 14, 0.8, 16, 1] } },
     { id: 'peajes-icono', type: 'symbol', source: 'peajes', minzoom: 9,
       layout: { 'icon-image': 'ic-peaje', 'icon-allow-overlap': false, 'icon-padding': 6,
                 'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.7, 14, 1] } },
@@ -1472,11 +1479,13 @@ function ponerModoViaje(prender) {
   gl.setPaintProperty('ruta-borde', 'line-width', prender ? 18 : 11);
   gl.setPaintProperty('ruta-linea', 'line-color', prender ? '#1a6dff' : '#1565c0');
   gl.setPaintProperty('ruta-linea', 'line-opacity', prender ? 1 : 0.85);
+  if (prender) { pintado.frac = -1; if (nav.recorrido != null) pintarRecorrido(anim.mDisp != null ? anim.mDisp : nav.recorrido, true); }
+  else quitarRecorrido();
 }
 
 // Capas que se prenden y apagan enteras desde "Qué mostrar"
 function ponerVisibilidad() {
-  [['controles', 'controles'], ['radares', 'controles'], ['radares-lejos', 'controles'], ['reportes', 'reportes'],
+  [['controles', 'controles'], ['radares', 'controles'], ['radares-lejos', 'controles'], ['reportes', 'reportes'], ['trenes', 'trenes'],
    ['red-pesada', 'red_pesada']].forEach(function (x) {
     if (gl.getLayer(x[0])) gl.setLayoutProperty(x[0], 'visibility', apagadas[x[1]] ? 'none' : 'visible');
   });
@@ -2486,6 +2495,8 @@ var OPCIONES_MAPA = [
   { id: 'lugares', icono: '⛽', nombre: 'Lugares útiles', detalle: 'Gomerías, combustible, paradores, duchas', lugares: true },
   { id: 'controles', icono: '👮', nombre: 'Controles y radares', detalle: 'Policía, Gendarmería, radares, cámaras y pasos de frontera', clave: 'controles',
     hay: function () { return controles.lista.length > 0; } },
+  { id: 'trenes', icono: '🚂', nombre: 'Pasos a nivel', detalle: 'Donde la calle o la ruta cruza las vías del tren', clave: 'trenes',
+    hay: function () { return pasosTren.lista.length > 0; } },
   { id: 'red_pesada', icono: '🟩', nombre: 'Calles para camiones', detalle: 'Red de tránsito pesado', clave: 'red_pesada',
     hay: function () { return !!redPesada.grupo; } },
   { id: 'reportes', icono: '📣', nombre: 'Reportes de choferes', clave: 'reportes',
@@ -4916,6 +4927,18 @@ function mostrarRuta(indice, sinMoverMapa) {
     });
     html += '</ul></details>';
   }
+  r.trenes = pasosTrenEnRuta(r.puntos);   // v105
+  if (r.trenes.length) {
+    var sinB = r.trenes.filter(function (c) { return sinBarrera(c.item.f.properties); }).length;
+    html += '<details class="ruta-pasos"><summary>🚂 Pasos a nivel en el camino (' + r.trenes.length +
+            (sinB ? ', ' + sinB + ' sin barrera' : '') + ')</summary><ul class="ruta-lista">';
+    r.trenes.slice(0, 150).forEach(function (c, i) {
+      var p = c.item.f.properties;
+      html += '<li><button type="button" data-tren="' + i + '"><span class="ruta-lista-icono">🚂</span>' +
+              esc(nombrePasoTren(p) + (p.calle ? ': ' + p.calle : '')) + '</button></li>';
+    });
+    html += '</ul></details>';
+  }
   r.lugares = lugaresEnRuta(r.puntos).slice(0, 250);
   html += htmlParaElViaje(r);   // v89: tramos sin estaciones y dónde descansar
   if (r.lugares.length) {
@@ -4966,6 +4989,14 @@ function mostrarRuta(indice, sinMoverMapa) {
       abrirPanelRuta(false);
       mapa.setView(l.getLatLng(), Math.max(mapa.getZoom(), 16));
       abrirCartelLugar(l);
+    });
+  });
+  salida.querySelectorAll('[data-tren]').forEach(function (b) {   // v105
+    b.addEventListener('click', function () {
+      var c = r.trenes[+b.getAttribute('data-tren')];
+      abrirPanelRuta(false);
+      mapa.setView(c.item.latlng, Math.max(mapa.getZoom(), 16));
+      abrirCartelTren(c.i);
     });
   });
   salida.querySelectorAll('[data-control]').forEach(function (b) {
@@ -5598,6 +5629,8 @@ function clipDistancia(t) {
 function clipPeligro(t) {
   t = t.toLowerCase();
   var vel = /máxima (\d+)/.exec(t), clipVel = vel && +vel[1] >= 20 && +vel[1] <= 130 && +vel[1] % 10 === 0 ? 'v_' + vel[1] : null;
+  if (/paso a nivel sin barrera/.test(t)) return ['h_tren_sin'];   // v105
+  if (/paso a nivel/.test(t)) return ['h_tren'];
   if (/radar/.test(t)) return clipVel ? ['h_radar', clipVel] : ['h_radar'];
   if (/cámara de semáforo|camara de semaforo/.test(t)) return ['h_camara'];
   // v89: clima
@@ -5800,6 +5833,15 @@ function empezarNavegacion(rutaElegida) {
     nav.avisos.push({ n: 'ctl' + k, texto: tipo.nombre + (maxRadar ? ', máxima ' + maxRadar + ' km/h' : ''),
                       voz: (VOZ_CONTROL[p.tipo] || 'control policial') + (maxRadar ? ', máxima ' + maxRadar + ' kilómetros por hora' : ''),
                       maxima: maxRadar, icono: tipo.icono + ' ', rojo: false,
+                      dist: nav.acum[Math.min(c.orden, nav.acum.length - 1)] +
+                            (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
+  });
+  // v105: pasos a nivel: se avisan como un control (sin alarma), para bajar la velocidad
+  (r.trenes || pasosTrenEnRuta(r.puntos)).forEach(function (c, k) {
+    var p = c.item.f.properties, sinB = sinBarrera(p);
+    nav.avisos.push({ n: 'tren' + k, texto: nombrePasoTren(p) + ': bajá la velocidad', tren: true,
+                      voz: sinB ? 'paso a nivel sin barrera, bajá la velocidad y mirá a los dos lados' : 'paso a nivel, bajá la velocidad',
+                      icono: '🚂 ', rojo: false,
                       dist: nav.acum[Math.min(c.orden, nav.acum.length - 1)] +
                             (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
   });
@@ -6024,6 +6066,7 @@ function seguirNavegacion(pos) {
   // v94: el camión se dibuja SOBRE la línea azul (el GPS del teléfono erra 5–20 m: quedaba al costado de la ruta)
   var verPos = u.fuera <= NAV.PEGAR_M ? puntoEnRuta(u.recorrido) : pos;
   var verM = u.fuera <= NAV.PEGAR_M ? u.recorrido : null;   // v102
+  if (anim.r !== nav.r) pintarRecorrido(u.recorrido);   // v105 (con la animación lo pinta cuadroViaje)
   if (nav.ultimaVuelta && nav.recorrido > nav.ultimaVuelta.hastaM) nav.ultimaVuelta = null;
   if (true) {
     var rumbo = rumboEnRuta(u);
@@ -6737,6 +6780,168 @@ function dibujarPeaje() {   // ícono: círculo azul con el signo $ blanco
   return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
 }
 
+
+// ===== v105: PASOS A NIVEL (calle o ruta que cruza las vías del tren). Pedido del chofer el 24/11/2026: "vías de tren
+// que cruzan ruta, para avisar que baje la velocidad". Datos: datos/pasos_tren.geojson (scripts/descargar_pasos_tren.py,
+// OpenStreetMap, todo el país). En el mapa: la cruz de San Andrés. En la ruta: lista "Pasos a nivel" y, navegando, la
+// voz avisa antes de llegar ("paso a nivel, bajá la velocidad"; sin barrera: "...y mirá a los dos lados").
+var pasosTren = { lista: [], actualizado: null, grilla: null, pedido: false };
+var CELDA_TREN = 0.01;   // ~1 km
+function bajarPasosTren() {
+  if (pasosTren.pedido) return;
+  pasosTren.pedido = true;
+  fetch('datos/pasos_tren.geojson', { cache: 'no-cache' })
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (d) {
+      pasosTren.actualizado = d.actualizado;
+      pasosTren.lista = (d.features || []).map(function (f) {
+        var c = f.geometry.coordinates;
+        return { f: f, latlng: L.latLng(c[1], c[0]) };
+      });
+      var g = {};
+      pasosTren.lista.forEach(function (it, i) {
+        var k = Math.floor(it.latlng.lat / CELDA_TREN) + ',' + Math.floor(it.latlng.lng / CELDA_TREN);
+        (g[k] = g[k] || []).push(i);
+      });
+      pasosTren.grilla = g;
+      ponerDatos('trenes', pasosTren.lista.map(function (it, i) {
+        return { type: 'Feature', geometry: it.f.geometry, properties: { k: 't', i: i } };
+      }));
+      if (zonasIndice.length) armarPanel();
+    })
+    .catch(function (e) { pasosTren.pedido = false; console.warn('Sin pasos a nivel:', e); });
+}
+setTimeout(bajarPasosTren, 1500);
+
+function sinBarrera(p) { return p.barrera === 'no'; }
+function nombrePasoTren(p) {
+  return 'Paso a nivel' + (sinBarrera(p) ? ' sin barrera' : '') + (p.tranvia ? ' (tranvía)' : '');
+}
+// Ícono: la cruz de San Andrés (blanca con borde rojo), como el cartel de la ruta
+function dibujarCruzTren() {
+  var k = 2, t = 32 * k, c = document.createElement('canvas');
+  c.width = c.height = t;
+  var x = c.getContext('2d'), m = t / 2, l = 11.5 * k;
+  x.lineCap = 'butt';
+  function cruz(ancho, color) {
+    x.strokeStyle = color; x.lineWidth = ancho;
+    x.beginPath(); x.moveTo(m - l, m - l); x.lineTo(m + l, m + l); x.moveTo(m + l, m - l); x.lineTo(m - l, m + l); x.stroke();
+  }
+  x.shadowColor = 'rgba(0,0,0,0.4)'; x.shadowBlur = 3 * k; x.shadowOffsetY = k;
+  cruz(9 * k, '#c62828');
+  x.shadowColor = 'transparent';
+  cruz(5 * k, '#ffffff');
+  x.fillStyle = '#c62828'; x.beginPath(); x.arc(m, m, 1.6 * k, 0, 2 * Math.PI); x.fill();
+  return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
+}
+function armarCartelTren(p) {
+  var html = '<div class="cartel-tipo">🚂 ' + esc(nombrePasoTren(p)) + '</div>';
+  if (sinBarrera(p)) {
+    html += '<div class="veredicto no">SIN BARRERA<small>Frená, mirá a los dos lados y cruzá sin detenerte sobre las vías.</small></div>';
+  } else {
+    html += '<div class="cartel-valor">' + (p.barrera === 'si' ? 'Con barrera' : 'Barrera: no figura si tiene') + '</div>';
+  }
+  var hay = [];
+  if (p.luces === 'si') hay.push('luces');
+  if (p.campana === 'si') hay.push('campana');
+  if (p.guarda === 'si') hay.push('guardabarrera');
+  if (hay.length) html += '<div class="cartel-linea">Tiene: ' + esc(hay.join(', ')) + '</div>';
+  if (p.luces === 'no') html += '<div class="cartel-linea">No tiene luces.</div>';
+  if (p.calle) html += '<div class="cartel-calle">' + esc(p.calle) + '</div>';
+  if (p.ferro) html += '<div class="cartel-calle">Vía: ' + esc(p.ferro) + '</div>';
+  html += '<div class="cartel-linea">Bajá la velocidad. Con camión largo: si del otro lado hay cola, esperá antes de las ' +
+          'vías (no te quedes arriba).</div>';
+  html += '<div class="cartel-fuente">Figura en OpenStreetMap: puede faltar algún paso a nivel o no estar el dato de la barrera.</div>';
+  html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (pasosTren.actualizado ? ' (' + fecha(pasosTren.actualizado) + ')' : '') +
+          ' · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) + '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
+  return html;
+}
+function abrirCartelTren(i) {
+  var it = pasosTren.lista[i];
+  if (!it) return;
+  var p = it.f.properties;
+  abrirCartel(it.latlng, armarCartelTren(p) + botonReportar(it.latlng, nombrePasoTren(p) + ' (' + p.osm + ')'));
+}
+// Pasos a nivel POR DONDE PASA la ruta (a ≤ 12 m de la línea: el punto está sobre la calle). Con la grilla de ~1 km
+// solo se miran los pasos cerca de cada tramo (en un viaje de 1.000 km hay miles de pasos en el país).
+function pasosTrenEnRuta(puntos) {
+  if (!pasosTren.grilla || !puntos || puntos.length < 2) return [];
+  var lat0 = puntos[0][0] * Math.PI / 180, kx = Math.cos(lat0) * 111320, ky = 110540, maxD = 12;
+  var mejor = {};
+  for (var i = 1; i < puntos.length; i++) {
+    var a = puntos[i - 1], b = puntos[i];
+    var la0 = Math.floor((Math.min(a[0], b[0]) - 0.0002) / CELDA_TREN), la1 = Math.floor((Math.max(a[0], b[0]) + 0.0002) / CELDA_TREN);
+    var lo0 = Math.floor((Math.min(a[1], b[1]) - 0.0002) / CELDA_TREN), lo1 = Math.floor((Math.max(a[1], b[1]) + 0.0002) / CELDA_TREN);
+    if ((la1 - la0 + 1) * (lo1 - lo0 + 1) > 400) continue;   // tramo larguísimo (no pasa: los puntos de ruta van cada pocos metros)
+    var ax = a[1] * kx, ay = a[0] * ky, vx = b[1] * kx - ax, vy = b[0] * ky - ay, L2 = vx * vx + vy * vy;
+    for (var la = la0; la <= la1; la++) {
+      for (var lo = lo0; lo <= lo1; lo++) {
+        var celda = pasosTren.grilla[la + ',' + lo];
+        if (!celda) continue;
+        for (var j = 0; j < celda.length; j++) {
+          var it = pasosTren.lista[celda[j]], px = it.latlng.lng * kx, py = it.latlng.lat * ky;
+          var t = L2 ? Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / L2)) : 0;
+          var d = Math.hypot(ax + t * vx - px, ay + t * vy - py);
+          if (d <= maxD && (!mejor[celda[j]] || d < mejor[celda[j]].d)) mejor[celda[j]] = { item: it, i: celda[j], orden: i - 1, t: t, d: d };
+        }
+      }
+    }
+  }
+  return Object.keys(mejor).map(function (k) { return mejor[k]; })
+    .sort(function (a, b) { return a.orden - b.orden || a.t - b.t; });
+}
+
+// ===== v105: lo ya recorrido en otro color (pedido del chofer, 24/11/2026: "lo que ya recorrí ponelo en otro color").
+// La línea azul queda gris desde la salida hasta el camión. Se hace con 'line-gradient' (un corte en 'line-progress'):
+// no hay que rearmar la línea en cada lectura del GPS (en viajes de 1.000 km sería pesado). MapLibre mide line-progress
+// en Mercator, así que los metros hechos se pasan a la fracción del largo en Mercator de la misma línea.
+var pintado = { r: null, merc: null, frac: -1, t: 0, activo: false };
+function mercY(lat) { var s = Math.sin(lat * Math.PI / 180); return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); }
+function mercAcum(pts) {
+  var a = [0], tot = 0;
+  for (var i = 1; i < pts.length; i++) {
+    tot += Math.sqrt(Math.pow((pts[i][1] - pts[i - 1][1]) / 360, 2) + Math.pow(mercY(pts[i][0]) - mercY(pts[i - 1][0]), 2));
+    a.push(tot);
+  }
+  return a;
+}
+function fraccionRecorrida(m) {
+  var ac = nav.acum, me = pintado.merc, n = ac.length;
+  if (!me || n < 2 || !me[n - 1]) return 0;
+  if (m <= 0) return 0;
+  if (m >= ac[n - 1]) return 1;
+  var lo = 0, hi = n - 1;
+  while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (ac[mid] <= m) lo = mid; else hi = mid; }
+  var t = (m - ac[lo]) / ((ac[hi] - ac[lo]) || 1);
+  return (me[lo] + (me[hi] - me[lo]) * t) / me[n - 1];
+}
+var COLOR_HECHO = { dia: '#98a2b0', noche: '#56627a' };
+function pintarRecorrido(m, forzar) {
+  if (!gl.getLayer('ruta-linea')) return;
+  if (!nav.activo || !nav.r || m == null) { quitarRecorrido(); return; }
+  var ahora = performance.now();
+  if (!forzar && ahora - pintado.t < 250) return;
+  if (pintado.r !== nav.r || !pintado.merc || pintado.merc.length !== nav.r.puntos.length) {
+    pintado.r = nav.r; pintado.merc = mercAcum(nav.r.puntos); forzar = true;
+  }
+  var f = Math.max(0, Math.min(1, fraccionRecorrida(m)));
+  if (!forzar && Math.abs(f - pintado.frac) < 1e-7) return;
+  pintado.frac = f; pintado.t = ahora; pintado.activo = true;
+  var gris = document.body.classList.contains('mapa-noche') ? COLOR_HECHO.noche : COLOR_HECHO.dia;
+  if (f <= 0) f = 1e-9;
+  gl.setPaintProperty('ruta-linea', 'line-gradient', ['step', ['line-progress'], gris, f, '#1a6dff']);
+  if (gl.getLayer('ruta-centro')) gl.setPaintProperty('ruta-centro', 'line-gradient', ['step', ['line-progress'], 'rgba(159,208,255,0)', f, '#9fd0ff']);
+  if (gl.getLayer('ruta-brillo')) gl.setPaintProperty('ruta-brillo', 'line-gradient', ['step', ['line-progress'], 'rgba(47,139,255,0)', f, '#2f8bff']);
+}
+function quitarRecorrido() {
+  pintado.frac = -1; pintado.r = null; pintado.merc = null;
+  if (!pintado.activo) return;
+  pintado.activo = false;
+  ['ruta-linea', 'ruta-centro', 'ruta-brillo'].forEach(function (id) {
+    if (gl.getLayer(id)) gl.setPaintProperty(id, 'line-gradient', undefined);
+  });
+}
+
 // ===== v95: SÚPER MODO VIAJE (pedido del chofer: "que entres más a la pantalla, un súper modo y que tenga más cosas") =====
 // Al tocar Ir: cartel "Modo viaje" y la cámara se zambulle hasta el camión; mapa casi acostado con cielo y horizonte.
 // Navegando: el próximo giro dibujado sobre la ruta (flecha blanca) y una barra que se llena al acercarte; en el cartel de
@@ -6930,7 +7135,7 @@ function actualizarTablero(recorrido, prox) {
     });
     var pel = nav.avisos.filter(function (a) { return a.dist > recorrido + 50; }).sort(function (a, b) { return a.dist - b.dist; })[0];
     if (pel) items.push({ icono: pel.icono ? pel.icono.trim() : pel.rojo ? '⛔' : '⚠️', km: (pel.dist - recorrido) / 1000,
-                          nombre: /^ctl/.test(String(pel.n)) ? 'Control' : pel.rojo ? 'No pasás' : 'Ojo', buscar: 'peligros',
+                          nombre: /^ctl/.test(String(pel.n)) ? 'Control' : pel.tren ? 'Tren' : pel.rojo ? 'No pasás' : 'Ojo', buscar: 'peligros',
                           clase: pel.rojo ? 'rojo' : /^ctl/.test(String(pel.n)) ? 'control' : 'ojo' });
     var html = items.map(function (it) {
       return '<button type="button" class="np ' + it.clase + '" data-buscar="' + it.buscar + '"><b>' + it.icono + '</b>' +
@@ -7111,6 +7316,7 @@ function cuadroViaje() {
   var ahora = performance.now(), t = anim.dur ? Math.min(1, (ahora - anim.t0) / anim.dur) : 1;
   var mc = anim.m0 + (anim.m1 - anim.m0) * t, total = nav.acum[nav.acum.length - 1];
   anim.mDisp = mc;
+  pintarRecorrido(mc);   // v105: lo recorrido en gris, justo hasta el camión
   var p = puntoEnRuta(mc);
   // v104: metros de mapa por pixel del dibujo (el camión está acostado sobre el mapa, así que se mide en el plano del mapa)
   var mpp = 40075016.686 * Math.cos(p.lat * Math.PI / 180) / (512 * Math.pow(2, gl.getZoom()));
@@ -7390,7 +7596,7 @@ gl.on('click', function (e) {
     var hay = capas.filter(function (id) { return gl.getLayer(id); });
     return hay.length ? gl.queryRenderedFeatures([[pt.x - t, pt.y - t], [pt.x + t, pt.y + t]], { layers: hay }) : [];
   }
-  var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos', 'peajes-icono'], 18);
+  var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos', 'peajes-icono', 'trenes'], 18);
   if (iconos.length) {
     // el más cercano al dedo (antes ganaba siempre el control o el reporte aunque el lugar estuviera más cerca)
     var lejos = function (f) {
@@ -7400,6 +7606,7 @@ gl.on('click', function (e) {
     iconos.sort(function (a, b) { return lejos(a) - lejos(b); });
     var q = iconos[0].properties;
     if (q.k === 'p') abrirCartelPeaje(q.i);   // v103
+    else if (q.k === 't') abrirCartelTren(q.i);   // v105
     else if (q.k === 'l' && lugarPorId[q.id]) abrirCartelLugar(lugarPorId[q.id]);
     else if (q.k === 'c' && controles.lista[q.i]) abrirCartelControl(controles.lista[q.i]);
     else if (q.k === 'r' && reportePorId[q.id]) abrirCartel(reportePorId[q.id].getLatLng(), armarCartelReporte(reportePorId[q.id].feature.properties));

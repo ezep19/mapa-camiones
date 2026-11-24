@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 110;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 111;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -2120,7 +2120,9 @@ var CONTROLES = {
   frontera:      { nombre: 'Paso de frontera',        icono: '🛃' },
   // radares y cámaras (datos/radares.geojson, scripts/descargar_radares.py; pedido del chofer el 20/11/2026)
   radar:         { nombre: 'Radar de velocidad',      icono: '📷', radar: true },
-  camara:        { nombre: 'Cámara de semáforo',      icono: '🚦', radar: true }
+  camara:        { nombre: 'Cámara de semáforo',      icono: '🚦', radar: true },
+  // v111: lugares donde SUELEN poner radar móvil (reportados por choferes; scripts/correcciones_radares.json)
+  radar_movil:   { nombre: 'Radar móvil',             icono: '📸', radar: true }
 };
 function esRadar(p) { return !!(CONTROLES[p.tipo] && CONTROLES[p.tipo].radar); }
 // Los camiones tienen su propia máxima (80 km/h, lo marcó el chofer el 20/11/2026): aunque el cartel del radar diga
@@ -2175,7 +2177,10 @@ function armarCartelRadar(p) {
   var tipo = CONTROLES[p.tipo];
   var html = '<div class="cartel-tipo">' + tipo.icono + ' ' + esc(tipo.nombre) + '</div>';
   var mc = maximaCamion(p.maxima);
-  if (p.tipo === 'radar') {
+  if (p.tipo === 'radar_movil') {   // v111
+    html += '<div class="cartel-valor">Suelen poner radar móvil acá</div>';
+    html += '<div class="cartel-linea">Respetá la máxima: ' + MAXIMA_CAMION + ' km/h para camiones en ruta (o menos si el cartel lo dice).</div>';
+  } else if (p.tipo === 'radar') {
     html += '<div class="cartel-valor">' + (mc ? 'Máxima ' + mc + ' km/h para tu camión' : 'Radar (no figura la máxima)') + '</div>';
     if (mc && mc < p.maxima) html += '<div class="cartel-linea">El cartel dice ' + p.maxima + ' km/h (para autos); ' +
                                      'los camiones, ' + MAXIMA_CAMION + '.</div>';
@@ -2186,7 +2191,11 @@ function armarCartelRadar(p) {
   if (p.nombre) html += '<div class="cartel-calle">' + esc(p.nombre) + '</div>';
   if (p.ruta) html += '<div class="cartel-calle">' + esc(p.ruta) + '</div>';
   if (p.operador) html += '<div class="cartel-calle">' + esc(p.operador) + '</div>';
-  if (p.corregido) html += '<div class="cartel-linea">✔ Lugar corregido por un chofer</div>';   // v105
+  if (p.corregido) html += '<div class="cartel-linea">✔ ' + (/^chofer\//.test(p.osm || '') ? 'Lo reportó un chofer' : 'Lugar corregido por un chofer') + '</div>';   // v105
+  if (/^chofer\//.test(p.osm || '')) {   // v111: agregado por un chofer (no está en OpenStreetMap)
+    html += '<div class="cartel-fuente">Fuente: reporte de un chofer' + (p.corregido ? ' · ' + esc(p.corregido) : '') + '</div>';
+    return html;
+  }
   html += '<div class="cartel-fuente">Figura en OpenStreetMap: puede no estar funcionando, haberse movido, o haber ' +
           'radares que no figuran.</div>';
   html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (controles.radaresActualizado ? ' (' + fecha(controles.radaresActualizado) + ')' : '') +
@@ -5748,6 +5757,9 @@ var A_CASTELLANO = [
   ['conduzca', 'andá'],
   ['incorpórese', 'incorporate'],
   ['haga un cambio de sentido', 'pegá la vuelta'],
+  ['cambie de sentido', 'pegá la vuelta'],   // v111: TomTom ("Ahora, cambie de sentido en Ruta Provincial 2")
+  ['dé vuelta en U', 'pegá la vuelta'],
+  ['vire', 'doblá'],
   ['haga', 'hacé'],
   ['dé la vuelta', 'pegá la vuelta'],
   ['su destino', 'tu destino'],
@@ -5858,6 +5870,7 @@ function clipPeligro(t) {
   if (/curva peligrosa a la derecha/.test(t)) return clipBaja ? ['h_curva_der', clipBaja] : ['h_curva_der'];
   if (/paso a nivel sin barrera/.test(t)) return ['h_tren_sin'];   // v105
   if (/paso a nivel/.test(t)) return ['h_tren'];
+  if (/radar móvil/.test(t)) return ['h_radar_movil'];   // v111
   if (/radar/.test(t)) return clipVel ? ['h_radar', clipVel] : ['h_radar'];
   if (/cámara de semáforo|camara de semaforo/.test(t)) return ['h_camara'];
   // v89: clima
@@ -6054,7 +6067,7 @@ function empezarNavegacion(rutaElegida) {
   // controles policiales: se avisan como un peligro, pero sin alarma
   var VOZ_CONTROL = { policial: 'control policial', vial: 'control de la policía caminera', frontera: 'paso de frontera',
                       gendarmeria: 'control de Gendarmería', fitosanitario: 'control fitosanitario',
-                      radar: 'radar de velocidad', camara: 'cámara de semáforo' };
+                      radar: 'radar de velocidad', camara: 'cámara de semáforo', radar_movil: 'zona de radar móvil' };
   (r.controles || controlesEnRuta(r.puntos)).forEach(function (c, k) {
     var p = c.item.f.properties, tipo = CONTROLES[p.tipo] || CONTROLES.policial;
     var maxRadar = p.tipo === 'radar' && p.maxima ? maximaCamion(p.maxima) : null;
@@ -6650,6 +6663,8 @@ function pararEn(ll, nombre) {
 var OTRO_REPORTE = 'El mapa está mal acá (otro)';
 var AVISOS_RAPIDOS = [
   { id: 'control', icono: '👮', nombre: 'Control policial', que: OTRO_REPORTE, horas: 3 },
+  { id: 'radar_movil', icono: '📸', nombre: 'Radar móvil', que: OTRO_REPORTE, horas: 4 },   // v111
+  { id: 'radar', icono: '📷', nombre: 'Radar fijo', que: OTRO_REPORTE, horas: 720 },
   { id: 'accidente', icono: '💥', nombre: 'Accidente', que: OTRO_REPORTE, horas: 3 },
   { id: 'cortada', icono: '🚧', nombre: 'Calle o ruta cortada', que: 'Calle cortada u obra', horas: 24 },
   { id: 'obra', icono: '🦺', nombre: 'Obra en la ruta', que: 'Calle cortada u obra', horas: 72 },

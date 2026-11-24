@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 115;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 116;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3254,12 +3254,78 @@ function pedirPhoton(url, ctrl) {
     });
 }
 
+// ===== v116: BUSCAR NEGOCIOS CERCA (pedido del chofer, 24/11/2026: "quiero ir a un McDonald's, que me aparezcan los que
+// hay más cerca de donde estoy, poder elegir uno y que me lleve") =====
+// Photon (datos de OpenStreetMap) con mucho peso a la cercanía + nuestros lugares útiles (gomerías y talleres de Overture,
+// estaciones de la Secretaría de Energía). Se ordena por distancia desde donde estás (o desde la salida / el mapa).
+function puntoDeBusqueda() {
+  if (ubicacion.ultima) return L.latLng(ubicacion.ultima);
+  if (ruta.desde && ruta.desde.latlng && ruta.desde.nombre !== 'Mi ubicación') return L.latLng(ruta.desde.latlng);
+  return mapa.getCenter();
+}
+var CLAVES_NEGOCIO = { amenity: 1, shop: 1, tourism: 1, leisure: 1, craft: 1, office: 1, healthcare: 1 };
+function esNegocio(p) { return !!CLAVES_NEGOCIO[p.osm_key] && !/^(parking_space|bench|waste_basket|toilets)$/.test(p.osm_value); }
+var ICONOS_NEGOCIO = { fuel: '⛽', fast_food: '🍔', restaurant: '🍽️', cafe: '☕', tyres: '🛞', car_repair: '🔧', supermarket: '🛒',
+                       convenience: '🛒', pharmacy: '💊', hospital: '🏥', clinic: '🏥', bank: '🏦', atm: '🏧', hotel: '🏨',
+                       motel: '🏨', police: '👮', parking: '🅿️', truck_stop: '🚛', car_wash: '🧽', hardware: '🔩' };
+function iconoNegocio(valor) { return (ICONOS_NEGOCIO[valor] || '🏪') + ' '; }
+function direccionPhoton(p) {
+  var calle = p.street ? p.street + (p.housenumber ? ' ' + p.housenumber : '') : '';
+  var lugar = p.city || p.town || p.village || p.district || '';
+  return [calle, lugar].filter(Boolean).join(', ');
+}
+function negocioCerrado(nombre, ll) {
+  return (correccionesMapa.sacar || []).some(function (x) {
+    return x.nombre && sinTildes(x.nombre) === sinTildes(nombre) && L.latLng(ll).distanceTo([x.lat, x.lon]) < 80;
+  });
+}
+function opcionNegocio(nombre, icono, direccion, ll, desde) {
+  var d = L.latLng(ll).distanceTo(desde);
+  return { icono: icono, nombre: nombre + (direccion ? ', ' + direccion : ''), lat: ll.lat, lng: ll.lng, d: d, conDireccion: !!direccion, clave: sinTildes(nombre).replace(/[^a-z0-9]/g, ''),
+           etiqueta: nombre + (direccion ? ' · ' + direccion : '') + ' · a ' + textoDistancia(d) };
+}
+// Nuestros lugares útiles (los de las zonas ya cargadas) con ese nombre o de ese tipo ("gomería", "taller", "YPF")
+var PALABRAS_TIPO = { gomeria: /^gomer|^neumat|^cubierta/, taller: /^taller|^mecanic/, combustible: /^estacion|^combustible|^nafta|^gasoil/,
+                      parador: /^parador/, balanza: /^balanza/, estacionamiento: /^estacionamiento/ };
+function lugaresQueCoinciden(texto, desde) {
+  var t = sinTildes(texto), res = [];
+  if (t.length < 3 || typeof gruposLugares === 'undefined') return res;
+  Object.keys(gruposLugares).forEach(function (tipo) {
+    var porTipo = PALABRAS_TIPO[tipo] && PALABRAS_TIPO[tipo].test(t);
+    gruposLugares[tipo].eachLayer(function (l) {
+      var p = l.feature.properties, c = l.feature.geometry.coordinates;
+      var nombre = p.nombre || (LUGAR_POR_ID[tipo] && LUGAR_POR_ID[tipo].uno) || '';
+      if (!porTipo && !(p.nombre && coincidenPalabras(p.nombre + ' ' + (p.marca || ''), texto))) return;
+      var o = opcionNegocio(nombre, ((LUGAR_POR_ID[tipo] && LUGAR_POR_ID[tipo].icono) || '📍') + ' ', p.direccion || '',
+                            { lat: c[1], lng: c[0] }, desde);
+      if (o.d < 300000) res.push(o);
+    });
+  });
+  return res;
+}
+// Ordena por distancia y saca los repetidos (el mismo negocio de Photon y de nuestros lugares: mismo nombre a < 80 m)
+function juntarNegocios(lista) {
+  lista.sort(function (a, b) { return a.d - b.d; });
+  var res = [];
+  lista.forEach(function (o) {
+    var igual = res.filter(function (x) { return L.latLng(x.lat, x.lng).distanceTo([o.lat, o.lng]) < 80 &&
+                                      (x.clave === o.clave || x.clave.indexOf(o.clave) === 0 || o.clave.indexOf(x.clave) === 0); })[0];
+    if (!igual) { res.push(o); return; }
+    // el mismo lugar de dos fuentes: queda el que dice la dirección (la distancia es la del más cercano)
+    if (!igual.conDireccion && o.conDireccion) {
+      igual.nombre = o.nombre; igual.conDireccion = true;
+      igual.etiqueta = o.etiqueta.replace(/ · a [^·]+$/, ' · a ' + textoDistancia(igual.d));
+    }
+  });
+  return res;
+}
+
 function buscarPhoton(cual, texto, conRespaldo) {
   var esParada = /^p\d/.test(cual);
   var lista = document.getElementById('resultados-' + cual);
   if (sugerencia.ctrl) sugerencia.ctrl.abort();
   var ctrl = sugerencia.ctrl = window.AbortController ? new AbortController() : null;
-  var c = mapa.getCenter(), q = '&q=' + encodeURIComponent(texto);
+  var c = puntoDeBusqueda(), q = '&q=' + encodeURIComponent(texto);
   var base = 'https://photon.komoot.io/api/?bbox=-73.6,-55.1,-53.6,-21.7';
   var locales = ciudadesQueCoinciden(texto);
   if (conRespaldo && !locales.length) { lista.hidden = false; lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>'; }
@@ -3267,10 +3333,14 @@ function buscarPhoton(cual, texto, conRespaldo) {
   function nada(e) { if (e && e.name === 'AbortError') abortado = true; return null; }
   Promise.all([
     pedirPhoton(base + '&limit=10&osm_tag=place:city&osm_tag=place:town&osm_tag=place:village' + q, ctrl).catch(nada),
-    pedirPhoton(base + '&limit=8&lat=' + c.lat.toFixed(3) + '&lon=' + c.lng.toFixed(3) + q, ctrl).catch(nada)
+    // v116: location_bias_scale bajo = lo cercano pesa mucho más ("McDonald's" en Mar del Plata da los de Mar del Plata)
+    pedirPhoton(base + '&limit=20&location_bias_scale=0.1&zoom=12&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4) + q, ctrl).catch(nada),
+    // "McDonald's" y "McDonalds": en el mapa están escritos de las dos formas
+    /['’´`]/.test(texto) ? pedirPhoton(base + '&limit=10&location_bias_scale=0.1&zoom=12&lat=' + c.lat.toFixed(4) + '&lon=' +
+                           c.lng.toFixed(4) + '&q=' + encodeURIComponent(texto.replace(/['’´`]/g, '')), ctrl).catch(nada) : null
   ]).then(function (r) {
     if (abortado || document.getElementById('ruta-' + cual).value.trim() !== texto) return;   // ya escribió otra cosa
-    var pueblos = r[0], cerca = r[1];
+    var pueblos = r[0], cerca = r[1] || r[2] ? (r[1] || []).concat(r[2] || []) : null;
     if (!pueblos && !cerca) {   // los dos fallaron (¿sin señal?): quedan las de la lista propia
       if (conRespaldo && !locales.length) buscarNominatim(cual, texto);
       else if (!locales.length) lista.innerHTML = '<li class="ruta-cargando">No pude buscar. Revisá la conexión.</li>';
@@ -3293,19 +3363,30 @@ function buscarPhoton(cual, texto, conRespaldo) {
       vistos[o.etiqueta] = true;
       lugares.push(o);
     });
+    var negocios = [];   // v116: negocios (McDonald's, YPF, gomería...) ordenados por distancia
     (cerca || []).forEach(function (f) {
       var p = f.properties || {};
       if (p.osm_key === 'place' && /^(city|town|village|state)$/.test(p.osm_value)) return;   // ya están arriba
+      var ll = { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+      if (esNegocio(p)) {
+        if (!p.name || negocioCerrado(p.name, ll)) return;
+        negocios.push(opcionNegocio(p.name, iconoNegocio(p.osm_value), direccionPhoton(p), ll, c));
+        return;
+      }
+      if (/^(landuse|boundary|building)$/.test(p.osm_key)) return;
       var nombre = etiquetaPhoton(p);
       if (!nombre || vistos[nombre]) return;
       vistos[nombre] = true;
-      calles.push({ icono: '📍 ', etiqueta: nombre, nombre: nombre, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] });
+      calles.push({ icono: '📍 ', etiqueta: nombre, nombre: nombre, lat: ll.lat, lng: ll.lng });
     });
+    negocios = juntarNegocios(negocios.concat(lugaresQueCoinciden(texto, c)));
     // con número ("Colón 2500") primero las direcciones; si no, primero ciudades y pueblos
     var res;
+    var ciudadExacta = lugares.some(function (o) { return sinTildes(o.ciudad || o.nombre || '').indexOf(sinTildes(texto)) === 0; });
     if (/\d/.test(texto)) res = calles.slice(0, 5).concat(lugares.slice(0, 3));
     else if (esParada) res = lugares.length ? lugares.slice(0, 6) : calles.slice(0, 5);
-    else res = lugares.slice(0, 4).concat(calles.slice(0, 4));
+    else if (negocios.length && !ciudadExacta) res = negocios.slice(0, 10).concat(lugares.slice(0, 2), calles.slice(0, 2));
+    else res = lugares.slice(0, 4).concat(negocios.slice(0, 6), calles.slice(0, 3));
     if (!res.length) {
       if (conRespaldo) buscarNominatim(cual, texto);
       else lista.hidden = true;

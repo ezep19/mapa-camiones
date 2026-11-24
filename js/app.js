@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 116;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 117;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -117,8 +117,9 @@ var PUEDE_GIRAR = true;
 var fondo = { tipo: null };
 
 function estiloLiviano(est) {
-  // edificios planos (sin 3D, que pesa mucho en el celular) y sin los negocios chiquitos (ensucian el mapa)
-  est.layers = est.layers.filter(function (l) { return l.id !== 'building-3d' && l.id !== 'poi_r20'; });
+  // edificios planos (sin 3D, que pesa mucho en el celular). v117: los negocios "chicos" (poi_r20: comida rápida, farmacias...)
+  // vuelven: se ven recién bien de cerca (zoom 17) y se pueden tocar para ir ("ponele un Mac")
+  est.layers = est.layers.filter(function (l) { return l.id !== 'building-3d'; });
   est.layers.forEach(function (l) {
     // v99: los escudos de ruta ("RN9") salían cada pocos metros sobre la ruta (con el mapa inclinado, uno arriba del otro)
     if (/shield/.test(l.id) && l.layout) { l.layout['symbol-spacing'] = 700; l.layout['icon-padding'] = 20; }
@@ -8409,6 +8410,11 @@ gl.on('click', function (e) {
     else if (q.k === 'r' && reportePorId[q.id]) abrirCartel(reportePorId[q.id].getLatLng(), armarCartelReporte(reportePorId[q.id].feature.properties));
     return;
   }
+  // v117: un negocio del mapa de fondo (McDonald's, farmacia, banco...): cartel con "Ir hasta acá"
+  var capasPoi = (gl.getStyle().layers || []).filter(function (l) { return l['source-layer'] === 'poi' && l.type === 'symbol'; })
+                                             .map(function (l) { return l.id; });
+  var negocio = buscar(capasPoi, 16).filter(function (f) { return f.properties.name && f.geometry.type === 'Point'; })[0];
+  if (negocio) { abrirCartelNegocio(negocio); return; }
   // las zonas prohibidas (polígonos) van al final: si no, adentro de una zona cualquier toque abría la zona
   // y no se podían abrir las calles ni los puntos que hay adentro
   var r = buscar(['r-puntos', 'r-sin-salida', 'r-rojo', 'r-rojo-ag', 'r-amarillo', 'r-amarillo-punteado', 'r-gris'], 14);
@@ -8431,6 +8437,47 @@ gl.on('click', function (e) {
   var l = restrPorId[r[0].properties.id];
   if (l) abrirCartelRestriccion(l, l.getLatLng ? l.getLatLng() : aLatLng(e.lngLat));
 });
+
+// ===== v117: TOCAR UN NEGOCIO DEL MAPA Y IR (pedido del chofer, 24/11/2026: "que pueda tocar en el mapa, ponele un Mac, y
+// pueda ir"). Los negocios que dibuja el mapa de fondo (OpenStreetMap) traen nombre, clase y subclase.
+var TIPOS_NEGOCIO = { fast_food: 'Comida rápida', restaurant: 'Restaurante', cafe: 'Café', bar: 'Bar', fuel: 'Estación de servicio',
+                      pharmacy: 'Farmacia', hospital: 'Hospital', clinic: 'Clínica', doctors: 'Consultorio', bank: 'Banco', atm: 'Cajero',
+                      supermarket: 'Supermercado', convenience: 'Almacén', hotel: 'Hotel', motel: 'Motel', hostel: 'Hostel',
+                      police: 'Policía', car_repair: 'Taller', tyres: 'Gomería', car_wash: 'Lavadero', parking: 'Estacionamiento',
+                      hardware: 'Ferretería', bakery: 'Panadería', butcher: 'Carnicería', ice_cream: 'Heladería', school: 'Escuela',
+                      place_of_worship: 'Iglesia', post_office: 'Correo', townhall: 'Municipalidad', bus: 'Parada de colectivo',
+                      bus_station: 'Terminal de ómnibus', railway: 'Estación de tren', rail: 'Estación de tren', park: 'Plaza o parque' };
+function abrirCartelNegocio(f) {
+  var p = f.properties, c = f.geometry.coordinates, ll = L.latLng(c[1], c[0]);
+  var sub = p.subclass || p.class || '';
+  var caja = document.createElement('div');
+  var tipo = TIPOS_NEGOCIO[sub] || TIPOS_NEGOCIO[p.class] || '';
+  var d = ubicacion.ultima ? L.latLng(ubicacion.ultima).distanceTo(ll) : null;
+  caja.innerHTML = '<div class="cartel-tipo">' + iconoNegocio(sub).trim() + ' ' + esc(tipo || 'Lugar') + '</div>' +
+    '<div class="cartel-valor">' + esc(p.name) + '</div>' +
+    (d != null ? '<div class="cartel-calle">A ' + esc(textoDistancia(d)) + ' de vos (en línea recta)</div>' : '');
+  var ir = document.createElement('button');
+  ir.type = 'button';
+  ir.className = 'cartel-boton';
+  // navegando: se agrega como parada (no se pierde el destino); si no, es el destino
+  ir.textContent = nav.activo ? '⛳ Parar acá en el camino' : '🧭 Ir hasta acá';
+  ir.addEventListener('click', function () {
+    cerrarCartel();
+    var nombre = p.name;
+    if (nav.activo) { pararEn(ll, nombre); return; }
+    ponerPunto('hasta', ll, nombre);   // antes de abrir el panel: así no se pone a buscar otra cosa
+    abrirPanelRuta(true);
+    elegirPunto('hasta', ll, nombre);
+  });
+  caja.appendChild(ir);
+  var mas = document.createElement('div');
+  mas.innerHTML = '<a class="cartel-boton fotos" target="_blank" rel="noopener" href="https://www.google.com/maps/search/' +
+    encodeURIComponent(p.name) + '/@' + c[1] + ',' + c[0] + ',18z">Ver fotos, horario y opiniones (Google)</a>' +
+    botonReportar(ll, 'Negocio del mapa: ' + p.name + ' (¿cerró o está mal?)') +
+    '<div class="cartel-fuente">Dato de OpenStreetMap: puede estar desactualizado. Si cerró, avisá con "Reportar".</div>';
+  caja.appendChild(mas);
+  abrirCartel(ll, caja);
+}
 
 // ===== Navegando: si el chofer mueve el mapa con el dedo, deja de seguirlo y aparece "Centrar" (como Google Maps).
 // Tocarlo (o esperar 12 s sin tocar el mapa) vuelve a seguir al camión.

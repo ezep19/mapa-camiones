@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 108;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 109;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -5953,14 +5953,15 @@ sesionDeAudio();
 var sonidoPitido = null;
 function archivoPitido() {
   if (sonidoPitido) return sonidoPitido;
-  var hz = 8000, n = Math.round(hz * 0.35), b = new Uint8Array(44 + n), v = new DataView(b.buffer);
+  // v109: ya NO suena (el chofer: "sacale el pitido, es re molesto"). Es un sonido mudo de 0,1 s: igual sirve para
+  // "habilitar" el reproductor en el iPhone al tocar ▶ Ir (después puede hablar sin que toquen la pantalla).
+  var hz = 8000, n = Math.round(hz * 0.1), b = new Uint8Array(44 + n), v = new DataView(b.buffer);
   function txt(o, t) { for (var k = 0; k < t.length; k++) b[o + k] = t.charCodeAt(k); }
   txt(0, 'RIFF'); v.setUint32(4, 36 + n, true); txt(8, 'WAVE'); txt(12, 'fmt ');
   v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, hz, true);
   v.setUint32(28, hz, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); txt(36, 'data'); v.setUint32(40, n, true);
   for (var i = 0; i < n; i++) {
-    var env = Math.min(1, i / 200, (n - i) / 400);
-    b[44 + i] = 128 + Math.round(100 * env * Math.sin(2 * Math.PI * 880 * i / hz));
+    b[44 + i] = 128;   // silencio
   }
   var bin = '';
   for (var q = 0; q < b.length; q++) bin += String.fromCharCode(b[q]);
@@ -5978,7 +5979,7 @@ function probarVoz() {
     bajarVozGrabada();
     sonar([urlClip('prueba')]);
     if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
-    mostrarMensaje('🔊 Tiene que sonar un pitido y después "Hola, soy la voz del mapa para camiones". Si no escuchás nada, ' +
+    mostrarMensaje('🔊 Tiene que sonar "Hola, soy la voz del mapa para camiones". Si no escuchás nada, ' +
                    'subí el volumen con los botones del costado del teléfono (con el silencio puesto también tiene que sonar).');
     setTimeout(ocultarMensaje, 12000);
     return;
@@ -5986,17 +5987,17 @@ function probarVoz() {
   var hubo = pitido();
   if (!hayVoz()) { mostrarMensaje('🔇 ' + textoSinVoz(), true); return; }
   var voces = vocesDelTelefono(), es = voces.filter(function (x) { return /^es/i.test(x.lang); });
-  mostrarMensaje('🔊 Primero suena un pitido y después habla la voz...');
+  mostrarMensaje('🔊 Ahora habla la voz...');
   setTimeout(function () { probarVoz2(voces, es, hubo); }, 900);
 }
 function probarVoz2(voces, es, hubo) {
   decirFrase('Hola. Soy la voz del mapa para camiones. Si me escuchás, la voz anda bien.', true, function (ok, detalle) {
     var datos = ' (voces en español: ' + es.length + ' de ' + voces.length + (detalle && ok ? '; modo ' + detalle : '') +
-                (hubo ? '' : '; sin pitido') + ')';
+                ')';
     if (ok) {
-      mostrarMensaje('✓ El teléfono dice que está hablando' + datos + '. ¿Escuchaste el pitido? Si no escuchaste NADA: subí el ' +
+      mostrarMensaje('✓ El teléfono dice que está hablando' + datos + '. Si no escuchaste nada: subí el ' +
                      'volumen "multimedia" y fijate si el sonido se va a un parlante Bluetooth (el del camión o auriculares). ' +
-                     'Si escuchaste el pitido pero no la voz: Ajustes del teléfono → "Texto a voz" → elegí ' +
+                     'Si sigue sin hablar: Ajustes del teléfono → "Texto a voz" → elegí ' +
                      '"Servicios de voz de Google" e instalá Español.');
       if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
     } else {
@@ -6678,7 +6679,6 @@ function confirmarAviso(aviso) {
   enviarAviso(aviso).then(function (ok) {
     var a = AVISOS_RAPIDOS.filter(function (x) { return x.id === aviso.id; })[0];
     mostrarTostada(ok ? '✓ Aviso enviado: ' + esc(a.nombre) + '. ¡Gracias!' : '📶 Sin señal: el aviso se manda solo cuando vuelva.', null, null, 4000);
-    if (nav.voz) pitido();
   });
 }
 function enviarAviso(aviso) {

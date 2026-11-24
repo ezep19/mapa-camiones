@@ -1546,3 +1546,7 @@ body.ruta-escribiendo .zoom-botones, body.hoja-abierta .zoom-botones { display: 
 .ruta-opciones-abc .ro-datos { display: block; font-size: 0.9rem; font-weight: 600; margin-top: 1px; }
 .ruta-opciones-abc .ro-datos em { font-style: normal; color: #c62828; }
 .ruta-opciones-abc small { display: block; color: var(--texto-suave); font-size: 0.78rem; margin-top: 1px; }
+
+/* v112: precio del gasoil en el cartel de la estación */
+.cartel-precio { margin: 6px 0 2px; padding: 6px 8px; border-radius: 8px; background: #e8f6ee; color: #0a5f30; font-size: 14px; }
+.cartel-precio b { font-size: 15px; }

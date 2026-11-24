@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 111;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 112;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1055,6 +1055,56 @@ function cargarLugaresVista() {
   paisLugares.celdas.forEach(function (c) { if (L.latLngBounds(c.limites).intersects(lim)) cargarCeldaLugares(c); });
 }
 
+// ===== v112: PRECIO DEL GASOIL (pedido del chofer, 24/11/2026: "¿no podemos sacar datos de otros lados?")
+// datos/estaciones_precios.json (scripts/descargar_precios.py): lista oficial de la Secretaría de Energía (las estaciones
+// informan sus precios al gobierno). Las que ya están en el mapa traen su "osm"; las que no estaban en OpenStreetMap se
+// agregan como estaciones nuevas (osm 'energia/<id>'). Se muestra siempre la fecha del precio.
+var precios = { porOsm: {}, listo: false };
+function bajarPrecios() {
+  bajarJSON('estaciones_precios.json', true).then(function (d) {
+    if (!d || !d.estaciones) return;
+    var nuevas = 0;
+    d.estaciones.forEach(function (e) {
+      var x = { lat: e[0], lon: e[1], osm: e[2], bandera: e[3], empresa: e[4], direccion: e[5], localidad: e[6],
+                g2: e[7], g3: e[8], fecha: e[9], id: e[10] };
+      if (x.osm) { precios.porOsm[x.osm] = x; return; }
+      var k = 'energia/' + x.id;
+      precios.porOsm[k] = x;
+      var blanca = !x.bandera || x.bandera === 'Bandera blanca';
+      if (agregarLugar({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] },
+          properties: { capa: 'lugar', tipo: 'combustible', nombre: blanca ? (x.empresa || 'Estación de servicio') : x.bandera,
+                        marca: blanca ? 'Bandera blanca' : null,
+                        direccion: [x.direccion, x.localidad].filter(Boolean).join(', ') || null, horario: null, telefono: null,
+                        camiones: null, extras: x.g2 || x.g3 ? ['gasoil'] : [], osm: k, energia: true } })) nuevas++;
+    });
+    precios.listo = true;
+    if (nuevas) { mostrarLugares(); armarPanelLugares(); }
+  }, function (e) { console.warn('Sin precios del gasoil:', e); });
+}
+setTimeout(bajarPrecios, 1200);
+function precioDe(p) {
+  var x = p && p.tipo === 'combustible' ? precios.porOsm[p.osm] : null;
+  return x && (x.g2 || x.g3) ? x : null;
+}
+function pesos(n) { return '$' + Math.round(n).toLocaleString('es-AR'); }
+function diasDesde(iso) { return Math.round((Date.now() - new Date(iso + 'T12:00:00-03:00')) / 864e5); }
+function htmlPrecio(x) {
+  if (!x) return '';
+  var partes = [];
+  if (x.g2) partes.push('común <b>' + pesos(x.g2) + '</b>');
+  if (x.g3) partes.push('premium <b>' + pesos(x.g3) + '</b>');
+  var f = x.fecha.split('-'), dias = diasDesde(x.fecha);
+  return '<div class="cartel-precio">⛽ Gasoil por litro: ' + partes.join(' · ') + '</div>' +
+         '<div class="cartel-fuente">Precio que la estación informó al gobierno el ' + f[2] + '/' + f[1] + '/' + f[0] +
+         (dias > 45 ? ' (hace ' + dias + ' días: puede haber cambiado)' : '') + ' · Secretaría de Energía</div>';
+}
+// "gasoil $2.384" para las listas (o "gasoil" si figura que tiene pero no hay precio)
+function extraGasoil(p) {
+  var x = precioDe(p);
+  if (x && x.g2 && diasDesde(x.fecha) <= 90) return 'gasoil ' + pesos(x.g2);
+  return p.extras && p.extras.indexOf('gasoil') !== -1 ? 'gasoil' : '';
+}
+
 // Lugares útiles a menos de 150 m de la ruta, con el kilómetro donde quedan (para la lista de la tarjeta)
 var TIPOS_EN_RUTA = { combustible: 1, parador: 1, gomeria: 1, taller: 1, estacionamiento: 1, balanza: 1 };
 function lugaresEnRuta(puntos, maxD, soloTipo) {   // v89: maxD (metros, 150 si no se dice) y soloTipo opcionales
@@ -1845,13 +1895,14 @@ function armarCartelLugar(f, l) {
     html += '<div class="cartel-linea">No figura si entra un camión: preguntá antes de ir.</div>';
   }
   if (p.extras && p.extras.length) html += '<div class="cartel-linea">Tiene: ' + esc(p.extras.join(', ')) + '</div>';
+  html += htmlPrecio(precioDe(p));   // v112
   if (p.horario) html += '<div class="cartel-linea">Horario: ' + esc(horario(p.horario)) + '</div>';
   if (p.telefono) {
     var tel = String(p.telefono).split(/[;,]/)[0].trim();
     html += '<div class="cartel-linea">Teléfono: <a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">' + esc(tel) + '</a></div>';
   }
 
-  html += '<div class="cartel-mas" data-osm="' + esc(p.osm) + '"><div class="cartel-fuente">Buscando más datos...</div></div>';
+  if (!p.energia) html += '<div class="cartel-mas" data-osm="' + esc(p.osm) + '"><div class="cartel-fuente">Buscando más datos...</div></div>';
   if (l) html += armarCercania(l);
 
   var c = f.geometry.coordinates;   // [longitud, latitud]
@@ -1861,7 +1912,8 @@ function armarCartelLugar(f, l) {
   html += '<a class="cartel-boton fotos" target="_blank" rel="noopener" href="https://www.google.com/maps/search/' +
           encodeURIComponent(p.nombre || tipo.uno) + '/@' + c[1] + ',' + c[0] + ',17z">Ver fotos y opiniones (Google)</a>';
   html += '<div class="cartel-fuente">Google Maps no conoce las restricciones para camiones: mirá este mapa antes de salir.</div>';
-  html += '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
+  if (p.energia) html += '<div class="cartel-fuente">Fuente: lista oficial de estaciones de la Secretaría de Energía (no está en OpenStreetMap)</div>';
+  else html += '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
           '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
   return html;
 }
@@ -5162,11 +5214,18 @@ function mostrarRuta(indice, sinMoverMapa) {
   if (r.lugares.length) {
     html += '<details class="ruta-pasos"><summary>⛽ Dónde cargar y parar en el camino (' + r.lugares.length + ')</summary>' +
             '<ul class="ruta-lista">';
+    var masBarata = null;   // v112: la estación con el gasoil más barato del camino (precio de hace 45 días o menos)
+    r.lugares.forEach(function (x) {
+      var pr = precioDe(x.l.feature.properties);
+      if (pr && pr.g2 && diasDesde(pr.fecha) <= 45 && (!masBarata || pr.g2 < masBarata.g2)) masBarata = { l: x.l, g2: pr.g2 };
+    });
     r.lugares.forEach(function (x, i) {
       var p = x.l.feature.properties, tipo = LUGAR_POR_ID[p.tipo];
       var extra = [];
       if (p.camiones) extra.push('para camiones');
-      if (p.extras && p.extras.indexOf('gasoil') !== -1) extra.push('gasoil');
+      var gas = extraGasoil(p);
+      if (gas) extra.push(gas);
+      if (masBarata && masBarata.l === x.l) extra.push('💲 la más barata');
       html += '<li><button type="button" data-lugar="' + i + '"><span class="ruta-lista-icono">' + tipo.icono + '</span>' +
               '<span class="ruta-lugar-km">km ' + Math.round(x.km) + '</span> ' +
               esc(p.nombre || tipo.uno) + (extra.length ? ' <small>' + esc(extra.join(' · ')) + '</small>' : '') + '</button></li>';
@@ -6581,7 +6640,8 @@ function abrirBuscar(tipoId) {
         var p = x.l.feature.properties, t = LUGAR_POR_ID[p.tipo] || {};
         var extra = [];
         if (p.camiones) extra.push('para camiones');
-        if (p.extras && p.extras.indexOf('gasoil') !== -1) extra.push('gasoil');
+        var gas = extraGasoil(p);   // v112
+        if (gas) extra.push(gas);
         return { l: x.l, ll: x.l.getLatLng(), km: x.km - hecho, nombre: p.nombre || t.uno || 'Lugar', icono: t.icono || tipo.icono, extra: extra.join(' · ') };
       });
     if (!buscarLista.length) {
@@ -6987,6 +7047,7 @@ function armarPeajes3D() {
   peajes.feats.forEach(function (f, i) {
     var c = f.geometry.coordinates, p = f.properties, r = (p.rumbo || 0) * Math.PI / 180;
     iconos.push({ type: 'Feature', geometry: f.geometry, properties: { k: 'p', i: i } });
+    if (p.fuente === 'vialidad') return;   // v112: peaje de Vialidad (2017): sin la dirección de la ruta no se dibuja en 3D
     var carriles = Math.max(2, Math.min(12, p.carriles ? p.carriles * 2 : 6));   // las dos manos
     var ancho = carriles * 4 + 6, fondo = 12;
     var lng0 = c[0], lat0 = c[1], kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
@@ -7024,8 +7085,11 @@ function abrirCartelPeaje(i) {
   if (p.pago && p.pago.length) html += '<div class="cartel-linea"><b>Se paga con:</b> ' + esc(p.pago.map(function (x) { return PAGO[x] || x; }).join(', ')) + '</div>';
   html += '<div class="cartel-detalle">Para camiones la tarifa depende de los ejes. En la mayoría de los peajes nacionales se paga con TelePASE ' +
           '(sin barrera): verificá antes de salir. Si no querés pagar peajes, en la ruta tocá "Evitar peajes".</div>' +
+          (p.fuente === 'vialidad' ?
+            '<div class="cartel-linea">⚠ Dato de Vialidad Nacional de 2017: este peaje puede ya no estar (no figura en OpenStreetMap).</div>' +
+            '<div class="cartel-fuente">Fuente: Vialidad Nacional / Secretaría de Transporte (datos.gob.ar)</div>' :
           '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm || '') +
-          '" target="_blank" rel="noopener">ver</a></div>';
+          '" target="_blank" rel="noopener">ver</a></div>');
   abrirCartel(ll, html);
 }
 function dibujarPeaje() {   // ícono: círculo azul con el signo $ blanco
@@ -7112,6 +7176,11 @@ function armarCartelTren(p) {
   if (p.ferro) html += '<div class="cartel-calle">Vía: ' + esc(p.ferro) + '</div>';
   html += '<div class="cartel-linea">Bajá la velocidad. Con camión largo: si del otro lado hay cola, esperá antes de las ' +
           'vías (no te quedes arriba).</div>';
+  if (p.fuente === 'vialidad') {   // v112: cruce oficial de ruta nacional que no está en OpenStreetMap
+    html += '<div class="cartel-fuente">Fuente: cruces ferroviarios de rutas nacionales, Secretaría de Transporte (datos.gob.ar). ' +
+            'No dice si tiene barrera: andá con cuidado.</div>';
+    return html;
+  }
   html += '<div class="cartel-fuente">Figura en OpenStreetMap: puede faltar algún paso a nivel o no estar el dato de la barrera.</div>';
   html += '<div class="cartel-fuente">Fuente: OpenStreetMap' + (pasosTren.actualizado ? ' (' + fecha(pasosTren.actualizado) + ')' : '') +
           ' · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) + '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 114;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 115;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -834,8 +834,12 @@ var zonasExtras = {};          // id de zona -> promesa de sus lugares y su red
 var zonasExtrasListas = {};    // id de zona -> true cuando ya llegaron (v89: para no avisar "sin estaciones" de más)
 function cargarZona(z) {
   if (!zonasExtras[z.id]) {
-    zonasExtras[z.id] = Promise.all([bajarJSON(z.lugares), bajarJSON(z.red)]).then(function (r) {
-      try { agregarExtrasZona({ zona: z, lugares: r[0], red: r[1] }); zonasExtrasListas[z.id] = true; } catch (e) { console.error(e); }
+    // v115: + gomerías y talleres que faltaban en OpenStreetMap, sacados de Overture Maps (z.overture)
+    zonasExtras[z.id] = Promise.all([bajarJSON(z.lugares), bajarJSON(z.red), bajarJSON(z.overture)]).then(function (r) {
+      try {
+        r[0].features = r[0].features.concat(r[2].features || []);
+        agregarExtrasZona({ zona: z, lugares: r[0], red: r[1] }); zonasExtrasListas[z.id] = true;
+      } catch (e) { console.error(e); }
     });
   }
   return Promise.all([cargarRestriccionesZona(z), zonasExtras[z.id]]);
@@ -1797,6 +1801,7 @@ function mostrarLugares() {
       // de lejos, cuando no entran todos, ganan los de menor número
       var pr = PRIORIDAD_LUGAR[t.id] != null ? PRIORIDAD_LUGAR[t.id] : 5;
       if (p.camiones) pr -= 2;
+      if (p.overture) pr += 3;   // v115: sin verificar: de lejos ganan los de OpenStreetMap
       feats.push({ type: 'Feature', geometry: l.feature.geometry, properties: { k: 'l', id: id, ic: 'ic-l-' + t.id, pr: pr } });
     });
   });
@@ -1947,6 +1952,7 @@ function armarCartelLugar(f, l) {
   } else {
     html += '<div class="cartel-linea">No figura si entra un camión: preguntá antes de ir.</div>';
   }
+  if (p.overture) html += '<div class="cartel-linea">⚠ Dato sin verificar: llamá antes de ir.</div>';   // v115
   if (p.extras && p.extras.length) html += '<div class="cartel-linea">Tiene: ' + esc(p.extras.join(', ')) + '</div>';
   html += htmlPrecio(precioDe(p));   // v112
   if (p.horario) html += '<div class="cartel-linea">Horario: ' + esc(horario(p.horario)) + '</div>';
@@ -1955,7 +1961,7 @@ function armarCartelLugar(f, l) {
     html += '<div class="cartel-linea">Teléfono: <a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">' + esc(tel) + '</a></div>';
   }
 
-  if (!p.energia && !p.chofer) html += '<div class="cartel-mas" data-osm="' + esc(p.osm) + '"><div class="cartel-fuente">Buscando más datos...</div></div>';
+  if (!p.energia && !p.chofer && !p.overture) html += '<div class="cartel-mas" data-osm="' + esc(p.osm) + '"><div class="cartel-fuente">Buscando más datos...</div></div>';
   if (l) html += armarCercania(l);
 
   var c = f.geometry.coordinates;   // [longitud, latitud]
@@ -1966,6 +1972,8 @@ function armarCartelLugar(f, l) {
           encodeURIComponent(p.nombre || tipo.uno) + '/@' + c[1] + ',' + c[0] + ',17z">Ver fotos y opiniones (Google)</a>';
   html += '<div class="cartel-fuente">Google Maps no conoce las restricciones para camiones: mirá este mapa antes de salir.</div>';
   if (p.energia) html += '<div class="cartel-fuente">Fuente: lista oficial de estaciones de la Secretaría de Energía (no está en OpenStreetMap)</div>';
+  else if (p.overture) html += '<div class="cartel-fuente">Fuente: <a href="https://overturemaps.org" target="_blank" rel="noopener">' +
+          'Overture Maps</a> (datos de ' + esc(String(p.fuente_datos || 'Meta y Microsoft').replace(/meta/, 'Meta')) + '; no está en OpenStreetMap)</div>';
   else if (p.chofer) html += '<div class="cartel-fuente">Lo agregó un chofer' + (p.fecha ? ' (' + esc(p.fecha) + ')' : '') + '</div>';
   else html += '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
           '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
@@ -6441,7 +6449,7 @@ function seguirViajeGuardado(marca) {
       modoResultado(true);
       document.getElementById('ruta-resultado').hidden = false;
       mostrarRuta(0, marca.navegando);
-      if (marca.navegando) empezarNavegacion();
+      if (marca.navegando) { nav.reanudado = true; empezarNavegacion(); }
       return true;
     });
   }).catch(function (e) { console.error(e); return false; });
@@ -6560,7 +6568,8 @@ function ubicarEnRuta(pos) {
   var pts = nav.r.puntos, desde = Math.max(0, nav.idx - 10), hasta = Math.min(pts.length - 1, nav.idx + 400);
   if (nav.primera) {
     hasta = pts.length - 1;
-    for (var h = 1; h < pts.length; h++) { if (nav.acum[h] > 3000) { hasta = h; break; } }
+    // v115: al seguir un viaje guardado (la página se recargó) el camión puede estar en cualquier parte: toda la ruta
+    if (!nav.reanudado) for (var h = 1; h < pts.length; h++) { if (nav.acum[h] > 3000) { hasta = h; break; } }
   }
   var kx = 111320 * Math.cos(pos.lat * Math.PI / 180), ky = 110540;
   var px = pos.lng * kx, py = pos.lat * ky, mejor = { d: Infinity, i: nav.idx, t: 0 };
@@ -6637,6 +6646,7 @@ function seguirNavegacion(pos) {
     }
   }
   nav.primera = false;
+  nav.reanudado = false;
   var total = nav.acum[nav.acum.length - 1];
   var falta = total - u.recorrido;
   resumenNav(falta);

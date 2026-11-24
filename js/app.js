@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 106;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 107;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -307,6 +307,8 @@ gl.on('styleimagemissing', function (ev) {
   if (ev.id === 'ic-punta') { gl.addImage(ev.id, dibujarPunta(), { pixelRatio: 2 }); return; }
   if (ev.id === 'ic-peaje') { gl.addImage(ev.id, dibujarPeaje(), { pixelRatio: 2 }); return; }
   if (ev.id === 'ic-tren') { gl.addImage(ev.id, dibujarCruzTren(), { pixelRatio: 2 }); return; }
+  var ml = /^ic-letra-([A-Z])-([01])$/.exec(ev.id);
+  if (ml) { gl.addImage(ev.id, dibujarLetraRuta(ml[1], ml[2] === '1'), { pixelRatio: 2 }); return; }
   var d = datosIcono(ev.id);
   if (d && d.length === 1) gl.addImage(ev.id, dibujarLimite(d[0].slice(1)), { pixelRatio: 2 });
   else if (d) gl.addImage(ev.id, dibujarIcono(d[0], d[1], d[2]), { pixelRatio: 2 });
@@ -1325,7 +1327,7 @@ function ponerCapasPropias() {
   ponerRelieveYSatelite();   // v98: relieve y satélite (debajo de las calles)
   var nombres = gl.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0];
   var debajo = nombres ? nombres.id : undefined;
-  ['red', 'ruta', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'trenes', 'lugares', 'controles', 'reportes'].forEach(function (id) {
+  ['red', 'ruta', 'ruta-letras', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'trenes', 'lugares', 'controles', 'reportes'].forEach(function (id) {
     var op = { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 };
     if (id === 'ruta') op.lineMetrics = true;   // v105: para pintar de gris lo ya recorrido (line-progress)
     gl.addSource(id, op);
@@ -1355,8 +1357,10 @@ function ponerCapasPropias() {
                'fill-extrusion-base': ['get', 'b'], 'fill-extrusion-height': ['get', 'h'] } },
     { id: 'red-pesada', type: 'line', source: 'red', layout: redondo,
       paint: { 'line-color': '#2e7d32', 'line-opacity': 0.5, 'line-width': ['step', ['zoom'], 2, 12, 4, 14, 7] } },
-    { id: 'ruta-alt', type: 'line', source: 'ruta', filter: es('t', 'alt'),
-      paint: { 'line-color': '#5b6470', 'line-opacity': 0.55, 'line-width': 5, 'line-dasharray': [1.6, 1.6] } },
+    { id: 'ruta-alt-borde', type: 'line', source: 'ruta', filter: es('t', 'alt'), layout: redondo,
+      paint: { 'line-color': '#ffffff', 'line-opacity': 0.8, 'line-width': 9 } },
+    { id: 'ruta-alt', type: 'line', source: 'ruta', filter: es('t', 'alt'), layout: redondo,
+      paint: { 'line-color': '#7b8794', 'line-opacity': 0.85, 'line-width': 5 } },
     { id: 'ruta-brillo', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
       paint: { 'line-color': '#2f8bff', 'line-opacity': 0.45, 'line-blur': 10, 'line-width': 30 } },
     { id: 'ruta-borde', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: redondo,
@@ -1365,6 +1369,10 @@ function ponerCapasPropias() {
       paint: { 'line-color': '#1565c0', 'line-opacity': 0.85, 'line-width': 7 } },
     { id: 'ruta-centro', type: 'line', source: 'ruta', filter: es('t', 'p'), layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
       paint: { 'line-color': '#9fd0ff', 'line-opacity': 0.9, 'line-width': 3 } },
+    // v107: letras A, B, C de las opciones (tocar = elegir esa)
+    { id: 'ruta-letras', type: 'symbol', source: 'ruta-letras',
+      layout: { 'icon-image': ['concat', 'ic-letra-', ['get', 'letra'], '-', ['to-string', ['get', 'el']]],
+                'icon-allow-overlap': true, 'icon-ignore-placement': true, 'symbol-sort-key': ['get', 'el'] } },
     // v95: el próximo giro dibujado sobre la ruta (flecha blanca, como Google Maps)
     { id: 'maniobra-borde', type: 'line', source: 'maniobra', filter: es('t', 'l'), layout: redondo,
       paint: { 'line-color': '#0b3d91', 'line-width': 13 } },
@@ -1453,6 +1461,7 @@ function ponerCapasPropias() {
     { id: 'radares', type: 'symbol', source: 'controles', minzoom: 13, filter: ['==', ['get', 'r'], 1],
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true } }
   ].forEach(function (c) { gl.addLayer(c); });
+  gl.moveLayer('ruta-letras');   // v107: las letras A, B, C arriba de todo (si no, las tapaban los radares)
   ponerVisibilidad();
   ponerCielo();
   if (typeof nav !== 'undefined' && nav.activo) ponerModoViaje(true);   // cambió el mapa (de día a noche) navegando
@@ -1474,6 +1483,9 @@ function ponerModoViaje(prender) {
   if (!gl.getLayer('ruta-linea')) return;
   ['viaje-3d', 'ruta-brillo', 'ruta-centro'].forEach(function (id) {
     if (gl.getLayer(id)) gl.setLayoutProperty(id, 'visibility', prender ? 'visible' : 'none');
+  });
+  ['ruta-alt', 'ruta-alt-borde', 'ruta-letras'].forEach(function (id) {   // v107: navegando, solo el camino elegido
+    if (gl.getLayer(id)) gl.setLayoutProperty(id, 'visibility', prender ? 'none' : 'visible');
   });
   gl.setPaintProperty('ruta-linea', 'line-width', prender ? 12 : 7);
   gl.setPaintProperty('ruta-borde', 'line-width', prender ? 18 : 11);
@@ -2860,8 +2872,8 @@ function actualizarTrayecto() {
   var b = document.getElementById('ruta-trayecto');
   var nums = '';
   ruta.paradas.forEach(function (c, i) { if (ruta[c]) nums += '<i class="ruta-marca parada">' + (i + 1) + '</i>'; });
-  if (b) b.innerHTML = '<span class="ruta-marca desde">A</span><span>' + esc(ruta.desde ? ruta.desde.nombre : '¿Desde?') +
-    '</span>' + nums + '<span class="ruta-marca hasta">B</span><span>' + esc(ruta.hasta ? ruta.hasta.nombre : '¿Hasta?') + '</span>';
+  if (b) b.innerHTML = '<span class="ruta-marca desde">●</span><span>' + esc(ruta.desde ? ruta.desde.nombre : '¿Desde?') +
+    '</span>' + nums + '<span class="ruta-marca hasta">⚑</span><span>' + esc(ruta.hasta ? ruta.hasta.nombre : '¿Hasta?') + '</span>';
   var t = document.getElementById('buscador-texto'), campo = document.getElementById('btn-buscar');
   if (t) t.textContent = ruta.hasta ? ruta.hasta.nombre : '¿A dónde vas?';
   if (campo) campo.classList.toggle('con-destino', !!ruta.hasta);
@@ -2974,7 +2986,8 @@ function ponerPunto(cual, latlng, nombre) {
   var el = document.createElement('span');
   var esParada = cual !== 'desde' && cual !== 'hasta';
   el.className = 'ruta-marca ' + (esParada ? 'parada' : cual);
-  el.textContent = cual === 'desde' ? 'A' : cual === 'hasta' ? 'B' : String(ruta.paradas.indexOf(cual) + 1);
+  // v107: salida = punto, llegada = bandera (las letras A, B, C son de las opciones de ruta)
+  el.textContent = cual === 'desde' ? '●' : cual === 'hasta' ? '⚑' : String(ruta.paradas.indexOf(cual) + 1);
   ruta.marcas[cual] = new maplibregl.Marker({ element: el }).setLngLat([ruta[cual].latlng.lng, ruta[cual].latlng.lat]).addTo(gl);
 }
 
@@ -3642,6 +3655,8 @@ function calcularViajeLargo(desde, hasta, salida) {
   }).then(function (caminos) {
     var base = caminos[0];
     mostrarBorrador(base, salida, nCalculo);
+    // v107: otras opciones (A, B, C) mientras se arma la principal
+    var otras = alternativasLargas(desde, hasta, evitarBase, base, caminos.slice(1));
     // distancia acumulada a lo largo del recorrido
     var acum = [0];
     for (var i = 1; i < base.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(base.puntos[i - 1]).distanceTo(base.puntos[i]) / 1000);
@@ -3689,7 +3704,7 @@ function calcularViajeLargo(desde, hasta, salida) {
         return quitarIdasYVueltas(c2, salida && salida.nodeType ? null : salida);
       }).then(function (c2) {
         c2.sinRevisar = zonasSinCargarEnRutas([c2.puntos]);
-        return [c2];
+        return otras.then(function (alts) { return [c2].concat(alts); });
       });
     });
   });
@@ -3892,6 +3907,84 @@ function cuadradosCallesChicas(c) {
   return metros >= 200 ? res.slice(0, 60) : [];
 }
 
+// ===== v107: OPCIONES A, B, C con nombre (pedido del chofer, 24/11/2026: "cuando busque un destino que me tire diferentes
+// opciones, ruta A B C, más rápida, más común, más tranquila"). De todos los caminos que dieron los servicios (sin más
+// lugares rojos que el mejor) quedan hasta 3 DISTINTOS (que no compartan más del 85% del recorrido):
+//   A = el recomendado (mejor puntaje: tiempo + calles de barrio + vueltas + tierra + red de tránsito pesado)
+//   y los que ganan: "Más rápida" (menos minutos), "Por rutas principales" / "Por avenidas" (más km por rutas, autopistas
+//   y avenidas: la que usa todo el mundo), "Más tranquila" (menos vueltas, menos calles de barrio y de tierra), "Más corta".
+// Cada opción dice por qué rutas va ("por RN 3 y RN 226") y cuánto tarda de más que la más rápida.
+var CALLE_PRINCIPAL = /(^|[^a-záéíóúñ])(r[np]\s?\d|r\.[np]\.|ruta|au\s?\d|autopista|autov[ií]a|acceso|panamericana|circunvalaci[oó]n|riccheri|general paz|av(da)?\.?|avenida|costanera|bulevar|boulevard|bv\.?|diagonal|colectora)([^a-záéíóúñ]|$)/i;
+function nombreRuta(r) { return ({ rn: 'RN ', rp: 'RP ', au: 'AU ', r: 'Ruta ' }[r.tipo]) + String(r.num).replace(/^0+(?=\d)/, ''); }
+function medirPrincipales(c) {
+  if (c.kmPrincipal != null && c._medidoCon === c.puntos) return;
+  var pts = c.puntos, acum = [0];
+  for (var i = 1; i < pts.length; i++) acum.push(acum[i - 1] + L.latLng(pts[i - 1]).distanceTo(pts[i]) / 1000);
+  var pasos = (c.pasos || []).filter(function (p) { return p.ini != null; }).sort(function (a, b) { return a.ini - b.ini; });
+  var porRuta = {}, kmPrincipal = 0, kmRutas = 0;
+  pasos.forEach(function (p, k) {
+    var desde = Math.min(p.ini, pts.length - 1), hasta = Math.min(k + 1 < pasos.length ? pasos[k + 1].ini : pts.length - 1, pts.length - 1);
+    var d = acum[hasta] - acum[desde];
+    if (!(d > 0)) return;
+    var calle = p.calle || (typeof calleDeTexto === 'function' ? calleDeTexto(p.texto) : '') || '';
+    var rs = rutasDeTexto(calle);
+    if (!rs.length && p.cartel && p.cartel.rutas) p.cartel.rutas.forEach(function (x) { rs = rs.concat(rutasDeTexto(x)); });
+    if (rs.length || CALLE_PRINCIPAL.test(calle)) kmPrincipal += d;
+    if (rs.length) { kmRutas += d; var n = nombreRuta(rs[0]); porRuta[n] = (porRuta[n] || 0) + d; }
+    else if (calle && /autopista|autov[ií]a|acceso|panamericana|circunvalaci|riccheri|general paz/i.test(calle)) {
+      porRuta[calle] = (porRuta[calle] || 0) + d;
+    }
+  });
+  var total = acum[acum.length - 1] || c.km || 1;
+  c.kmPrincipal = kmPrincipal;
+  c.kmRutas = kmRutas;
+  // las rutas que más usa (las que hacen al menos el 8% del viaje), en el orden en que se recorren
+  var orden = {};
+  pasos.forEach(function (p, k) {
+    var calle = p.calle || '', rs = rutasDeTexto(calle);
+    var n = rs.length ? nombreRuta(rs[0]) : calle;
+    if (porRuta[n] && orden[n] == null) orden[n] = k;
+  });
+  c.rutasUsadas = Object.keys(porRuta).filter(function (n) { return porRuta[n] >= Math.max(1, total * 0.08); })
+    .sort(function (a, b) { return porRuta[b] - porRuta[a]; }).slice(0, 3)
+    .sort(function (a, b) { return orden[a] - orden[b]; });
+  c._medidoCon = c.puntos;
+}
+// Grilla de ~100 m por donde pasa un camino (para saber si dos caminos son casi el mismo)
+function grillaCamino(c) {
+  if (c._grilla && c._grillaDe === c.puntos) return c._grilla;
+  var g = {}, pts = c.puntos;
+  function marcar(lat, lng) { g[Math.round(lat * 1000) + ',' + Math.round(lng * 1000)] = 1; }
+  for (var i = 0; i < pts.length; i++) {
+    marcar(pts[i][0], pts[i][1]);
+    if (i) {   // tramos largos (rutas rectas): se marcan puntos intermedios cada ~50 m
+      var dLat = pts[i][0] - pts[i - 1][0], dLng = pts[i][1] - pts[i - 1][1];
+      var n = Math.floor(Math.max(Math.abs(dLat), Math.abs(dLng)) / 0.0005);
+      for (var k = 1; k < n; k++) marcar(pts[i - 1][0] + dLat * k / n, pts[i - 1][1] + dLng * k / n);
+    }
+  }
+  c._grilla = g; c._grillaDe = pts;
+  return g;
+}
+function cercaDeGrilla(g, lat, lng) {
+  var a = Math.round(lat * 1000), b = Math.round(lng * 1000);
+  for (var x = -1; x <= 1; x++) for (var y = -1; y <= 1; y++) if (g[(a + x) + ',' + (b + y)]) return true;
+  return false;
+}
+// Qué parte del camino c (0 a 1) va por donde va el camino d
+function parecido(c, d) {
+  var g = grillaCamino(d), pts = c.puntos, si = 0, total = 0, acum = 0;
+  for (var i = 1; i < pts.length; i++) {
+    acum += L.latLng(pts[i - 1]).distanceTo(pts[i]);
+    if (acum < 150 && i < pts.length - 1) continue;
+    acum = 0; total++;
+    if (cercaDeGrilla(g, pts[i][0], pts[i][1])) si++;
+  }
+  return total ? si / total : 1;
+}
+function tranquilidad(c) {   // menos es más tranquilo
+  return c.vueltas + 6 * (c.kmChicas || 0) + 6 * (c.kmTierra || 0) + 0.3 * Math.max(0, c.km - (c.kmPrincipal || 0));
+}
 function elegirOpciones(caminos) {
   caminos.forEach(function (c) {
     var red = medirRed(c.puntos);
@@ -3899,21 +3992,125 @@ function elegirOpciones(caminos) {
     c.kmTierra = tramosDeTierra(c.puntos).reduce(function (s, x) { return s + x.m; }, 0) / 1000;
     c.puntaje = c.segundos / 60 + PUNTAJE.kmCallesChicas * (c.kmChicas || 0) + PUNTAJE.vuelta * c.vueltas + PUNTAJE.kmTierra * c.kmTierra +
                 PUNTAJE.kmFueraDeRed * Math.max(0, red.zonaConRed - red.enRed) + PUNTAJE.rojo * c.rojos;
+    medirPrincipales(c);
+    c.etiquetas = []; c.etiqueta = ''; c.letra = ''; c.recomendada = false;
   });
-  var porFacilidad = caminos.slice().sort(function (a, b) { return a.puntaje - b.puntaje; });
-  var facil = porFacilidad[0];
-  facil.etiqueta = 'Más fácil para camión';
-  var opciones = [facil];
-  // la más corta, si es otra y no pasa por lugares rojos (o la fácil tampoco los esquiva)
-  var corta = caminos.filter(function (c) { return c !== facil && c.rojos <= facil.rojos; })
-                     .sort(function (a, b) { return a.km - b.km; })[0];
-  if (corta && corta.km < facil.km - 0.3) { corta.etiqueta = 'Más corta'; opciones.push(corta); }
-  // la que más usa la red de tránsito pesado, si usa bastante más que la fácil (20 puntos o más)
-  function parte(c) { return c.kmZonaConRed > 1 ? c.kmEnRed / c.kmZonaConRed : 0; }
-  var porRed = caminos.filter(function (c) { return opciones.indexOf(c) === -1 && c.rojos <= facil.rojos && parte(c) >= parte(facil) + 0.2; })
-                      .sort(function (a, b) { return parte(b) - parte(a); })[0];
-  if (porRed) { porRed.etiqueta = 'Más por red de tránsito pesado'; opciones.push(porRed); }
+  var minRojos = Math.min.apply(null, caminos.map(function (c) { return c.rojos || 0; }));
+  var buenos = caminos.filter(function (c) { return (c.rojos || 0) <= minRojos; }).sort(function (a, b) { return a.puntaje - b.puntaje; });
+  var distintos = [];
+  buenos.forEach(function (c) {
+    if (!distintos.some(function (d) { return parecido(c, d) > 0.85 && parecido(d, c) > 0.85; })) distintos.push(c);
+  });
+  // una opción que tarda muchísimo más que la más rápida no sirve (más de 35% y más de 20 minutos)
+  var masRapido = Math.min.apply(null, distintos.map(function (c) { return c.segundos; }));
+  distintos = distintos.filter(function (c, i) { return i === 0 || c.segundos <= Math.max(masRapido * 1.35, masRapido + 1200); });
+  var rec = distintos[0];
+  function mejor(f) { return distintos.slice().sort(function (a, b) { return f(a) - f(b) || a.puntaje - b.puntaje; })[0]; }
+  var opciones = [rec];
+  function poner(c, nombre) {
+    if (!c) return;
+    if (opciones.indexOf(c) < 0) { if (opciones.length >= 3) return; opciones.push(c); }
+    c.etiquetas.push(nombre);
+  }
+  var largo = rec.km > 60;
+  poner(mejor(function (c) { return c.segundos; }), 'Más rápida');
+  poner(mejor(function (c) { return -(c.kmPrincipal / (c.km || 1)); }), largo ? 'Por rutas principales' : 'Por avenidas');
+  // "Más tranquila" solo si de verdad lo es (bastantes menos vueltas o calles chicas que la recomendada)
+  var tranq = mejor(tranquilidad);
+  if (tranq === rec || tranquilidad(rec) - tranquilidad(tranq) >= Math.max(1.5, 0.2 * tranquilidad(rec))) poner(tranq, 'Más tranquila');
+  var corta = mejor(function (c) { return c.km; });
+  if (opciones.indexOf(corta) >= 0 || opciones.length < 3) poner(corta, 'Más corta');
+  distintos.forEach(function (c) { if (opciones.length < 3 && opciones.indexOf(c) < 0) opciones.push(c); });
+  rec.recomendada = true;
+  opciones.forEach(function (c, i) {
+    if (!c.etiquetas.length) c.etiquetas.push(c === rec ? 'Recomendada' : 'Otra opción');
+    if (c.etiquetas.length > 2) c.etiquetas = ['Recomendada', c.etiquetas[0]];   // gana en todo: no hace falta la lista entera
+    c.letra = 'ABC'.charAt(i);
+    c.etiqueta = c.etiquetas.join(' · ');
+  });
   return opciones;
+}
+// Dónde va la letra de cada opción en el mapa: en el medio de la parte que es SOLO suya
+function puntoDeLetra(o, opciones) {
+  var otras = opciones.filter(function (x) { return x !== o; }).map(grillaCamino), pts = o.puntos, propios = [];
+  var paso = Math.max(1, Math.floor(pts.length / 200));
+  for (var i = 0; i < pts.length; i += paso) {
+    if (!otras.some(function (g) { return cercaDeGrilla(g, pts[i][0], pts[i][1]); })) propios.push(pts[i]);
+  }
+  var p = propios.length ? propios[Math.floor(propios.length / 2)] : pts[Math.floor(pts.length / 2)];
+  return [p[1], p[0]];
+}
+function ponerLetrasRuta(opciones, indice) {
+  if (!opciones || opciones.length < 2) { ponerDatos('ruta-letras', []); return; }
+  ponerDatos('ruta-letras', opciones.map(function (o, i) {
+    return { type: 'Feature', geometry: { type: 'Point', coordinates: puntoDeLetra(o, opciones) },
+             properties: { letra: o.letra || 'ABC'.charAt(i), i: i, el: i === indice ? 1 : 0 } };
+  }));
+}
+// "+12 min · 8 km más" comparado con la más rápida
+function diferenciaOpcion(o, opciones) {
+  var rapida = opciones.slice().sort(function (a, b) { return a.segundos - b.segundos; })[0];
+  var dm = Math.round((o.segundos - rapida.segundos) / 60), dk = o.km - rapida.km, partes = [];
+  if (dm >= 1) partes.push('+' + (dm >= 60 ? duracion(dm * 60) : dm + ' min'));
+  if (Math.abs(dk) >= 1) partes.push(numero(Math.abs(dk), 0) + ' km ' + (dk > 0 ? 'más' : 'menos'));
+  else if (Math.abs(dk) >= 0.2) partes.push(numero(Math.abs(dk), 1) + ' km ' + (dk > 0 ? 'más' : 'menos'));
+  return partes.join(' · ');
+}
+function htmlOpcionesRuta(opciones, indice) {
+  var html = '<div class="ruta-opciones ruta-opciones-abc">';
+  opciones.forEach(function (o, i) {
+    var por = o.rutasUsadas && o.rutasUsadas.length ? 'por ' + o.rutasUsadas.join(', ').replace(/, ([^,]*)$/, ' y $1') : '';
+    var dif = diferenciaOpcion(o, opciones);
+    html += '<button type="button" data-opcion="' + i + '" class="ruta-opcion' + (i === indice ? ' elegida' : '') + '">' +
+            '<span class="ro-letra">' + esc(o.letra || 'ABC'.charAt(i)) + '</span>' +
+            '<span class="ro-texto"><b>' + esc(o.etiqueta) + '</b>' +
+            '<span class="ro-datos">' + duracion(o.segundos) + ' · ' + numero(o.km, o.km < 20 ? 1 : 0) + ' km' +
+            (o.rojos ? ' · <em>⛔ ' + o.rojos + '</em>' : '') + '</span>' +
+            (por || dif ? '<small>' + esc([por, dif].filter(Boolean).join(' · ')) + '</small>' : '') + '</span></button>';
+  });
+  return html + '</div>';
+}
+// Viajes largos: otros caminos (la base se arma con uno solo). Si el servicio ya trajo alternativas se usan; si no, se
+// piden a TomTom (o a Valhalla). Cada una se revisa entera y se esquivan sus rojos (arreglarMedio), como la principal.
+function alternativasLargas(desde, hasta, evitar, base, extras) {
+  var pedido;
+  if (extras && extras.length) pedido = Promise.resolve(extras);
+  else if (claveTomTom() && !(ruta.tomtomHasta && Date.now() < ruta.tomtomHasta)) pedido = rutaTomTom(evitar, desde, hasta, true);
+  else pedido = rutaValhalla(evitar, desde, hasta);
+  return pedido.then(function (cs) {
+    var otras = [];
+    cs.forEach(function (c) {
+      if (parecido(c, base) > 0.85 && parecido(base, c) > 0.85) return;
+      if (otras.some(function (o) { return parecido(c, o) > 0.85 && parecido(o, c) > 0.85; })) return;
+      if (c.km > base.km * 1.35) return;   // una vuelta enorme no sirve como opción
+      otras.push(c);
+    });
+    return Promise.all(otras.slice(0, 2).map(function (c) {
+      var l = [c.puntos];
+      return Promise.all([cargarZonasEnRutas(l), cargarCortesEn(l), cargarPaisEnRutas(l)]).then(function () {
+        c.avisos = revisarRuta(c.puntos, c.pasos);
+        c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
+        c.esquivados = 0; c.largo = true;
+        return arreglarMedio(c, 0, c.puntos.length, null);
+      }).then(function (c2) { return quitarIdasYVueltas(c2, null); }).then(function (c2) {
+        c2.sinRevisar = zonasSinCargarEnRutas([c2.puntos]);
+        return c2;
+      }).catch(function (e) { console.warn('Alternativa descartada:', e); return null; });
+    }));
+  }).then(function (lista) { return lista.filter(Boolean); }, function (e) { console.warn('Sin alternativas:', e); return []; });
+}
+// Letra de la opción en el mapa (círculo azul si es la elegida, gris si no)
+function dibujarLetraRuta(letra, elegida) {
+  var k = 2, t = 34 * k, c = document.createElement('canvas');
+  c.width = c.height = t;
+  var x = c.getContext('2d');
+  x.shadowColor = 'rgba(0,0,0,0.35)'; x.shadowBlur = 4 * k; x.shadowOffsetY = k;
+  x.beginPath(); x.arc(t / 2, t / 2, 14 * k, 0, 2 * Math.PI); x.fillStyle = '#ffffff'; x.fill();
+  x.shadowColor = 'transparent';
+  x.beginPath(); x.arc(t / 2, t / 2, 12 * k, 0, 2 * Math.PI); x.fillStyle = elegida ? '#1565c0' : '#5b6470'; x.fill();
+  x.fillStyle = '#ffffff'; x.font = 'bold ' + (16 * k) + 'px Arial, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(letra, t / 2, t / 2 + k);
+  return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
 }
 
 // Cuántos km de un camino van por la red de tránsito pesado, y cuántos km pasan por zonas que la tienen
@@ -4236,6 +4433,7 @@ function decodificarPolilinea(texto, decimales) {
 // --- Mostrar ---
 function quitarLineasRuta() {
   ponerDatos('ruta', []);
+  ponerDatos('ruta-letras', []);
   ruta.lineas = [];
   ruta.linea = null;
 }
@@ -4867,14 +5065,15 @@ function mostrarRuta(indice, sinMoverMapa) {
   opciones.forEach(agregarFeriados);   // v91: restricciones por feriado (dependen de la hora en que pasás)
   quitarLineasRuta();
   // la otra opción, en gris finito, para que se vea por dónde iría
-  function linea(o, t) {
-    return { type: 'Feature', properties: { t: t },
+  function linea(o, t, i) {
+    return { type: 'Feature', properties: { t: t, i: i },
              geometry: { type: 'LineString', coordinates: o.puntos.map(function (q) { return [q[1], q[0]]; }) } };
   }
   var lineas = [];
-  opciones.forEach(function (o, i) { if (i !== indice) lineas.push(linea(o, 'alt')); });
-  lineas.push(linea(r, 'p'));
+  opciones.forEach(function (o, i) { if (i !== indice) lineas.push(linea(o, 'alt', i)); });
+  lineas.push(linea(r, 'p', indice));
   ponerDatos('ruta', lineas);
+  ponerLetrasRuta(nav.activo ? null : opciones, indice);   // v107
   ruta.linea = r;
   document.getElementById('borrar-ruta').hidden = false;
 
@@ -4898,14 +5097,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   }
   html += '<div id="ruta-clima" class="ruta-clima"></div>';   // v89: se llena cuando llega el pronóstico
   html += '<div id="ruta-sin-senal" class="ruta-sin-senal"></div>';   // v93: mapa del viaje guardado para usar sin señal
-  if (opciones.length > 1) {
-    html += '<div class="ruta-opciones">';
-    opciones.forEach(function (o, i) {
-      html += '<button type="button" data-opcion="' + i + '" class="ruta-opcion' + (i === indice ? ' elegida' : '') + '">' +
-              '<b>' + esc(o.etiqueta) + '</b>' + duracion(o.segundos) + ' · ' + numero(o.km, 1) + ' km</button>';
-    });
-    html += '</div>';
-  }
+  if (opciones.length > 1) html += htmlOpcionesRuta(opciones, indice);   // v107: A, B, C
   // Lo demás, escondido
   // abierto solo si hay lugares donde NO pasás (si no, la tarjeta tapaba medio mapa; lo demás se ve al tocar)
   html += '<details class="ruta-mas"' + (r.rojos ? ' open' : '') + '><summary>Ver detalles</summary>';
@@ -7596,6 +7788,12 @@ gl.on('click', function (e) {
   function buscar(capas, t) {
     var hay = capas.filter(function (id) { return gl.getLayer(id); });
     return hay.length ? gl.queryRenderedFeatures([[pt.x - t, pt.y - t], [pt.x + t, pt.y + t]], { layers: hay }) : [];
+  }
+  // v107: tocar la letra (o la línea gris) de otra opción de ruta = elegir esa
+  if (!nav.activo && ruta.opciones && ruta.opciones.length > 1) {
+    var op = buscar(['ruta-letras'], 20);
+    if (!op.length) op = buscar(['ruta-alt'], 10);
+    if (op.length && ruta.opciones[+op[0].properties.i]) { mostrarRuta(+op[0].properties.i, true); return; }
   }
   var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos', 'peajes-icono', 'trenes'], 18);
   if (iconos.length) {

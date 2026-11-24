@@ -1532,3 +1532,17 @@ body.navegando .zoom-botones button { background: #0f1b2d; color: #fff; }
 body.navegando .zoom-botones button + button { border-top-color: rgba(255, 255, 255, 0.14); }
 body.ruta-escribiendo .zoom-botones, body.hoja-abierta .zoom-botones { display: none; }
 @media (max-height: 700px) { .zoom-botones button { width: 46px; height: 46px; font-size: 1.5rem; } }
+
+/* v107: opciones A, B, C (una debajo de la otra, grandes y claras) */
+.ruta-opciones.ruta-opciones-abc { display: flex; flex-direction: column; gap: 6px; }
+.ruta-opciones-abc .ruta-opcion { display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 8px 10px; width: 100%; }
+.ruta-opciones-abc .ro-letra {
+  flex: none; width: 32px; height: 32px; border-radius: 50%; background: #5b6470; color: #fff; font-weight: 800;
+  font-size: 1.05rem; display: flex; align-items: center; justify-content: center;
+}
+.ruta-opciones-abc .ruta-opcion.elegida .ro-letra { background: var(--primario, #1565c0); }
+.ruta-opciones-abc .ro-texto { display: block; min-width: 0; }
+.ruta-opciones-abc .ro-texto b { display: block; font-size: 0.95rem; line-height: 1.2; }
+.ruta-opciones-abc .ro-datos { display: block; font-size: 0.9rem; font-weight: 600; margin-top: 1px; }
+.ruta-opciones-abc .ro-datos em { font-style: normal; color: #c62828; }
+.ruta-opciones-abc small { display: block; color: var(--texto-suave); font-size: 0.78rem; margin-top: 1px; }

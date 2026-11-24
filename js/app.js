@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 107;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 108;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -307,6 +307,7 @@ gl.on('styleimagemissing', function (ev) {
   if (ev.id === 'ic-punta') { gl.addImage(ev.id, dibujarPunta(), { pixelRatio: 2 }); return; }
   if (ev.id === 'ic-peaje') { gl.addImage(ev.id, dibujarPeaje(), { pixelRatio: 2 }); return; }
   if (ev.id === 'ic-tren') { gl.addImage(ev.id, dibujarCruzTren(), { pixelRatio: 2 }); return; }
+  if (ev.id === 'ic-curva-izq' || ev.id === 'ic-curva-der') { gl.addImage(ev.id, dibujarCurva(ev.id === 'ic-curva-izq' ? 'izquierda' : 'derecha'), { pixelRatio: 2 }); return; }
   var ml = /^ic-letra-([A-Z])-([01])$/.exec(ev.id);
   if (ml) { gl.addImage(ev.id, dibujarLetraRuta(ml[1], ml[2] === '1'), { pixelRatio: 2 }); return; }
   var d = datosIcono(ev.id);
@@ -1327,7 +1328,7 @@ function ponerCapasPropias() {
   ponerRelieveYSatelite();   // v98: relieve y satélite (debajo de las calles)
   var nombres = gl.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0];
   var debajo = nombres ? nombres.id : undefined;
-  ['red', 'ruta', 'ruta-letras', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'trenes', 'lugares', 'controles', 'reportes'].forEach(function (id) {
+  ['red', 'ruta', 'ruta-letras', 'curvas', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'trenes', 'lugares', 'controles', 'reportes'].forEach(function (id) {
     var op = { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 };
     if (id === 'ruta') op.lineMetrics = true;   // v105: para pintar de gris lo ya recorrido (line-progress)
     gl.addSource(id, op);
@@ -1443,6 +1444,10 @@ function ponerCapasPropias() {
     { id: 'lugares', type: 'symbol', source: 'lugares', minzoom: ZOOM_LUGARES - 1,
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
                 'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_LUGARES - 1, 1, 15, 1.15] } },
+    // v108: curvas peligrosas del camino elegido (rombo amarillo con la flecha)
+    { id: 'curvas', type: 'symbol', source: 'curvas', minzoom: 8,
+      layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': ['step', ['zoom'], false, 13, true], 'icon-padding': 2,
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.6, 13, 0.85, 16, 1] } },
     // v105: pasos a nivel (cruz de San Andrés); de lejos, solo los que entran sin taparse
     { id: 'trenes', type: 'symbol', source: 'trenes', minzoom: 11,
       layout: { 'icon-image': 'ic-tren', 'icon-allow-overlap': ['step', ['zoom'], false, 15, true], 'icon-padding': 4,
@@ -4433,6 +4438,7 @@ function decodificarPolilinea(texto, decimales) {
 // --- Mostrar ---
 function quitarLineasRuta() {
   ponerDatos('ruta', []);
+  ponerDatos('curvas', []);
   ponerDatos('ruta-letras', []);
   ruta.lineas = [];
   ruta.linea = null;
@@ -5120,6 +5126,16 @@ function mostrarRuta(indice, sinMoverMapa) {
     });
     html += '</ul></details>';
   }
+  if (!r.curvas) r.curvas = curvasEnRuta(r);   // v108
+  ponerCurvasEnMapa(r);
+  if (r.curvas.length) {
+    html += '<details class="ruta-pasos"><summary>⚠️ Curvas peligrosas en el camino (' + r.curvas.length + ')</summary><ul class="ruta-lista">';
+    r.curvas.slice(0, 100).forEach(function (c, i) {
+      html += '<li><button type="button" data-curva="' + i + '"><span class="ruta-lista-icono">⚠️</span>' +
+              esc('km ' + numero(c.m / 1000, c.m < 10000 ? 1 : 0) + ': ' + c.texto) + '</button></li>';
+    });
+    html += '</ul></details>';
+  }
   r.trenes = pasosTrenEnRuta(r.puntos);   // v105
   if (r.trenes.length) {
     var sinB = r.trenes.filter(function (c) { return sinBarrera(c.item.f.properties); }).length;
@@ -5182,6 +5198,14 @@ function mostrarRuta(indice, sinMoverMapa) {
       abrirPanelRuta(false);
       mapa.setView(l.getLatLng(), Math.max(mapa.getZoom(), 16));
       abrirCartelLugar(l);
+    });
+  });
+  salida.querySelectorAll('[data-curva]').forEach(function (b) {   // v108
+    b.addEventListener('click', function () {
+      var i = +b.getAttribute('data-curva'), c = r.curvas[i];
+      abrirPanelRuta(false);
+      mapa.setView(c.latlng, Math.max(mapa.getZoom(), 15));
+      abrirCartelCurva(i);
     });
   });
   salida.querySelectorAll('[data-tren]').forEach(function (b) {   // v105
@@ -5764,6 +5788,12 @@ function paraDecir(texto) {
 var ES_IPHONE = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 voz.motor = leerGuardado('mapa-camiones:voz-motor') || (ES_IPHONE ? 'grabada' : 'telefono');
 var grabada = { el: null, cola: [], sonando: false, bajadas: false };
+// v108: qué voz grabada (pedido del chofer: "la quiero más natural"): Elena o Tomás (voces argentinas de Microsoft, mp3 en
+// voz/elena/ y voz/tomas/, scripts/grabar_voz_edge.py) o Daniela (la de antes, Piper, wav en voz/)
+var VOCES_GRABADAS = { elena: 'Elena', tomas: 'Tomás', daniela: 'Daniela' };
+voz.grabada = leerGuardado('mapa-camiones:voz-grabada');
+if (!VOCES_GRABADAS[voz.grabada]) voz.grabada = 'elena';
+function urlClip(k) { return voz.grabada === 'daniela' ? 'voz/' + k + '.wav' : 'voz/' + voz.grabada + '/' + k + '.mp3'; }
 function reproductor() {
   if (!grabada.el) {
     grabada.el = new Audio();
@@ -5799,10 +5829,10 @@ function sonar(urls, urgente) {
 }
 // Baja todas las frases una vez (quedan guardadas: sirven sin señal)
 function bajarVozGrabada() {
-  if (grabada.bajadas) return;
-  grabada.bajadas = true;
+  if (grabada.bajadas === voz.grabada) return;
+  grabada.bajadas = voz.grabada;
   fetch('voz/frases.json').then(function (r) { return r.json(); }).then(function (lista) {
-    lista.forEach(function (k, i) { setTimeout(function () { fetch('voz/' + k + '.wav').catch(function () {}); }, i * 40); });
+    lista.forEach(function (k, i) { setTimeout(function () { fetch(urlClip(k)).catch(function () {}); }, i * 40); });
   }).catch(function () { grabada.bajadas = false; });
 }
 // Distancia dicha ("300 metros", "1 coma 5 kilómetros") → grabación "En 300 metros"
@@ -5822,6 +5852,10 @@ function clipDistancia(t) {
 function clipPeligro(t) {
   t = t.toLowerCase();
   var vel = /máxima (\d+)/.exec(t), clipVel = vel && +vel[1] >= 20 && +vel[1] <= 130 && +vel[1] % 10 === 0 ? 'v_' + vel[1] : null;
+  var baja = /bajá a (\d+)/.exec(t), clipBaja = baja && +baja[1] >= 20 && +baja[1] <= 60 ? 'b_' + baja[1] : null;   // v108
+  if (/curvas peligrosas/.test(t)) return clipBaja ? ['h_curvas', clipBaja] : ['h_curvas'];
+  if (/curva peligrosa a la izquierda/.test(t)) return clipBaja ? ['h_curva_izq', clipBaja] : ['h_curva_izq'];
+  if (/curva peligrosa a la derecha/.test(t)) return clipBaja ? ['h_curva_der', clipBaja] : ['h_curva_der'];
   if (/paso a nivel sin barrera/.test(t)) return ['h_tren_sin'];   // v105
   if (/paso a nivel/.test(t)) return ['h_tren'];
   if (/radar/.test(t)) return clipVel ? ['h_radar', clipVel] : ['h_radar'];
@@ -5897,7 +5931,7 @@ function clipsDe(texto) {
 }
 function decirGrabado(texto, urgente) {
   bajarVozGrabada();
-  sonar(clipsDe(texto).map(function (k) { return 'voz/' + k + '.wav'; }), urgente);
+  sonar(clipsDe(texto).map(urlClip), urgente);
 }
 function hablar(texto, urgente) {
   if (!nav.voz || !texto) return;
@@ -5942,7 +5976,7 @@ function probarVoz() {
   if (voz.motor === 'grabada') {
     pitido();
     bajarVozGrabada();
-    sonar(['voz/prueba.wav']);
+    sonar([urlClip('prueba')]);
     if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
     mostrarMensaje('🔊 Tiene que sonar un pitido y después "Hola, soy la voz del mapa para camiones". Si no escuchás nada, ' +
                    'subí el volumen con los botones del costado del teléfono (con el silencio puesto también tiene que sonar).');
@@ -6028,6 +6062,10 @@ function empezarNavegacion(rutaElegida) {
                       maxima: maxRadar, icono: tipo.icono + ' ', rojo: false,
                       dist: nav.acum[Math.min(c.orden, nav.acum.length - 1)] +
                             (c.t || 0) * ((nav.acum[c.orden + 1] || nav.acum[c.orden]) - nav.acum[c.orden]) });
+  });
+  // v108: curvas peligrosas (sin alarma, con la velocidad aconsejada)
+  (r.curvas || curvasEnRuta(r)).forEach(function (c, k) {
+    nav.avisos.push({ n: 'curva' + k, texto: c.texto, voz: c.voz, icono: '⚠️ ', rojo: false, curva: true, dist: c.m });
   });
   // v105: pasos a nivel: se avisan como un control (sin alarma), para bajar la velocidad
   (r.trenes || pasosTrenEnRuta(r.puntos)).forEach(function (c, k) {
@@ -7084,6 +7122,127 @@ function pasosTrenEnRuta(puntos) {
     .sort(function (a, b) { return a.orden - b.orden || a.t - b.t; });
 }
 
+// ===== v108: CURVAS PELIGROSAS (pedido del chofer, 24/11/2026). Se calculan con la forma del camino (no hace falta bajar
+// nada): en rutas y autopistas, una curva que gira 35° o más con un radio chico es peligrosa para un camión (vuelco, la
+// carga se corre). Velocidad aconsejada: v = raíz(R · g · 0,12) (rozamiento lateral bajo, como para un camión cargado),
+// redondeada para abajo a 10 km/h. No se cuentan los giros en esquinas ni las rotondas (a menos de 80 m de una indicación)
+// ni las calles de la ciudad (solo tramos de rutas, autopistas, accesos y caminos). Curvas en S (a menos de 150 m) = una.
+var CURVAS = { pasoM: 10, ventanaM: 40, anguloMin: 35, velMax: 60, lejosDeGiroM: 80, juntarM: 150, curvatura: 1 / 400 };
+var CALLE_DE_RUTA = /(^|[^a-záéíóúñ])(r[np]\s?\d|r\.[np]\.|ruta|au\s?\d|autopista|autov[ií]a|acceso|panamericana|camino|circunvalaci[oó]n|variante|traza|colectora)([^a-záéíóúñ]|$)/i;
+function curvasEnRuta(r) {
+  var pts = r.puntos, n = pts.length;
+  if (n < 3) return [];
+  // 1) acumulado en metros y el recorrido cada 10 m
+  var acum = [0];
+  for (var i = 1; i < n; i++) acum.push(acum[i - 1] + L.latLng(pts[i - 1]).distanceTo(pts[i]));
+  var total = acum[n - 1];
+  if (total < 300) return [];
+  function enM(m) {
+    var lo = 0, hi = n - 1;
+    while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (acum[mid] <= m) lo = mid; else hi = mid; }
+    var t = (m - acum[lo]) / ((acum[hi] - acum[lo]) || 1);
+    return [pts[lo][0] + (pts[hi][0] - pts[lo][0]) * t, pts[lo][1] + (pts[hi][1] - pts[lo][1]) * t, lo];
+  }
+  // 2) qué tramos son de ruta (por el nombre de la calle de cada indicación) y dónde están los giros
+  var pasos = (r.pasos || []).filter(function (p) { return p.ini != null; }).sort(function (a, b) { return a.ini - b.ini; });
+  var giros = pasos.map(function (p) { return acum[Math.min(p.ini, n - 1)]; });
+  var tramosRuta = [];
+  pasos.forEach(function (p, k) {
+    var calle = p.calle || calleDeTexto(p.texto) || '';
+    var deRuta = CALLE_DE_RUTA.test(calle) || rutasDeTexto(calle).length > 0;
+    if (!deRuta && p.cartel && p.cartel.rutas && p.cartel.rutas.length) deRuta = true;
+    if (deRuta) tramosRuta.push([giros[k], k + 1 < giros.length ? giros[k + 1] : total]);
+  });
+  function esDeRuta(m) { return tramosRuta.some(function (t) { return m >= t[0] && m <= t[1]; }); }
+  function cercaDeGiro(m) {
+    for (var k = 0; k < giros.length; k++) if (Math.abs(giros[k] - m) < CURVAS.lejosDeGiroM) return true;
+    return false;
+  }
+  // 3) rumbo cada 10 m y cuánto gira en cada pedazo
+  var muestras = [], rumbos = [];
+  for (var m = 0; m <= total; m += CURVAS.pasoM) muestras.push(enM(m));
+  for (i = 0; i < muestras.length - 1; i++) rumbos.push(rumboPuntos(muestras[i], muestras[i + 1]));
+  var giro = [];   // giro (grados, + derecha) entre un pedazo de 10 m y el siguiente
+  for (i = 0; i < rumbos.length - 1; i++) giro.push(difAngulo(rumbos[i + 1], rumbos[i]));
+  // 4) curvas: tramos seguidos donde el camino gira para el mismo lado más que "curvatura" (mirando 40 m)
+  var w = Math.round(CURVAS.ventanaM / CURVAS.pasoM), umbral = CURVAS.curvatura * CURVAS.ventanaM * 180 / Math.PI;
+  var suave = giro.map(function (g, k) {
+    var s = 0;
+    for (var j = Math.max(0, k - (w >> 1)); j < Math.min(giro.length, k + (w >> 1) + 1); j++) s += giro[j];
+    return s;
+  });
+  var curvas = [], k0 = null, signo = 0, h = w >> 1;
+  function cerrar(k1) {   // la curva va de la muestra k0 a la k1 (se suma el giro de la ventana a cada lado)
+    var a0 = Math.max(0, k0 - h), a1 = Math.min(giro.length, k1 + h), angulo = 0;
+    for (var j = a0; j < a1; j++) angulo += giro[j];
+    var largo = (a1 - a0) * CURVAS.pasoM, mMedio = (k0 + k1) / 2 * CURVAS.pasoM;
+    var a = Math.abs(angulo), R = largo / (a * Math.PI / 180);
+    var vel = Math.floor(Math.sqrt(R * 9.8 * 0.12) * 3.6 / 10) * 10;
+    if (a >= CURVAS.anguloMin && vel <= CURVAS.velMax && esDeRuta(mMedio) && !cercaDeGiro(a0 * CURVAS.pasoM) &&
+        !cercaDeGiro(a1 * CURVAS.pasoM) && !cercaDeGiro(mMedio) && mMedio > 150 && mMedio < total - 150) {
+      curvas.push({ m: a0 * CURVAS.pasoM, mMedio: mMedio, lado: angulo > 0 ? 'derecha' : 'izquierda', angulo: Math.round(a),
+                    radio: Math.round(R), vel: Math.max(20, vel), p: muestras[Math.round((k0 + k1) / 2)] });
+    }
+  }
+  for (i = 0; i < suave.length; i++) {
+    var sg = Math.abs(suave[i]) >= umbral ? (suave[i] > 0 ? 1 : -1) : 0;
+    if (k0 != null && sg !== signo) { cerrar(i); k0 = null; }
+    if (k0 == null && sg !== 0) { k0 = i; signo = sg; }
+  }
+  if (k0 != null) cerrar(suave.length);
+  // 5) curvas en S (seguidas a menos de 150 m) = un solo aviso
+  var res = [];
+  curvas.forEach(function (c) {
+    var u = res[res.length - 1];
+    if (u && c.m - u.mFin < CURVAS.juntarM) { u.ese = true; u.vel = Math.min(u.vel, c.vel); u.mFin = c.mMedio + 30; return; }
+    c.mFin = c.mMedio + 30;
+    res.push(c);
+  });
+  res.forEach(function (c) {
+    var q = enM(c.m);
+    c.orden = q[2]; c.t = 0; c.latlng = L.latLng(c.p[0], c.p[1]);
+    c.dist = c.m;
+    c.texto = (c.ese ? 'Curvas peligrosas' : 'Curva peligrosa a la ' + c.lado) + ': bajá a ' + c.vel + ' km/h';
+    c.voz = (c.ese ? 'curvas peligrosas' : 'curva peligrosa a la ' + c.lado) + ', bajá a ' + c.vel;
+  });
+  return res.slice(0, 200);
+}
+// Cartel de curva (amarillo, como el de la ruta): rombo con la flecha
+function dibujarCurva(lado) {
+  var k = 2, t = 32 * k, c = document.createElement('canvas');
+  c.width = c.height = t;
+  var x = c.getContext('2d'), m = t / 2, r = 13 * k;
+  x.shadowColor = 'rgba(0,0,0,0.35)'; x.shadowBlur = 3 * k; x.shadowOffsetY = k;
+  x.beginPath(); x.moveTo(m, m - r); x.lineTo(m + r, m); x.lineTo(m, m + r); x.lineTo(m - r, m); x.closePath();
+  x.fillStyle = '#111'; x.fill();
+  x.shadowColor = 'transparent';
+  var r2 = r - 2 * k;
+  x.beginPath(); x.moveTo(m, m - r2); x.lineTo(m + r2, m); x.lineTo(m, m + r2); x.lineTo(m - r2, m); x.closePath();
+  x.fillStyle = '#ffc107'; x.fill();
+  // flecha curva
+  var s = lado === 'izquierda' ? -1 : 1;
+  x.strokeStyle = '#111'; x.lineWidth = 2.6 * k; x.lineCap = 'round'; x.lineJoin = 'round';
+  x.beginPath(); x.moveTo(m - s * 1 * k, m + 7 * k); x.lineTo(m - s * 1 * k, m + 1 * k);
+  x.quadraticCurveTo(m - s * 1 * k, m - 4 * k, m + s * 4 * k, m - 4 * k); x.stroke();
+  x.fillStyle = '#111'; x.beginPath();
+  x.moveTo(m + s * 7.5 * k, m - 4 * k); x.lineTo(m + s * 3.5 * k, m - 7.5 * k); x.lineTo(m + s * 3.5 * k, m - 0.5 * k); x.closePath(); x.fill();
+  return { width: t, height: t, data: new Uint8Array(x.getImageData(0, 0, t, t).data.buffer) };
+}
+function ponerCurvasEnMapa(r) {
+  ponerDatos('curvas', (r && r.curvas || []).map(function (c, i) {
+    return { type: 'Feature', geometry: { type: 'Point', coordinates: [c.p[1], c.p[0]] },
+             properties: { k: 'cv', i: i, ic: 'ic-curva-' + (c.lado === 'izquierda' ? 'izq' : 'der') } };
+  }));
+}
+function abrirCartelCurva(i) {
+  var r = ruta.linea || (nav.activo && nav.r), c = r && r.curvas && r.curvas[i];
+  if (!c) return;
+  abrirCartel(c.latlng, '<div class="cartel-tipo">⚠️ ' + (c.ese ? 'Curvas peligrosas (en S)' : 'Curva peligrosa a la ' + c.lado) + '</div>' +
+    '<div class="cartel-valor">Bajá a ' + c.vel + ' km/h</div>' +
+    '<div class="cartel-linea">Gira ' + c.angulo + '° (radio de unos ' + c.radio + ' m). Frená antes de entrar, no adentro de la curva.</div>' +
+    '<div class="cartel-fuente">Calculado con la forma del camino: es una ayuda, mirá siempre los carteles de la ruta.</div>');
+}
+
 // ===== v105: lo ya recorrido en otro color (pedido del chofer, 24/11/2026: "lo que ya recorrí ponelo en otro color").
 // La línea azul queda gris desde la salida hasta el camión. Se hace con 'line-gradient' (un corte en 'line-progress'):
 // no hay que rearmar la línea en cada lectura del GPS (en viajes de 1.000 km sería pesado). MapLibre mide line-progress
@@ -7328,7 +7487,7 @@ function actualizarTablero(recorrido, prox) {
     });
     var pel = nav.avisos.filter(function (a) { return a.dist > recorrido + 50; }).sort(function (a, b) { return a.dist - b.dist; })[0];
     if (pel) items.push({ icono: pel.icono ? pel.icono.trim() : pel.rojo ? '⛔' : '⚠️', km: (pel.dist - recorrido) / 1000,
-                          nombre: /^ctl/.test(String(pel.n)) ? 'Control' : pel.tren ? 'Tren' : pel.rojo ? 'No pasás' : 'Ojo', buscar: 'peligros',
+                          nombre: /^ctl/.test(String(pel.n)) ? 'Control' : pel.tren ? 'Tren' : pel.curva ? 'Curva' : pel.rojo ? 'No pasás' : 'Ojo', buscar: 'peligros',
                           clase: pel.rojo ? 'rojo' : /^ctl/.test(String(pel.n)) ? 'control' : 'ojo' });
     var html = items.map(function (it) {
       return '<button type="button" class="np ' + it.clase + '" data-buscar="' + it.buscar + '"><b>' + it.icono + '</b>' +
@@ -7736,8 +7895,14 @@ if (document.getElementById('nav-cartel')) {
   }
   var selMotor = document.getElementById('voz-motor');
   if (selMotor) {
-    selMotor.value = voz.motor;
-    selMotor.addEventListener('change', function () { voz.motor = selMotor.value; guardar('mapa-camiones:voz-motor', voz.motor); });
+    // v108: una sola lista: Elena / Tomás / Daniela (grabadas) o la del teléfono
+    selMotor.value = voz.motor === 'telefono' ? 'telefono' : voz.grabada;
+    selMotor.addEventListener('change', function () {
+      if (selMotor.value === 'telefono') voz.motor = 'telefono';
+      else { voz.motor = 'grabada'; voz.grabada = selMotor.value; guardar('mapa-camiones:voz-grabada', voz.grabada); }
+      guardar('mapa-camiones:voz-motor', voz.motor);
+      probarVoz();   // que la escuche enseguida
+    });
   }
   document.getElementById('cerrar-ayuda').addEventListener('click', function () { abrir(false); });
   ventanaAyuda.addEventListener('click', function (ev) { if (ev.target === ventanaAyuda) abrir(false); });
@@ -7795,7 +7960,7 @@ gl.on('click', function (e) {
     if (!op.length) op = buscar(['ruta-alt'], 10);
     if (op.length && ruta.opciones[+op[0].properties.i]) { mostrarRuta(+op[0].properties.i, true); return; }
   }
-  var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos', 'peajes-icono', 'trenes'], 18);
+  var iconos = buscar(['reportes', 'controles', 'radares', 'radares-lejos', 'lugares', 'lugares-lejos', 'peajes-icono', 'trenes', 'curvas'], 18);
   if (iconos.length) {
     // el más cercano al dedo (antes ganaba siempre el control o el reporte aunque el lugar estuviera más cerca)
     var lejos = function (f) {
@@ -7806,6 +7971,7 @@ gl.on('click', function (e) {
     var q = iconos[0].properties;
     if (q.k === 'p') abrirCartelPeaje(q.i);   // v103
     else if (q.k === 't') abrirCartelTren(q.i);   // v105
+    else if (q.k === 'cv') abrirCartelCurva(q.i);   // v108
     else if (q.k === 'l' && lugarPorId[q.id]) abrirCartelLugar(lugarPorId[q.id]);
     else if (q.k === 'c' && controles.lista[q.i]) abrirCartelControl(controles.lista[q.i]);
     else if (q.k === 'r' && reportePorId[q.id]) abrirCartel(reportePorId[q.id].getLatLng(), armarCartelReporte(reportePorId[q.id].feature.properties));

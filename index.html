@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
         integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="">
-  <link rel="stylesheet" href="css/estilos.css?v=107">
+  <link rel="stylesheet" href="css/estilos.css?v=108">
 </head>
 <body>
   <main id="mapa" aria-label="Mapa"></main>
@@ -44,8 +44,10 @@
     <button id="btn-probar-voz" class="boton-chico boton-ancho boton-voz" type="button">🔊 Probar la voz</button>
     <label class="voz-motor" for="voz-motor">Voz al navegar
       <select id="voz-motor">
-        <option value="grabada">Grabada: suena con el iPhone en silencio</option>
-        <option value="telefono">Del teléfono: dice los nombres de las calles</option>
+        <option value="elena">Elena (mujer, natural)</option>
+        <option value="tomas">Tomás (hombre, natural)</option>
+        <option value="daniela">Daniela (la de antes)</option>
+        <option value="telefono">La del teléfono: dice los nombres de las calles</option>
       </select>
     </label>
     <label class="voz-motor" for="mapa-noche">Mapa de noche
@@ -126,7 +128,8 @@
       <p>Tocá la marca y usá <b>📣 Reportar un problema</b>, o dejá el dedo apretado en el lugar.</p>
       <p class="ayuda-aviso">Los datos salen de OpenStreetMap, ordenanzas y TomTom, y pueden estar incompletos:
         que no haya nada rojo no quiere decir que se pueda pasar. <b>Respetá siempre la señalización.</b></p>
-      <p class="ayuda-credito">Voz al navegar: “Daniela”, de <a href="https://github.com/rhasspy/piper" target="_blank" rel="noopener">Piper</a>,
+      <p class="ayuda-credito">Voces al navegar: “Elena” y “Tomás”, voces argentinas de Microsoft (grabadas una vez y guardadas en la
+        página); “Daniela”, de <a href="https://github.com/rhasspy/piper" target="_blank" rel="noopener">Piper</a>,
         con datos de <a href="https://www.openslr.org/61/" target="_blank" rel="noopener">OpenSLR 61</a>
         (<a href="https://creativecommons.org/licenses/by-sa/4.0/deed.es" target="_blank" rel="noopener">CC BY-SA 4.0</a>).</p>
     </section>
@@ -199,6 +202,6 @@
   <!-- MapLibre dibuja todo el mapa (como Google Maps) -->
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
           integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin=""></script>
-  <script src="js/app.js?v=107"></script>
+  <script src="js/app.js?v=108"></script>
 </body>
 </html>

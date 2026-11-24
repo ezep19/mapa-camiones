@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 113;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 114;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1028,6 +1028,7 @@ fetch('datos/pais-lugares.json', { cache: 'no-cache' })
 function agregarLugar(f) {
   var k = f.properties.osm, g = gruposLugares[f.properties.tipo];
   if (!g || (k && lugarVisto[k])) return false;
+  if (lugarCerrado(f)) return false;   // v114: un chofer avisó que ya no está
   if (k) lugarVisto[k] = true;
   g.addData(f);
   cantidadesLugares[f.properties.tipo]++;
@@ -1054,6 +1055,58 @@ function cargarLugaresVista() {
   var lim = mapa.getBounds().pad(0.2);
   paisLugares.celdas.forEach(function (c) { if (L.latLngBounds(c.limites).intersects(lim)) cargarCeldaLugares(c); });
 }
+
+// ===== v114: CORRECCIONES DE LOS CHOFERES (pedido del chofer, 24/11/2026: un McDonald's de Güemes que cerró hace años
+// seguía en el mapa: "¿no podemos sacarlo nosotros?, agregar los que faltan y sacar lo que ya no está")
+// datos/correcciones_mapa.json (lo cargo a mano con lo que avisan los choferes): "sacar" esconde el negocio del mapa de
+// fondo (mismo nombre a menos de 60 m) y de los lugares útiles (por osm o nombre); "agregar" suma lugares útiles.
+// (Google Maps no se puede usar para comparar: sus condiciones prohíben copiar sus datos.)
+var correccionesMapa = { sacar: [], porOsm: {}, filtrosPoi: {} };
+function lugarCerrado(f) {
+  var p = f.properties;
+  if (p.osm && correccionesMapa.porOsm[p.osm]) return true;
+  if (!p.nombre || !correccionesMapa.sacar.length) return false;
+  var c = f.geometry.coordinates;
+  return correccionesMapa.sacar.some(function (x) {
+    return x.nombre && x.nombre.toLowerCase() === String(p.nombre).toLowerCase() && L.latLng(c[1], c[0]).distanceTo([x.lat, x.lon]) < 60;
+  });
+}
+// Filtro del mapa de fondo: los negocios (capas de "poi") con un nombre de la lista y cerca de ese lugar no se dibujan
+function cuadradoAlrededor(lat, lon, m) {
+  var dy = m / 110540, dx = m / (111320 * Math.cos(lat * Math.PI / 180));
+  return { type: 'Polygon', coordinates: [[[lon - dx, lat - dy], [lon + dx, lat - dy], [lon + dx, lat + dy], [lon - dx, lat + dy], [lon - dx, lat - dy]]] };
+}
+function esconderCerradosEnFondo() {
+  if (!correccionesMapa.sacar.length || !gl.isStyleLoaded || !gl.getStyle()) return;
+  var cerrado = ['any'].concat(correccionesMapa.sacar.filter(function (x) { return x.nombre; }).map(function (x) {
+    return ['all', ['==', ['get', 'name'], x.nombre], ['within', cuadradoAlrededor(x.lat, x.lon, 60)]];
+  }));
+  if (cerrado.length < 2) return;
+  (gl.getStyle().layers || []).forEach(function (l) {
+    if (l['source-layer'] !== 'poi' || l.type !== 'symbol') return;
+    if (!(l.id in correccionesMapa.filtrosPoi)) correccionesMapa.filtrosPoi[l.id] = l.filter || null;
+    var base = correccionesMapa.filtrosPoi[l.id];
+    try { gl.setFilter(l.id, base ? ['all', base, ['!', cerrado]] : ['!', cerrado]); } catch (e) { console.warn('filtro', l.id, e); }
+  });
+}
+// cada vez que cambia el estilo (día / noche) los filtros vuelven a ser los originales
+gl.on('style.load', function () { correccionesMapa.filtrosPoi = {}; esconderCerradosEnFondo(); });
+bajarJSON('correcciones_mapa.json').then(function (d) {
+  correccionesMapa.sacar = d.sacar || [];
+  correccionesMapa.sacar.forEach(function (x) { if (x.osm) correccionesMapa.porOsm[x.osm] = x; });
+  esconderCerradosEnFondo();
+  // los lugares útiles que ya estaban cargados y cerraron
+  var cambio = false;
+  Object.keys(gruposLugares).forEach(function (t) {
+    gruposLugares[t].eachLayer(function (l) { if (lugarCerrado(l.feature)) { gruposLugares[t].removeLayer(l); cantidadesLugares[t]--; cambio = true; } });
+  });
+  (d.agregar || []).forEach(function (x, i) {
+    if (agregarLugar({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] },
+        properties: Object.assign({ capa: 'lugar', horario: null, telefono: null, camiones: null, extras: [],
+                                    direccion: null, chofer: true }, x, { osm: 'chofer/' + (x.id || i) }) })) cambio = true;
+  });
+  if (cambio) { mostrarLugares(); armarPanelLugares(); }
+});
 
 // ===== v112: PRECIO DEL GASOIL (pedido del chofer, 24/11/2026: "¿no podemos sacar datos de otros lados?")
 // datos/estaciones_precios.json (scripts/descargar_precios.py): lista oficial de la Secretaría de Energía (las estaciones
@@ -1902,7 +1955,7 @@ function armarCartelLugar(f, l) {
     html += '<div class="cartel-linea">Teléfono: <a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">' + esc(tel) + '</a></div>';
   }
 
-  if (!p.energia) html += '<div class="cartel-mas" data-osm="' + esc(p.osm) + '"><div class="cartel-fuente">Buscando más datos...</div></div>';
+  if (!p.energia && !p.chofer) html += '<div class="cartel-mas" data-osm="' + esc(p.osm) + '"><div class="cartel-fuente">Buscando más datos...</div></div>';
   if (l) html += armarCercania(l);
 
   var c = f.geometry.coordinates;   // [longitud, latitud]
@@ -1913,6 +1966,7 @@ function armarCartelLugar(f, l) {
           encodeURIComponent(p.nombre || tipo.uno) + '/@' + c[1] + ',' + c[0] + ',17z">Ver fotos y opiniones (Google)</a>';
   html += '<div class="cartel-fuente">Google Maps no conoce las restricciones para camiones: mirá este mapa antes de salir.</div>';
   if (p.energia) html += '<div class="cartel-fuente">Fuente: lista oficial de estaciones de la Secretaría de Energía (no está en OpenStreetMap)</div>';
+  else if (p.chofer) html += '<div class="cartel-fuente">Lo agregó un chofer' + (p.fecha ? ' (' + esc(p.fecha) + ')' : '') + '</div>';
   else html += '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
           '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
   return html;

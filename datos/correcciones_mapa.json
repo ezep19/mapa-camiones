@@ -1,0 +1,9 @@
+{
+  "actualizado": "2026-11-24",
+  "nota": "Correcciones al mapa que avisan los choferes (comprobadas). sacar: se esconde del mapa de fondo (por nombre, a menos de 60 m) y de los lugares útiles (por osm o por nombre). agregar: lugares útiles que faltan (tipo: gomeria, taller, combustible, parador, estacionamiento, balanza, duchas).",
+  "sacar": [
+    { "nombre": "McDonald's", "lat": -38.0152009, "lon": -57.5415598, "osm": "node/1236939727",
+      "motivo": "Cerró hace años (aviso del chofer, 24/11/2026). Güemes y Castelli, Mar del Plata." }
+  ],
+  "agregar": []
+}

@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 112;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 113;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3430,6 +3430,7 @@ function calcularRuta() {
   }
   salida.innerHTML = '<p class="ruta-cargando">Buscando caminos para tu camión...</p>';
   modoResultado(true);
+  ocultarSeguirViaje();   // v113
   var numero = ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;
   var desde = ruta.desde.latlng, hasta = ruta.hasta.latlng;
   var largo = desde.distanceTo(hasta) / 1000 > VIAJE_LARGO_KM;
@@ -4517,6 +4518,7 @@ function anularRutaCalculada() {
 
 function borrarRuta() {
   ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;   // un cálculo que todavía no terminó ya no se muestra
+  borrarViajeGuardado();   // v113
   quitarLineasRuta();
   ruta.opciones = null;
   ruta.paradas.slice().forEach(function (c) { sacarParada(c, true); });
@@ -5143,6 +5145,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   ponerLetrasRuta(nav.activo ? null : opciones, indice);   // v107
   ruta.linea = r;
   document.getElementById('borrar-ruta').hidden = false;
+  if (!nav.activo) guardarViajeLuego(r, false);   // v113
 
   var avisos = r.avisos || [];
   var sinRevisar = r.sinRevisar && r.sinRevisar.length;
@@ -6151,6 +6154,8 @@ function empezarNavegacion(rutaElegida) {
   });
   if (r.clima) agregarClimaANav(r);   // v89: viento, lluvia, niebla... (si el pronóstico ya llegó)
   nav.idx = 0; nav.dichos = {}; nav.fuera = 0; nav.posAnterior = null; nav.activo = true; nav.recalculando = false; nav.primera = true;
+  guardarViajeLuego(r, true);   // v113: si el iPhone recarga la página, el viaje se puede seguir
+  ocultarSeguirViaje();
   nav.primeraCamara = !ruta.esRecalculo;
   if (!ruta.esRecalculo) nav.ultimaVuelta = null;
   nav.recorrido = 0;
@@ -6212,6 +6217,8 @@ function empezarNavegacion(rutaElegida) {
 function terminarNavegacion(mensaje) {
   volverACentrar(false);
   nav.activo = false;
+  clearTimeout(VIAJE_GUARDADO.timer);
+  marcarViajeNavegando(false);   // v113
   ponerTerreno(null);   // v98
   gl.easeTo({ bearing: 0, pitch: 0, duration: 600 });   // al terminar: mapa derecho y el norte arriba
   pararCamion();
@@ -6237,6 +6244,187 @@ function terminarNavegacion(mensaje) {
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   if (mensaje) { mostrarMensaje(mensaje); setTimeout(ocultarMensaje, 6000); }
 }
+
+// ===== v113: EL VIAJE NO SE PIERDE SI LA PÁGINA SE RECARGA =====
+// En el iPhone, al ir a otra app (WhatsApp) Safari a veces recarga la página y se perdía la ruta: había que buscar el
+// destino otra vez y, sin señal, no se podía. Ahora la ruta elegida (puntos, indicaciones, paradas) queda guardada en el
+// teléfono y al abrir aparece "▶ Seguir el viaje a X". No arranca sola: el toque hace falta para que el iPhone deje
+// hablar a la voz y mantener la pantalla prendida. Se borra al llegar, al cancelar la ruta y a las 24 h.
+var VIAJE_GUARDADO = { clave: 'mapa-camiones:viaje', cache: 'mapa-camiones-viaje-actual', url: 'viaje-actual.json',
+                       horas: 24, timer: 0, ultimoT: 0 };
+function datosDelViaje(r, navegando) {
+  var lugar = function (x) { return x && x.latlng ? { lat: +L.latLng(x.latlng).lat.toFixed(6), lng: +L.latLng(x.latlng).lng.toFixed(6),
+                                                       nombre: x.nombre, pasada: !!x.pasada } : null; };
+  var tierraR = [];
+  try { tierraR = tramosDeTierra(r.puntos).map(function (x) { return [x.i0, x.i1]; }); } catch (e) { /* sin tierra */ }
+  return {
+    t: Date.now(), navegando: !!navegando, desde: lugar(ruta.desde), hasta: lugar(ruta.hasta),
+    paradas: ruta.paradas.map(function (c) { return lugar(ruta[c]); }).filter(Boolean),
+    r: { puntos: r.puntos, pasos: r.pasos, km: r.km, segundos: r.segundos, servicio: r.servicio, vueltas: r.vueltas || 0,
+         kmChicas: r.kmChicas == null ? null : r.kmChicas, esquivados: r.esquivados || 0, largo: !!r.largo, tierra: tierraR }
+  };
+}
+// Se guarda un momento después (mostrarRuta se llama varias veces seguidas)
+function guardarViajeLuego(r, navegando) {
+  clearTimeout(VIAJE_GUARDADO.timer);
+  VIAJE_GUARDADO.timer = setTimeout(function () {
+    if (!ruta.hasta || !r || !r.puntos) return;
+    var d;
+    try { d = datosDelViaje(r, navegando); } catch (e) { console.warn('No pude guardar el viaje', e); return; }
+    var texto = JSON.stringify(d);
+    var marca = { t: d.t, navegando: d.navegando, nombre: d.hasta ? d.hasta.nombre : '', km: r.km, segundos: r.segundos };
+    VIAJE_GUARDADO.ultimoT = d.t;
+    // la ruta entera (puede pesar 1 MB) va al almacenamiento grande; en localStorage solo la marca chiquita
+    var enCache = window.caches ? caches.open(VIAJE_GUARDADO.cache).then(function (c) {
+      return c.put(VIAJE_GUARDADO.url, new Response(texto, { headers: { 'Content-Type': 'application/json' } }));
+    }).then(function () { marca.donde = 'cache'; }) : Promise.reject();
+    enCache.catch(function () {
+      try { localStorage.setItem(VIAJE_GUARDADO.clave + '-ruta', texto); marca.donde = 'local'; } catch (e) { marca.donde = null; }
+    }).then(function () { if (marca.donde) guardar(VIAJE_GUARDADO.clave, marca); });
+  }, 400);
+}
+function marcarViajeNavegando(si) {
+  var m = leerGuardado(VIAJE_GUARDADO.clave);
+  if (m) { m.navegando = !!si; m.t = Date.now(); guardar(VIAJE_GUARDADO.clave, m); }
+}
+function borrarViajeGuardado() {
+  clearTimeout(VIAJE_GUARDADO.timer);
+  try { localStorage.removeItem(VIAJE_GUARDADO.clave); localStorage.removeItem(VIAJE_GUARDADO.clave + '-ruta'); } catch (e) { /* nada */ }
+  if (window.caches) caches.delete(VIAJE_GUARDADO.cache).catch(function () {});
+  ocultarSeguirViaje();
+}
+// Navegando: cada 5 min se renueva la hora de la marca (un viaje largo no "vence" mientras se maneja)
+setInterval(function () { if (nav.activo && ruta.hasta) marcarViajeNavegando(true); }, 5 * 60 * 1000);
+
+function leerViajeGuardado(marca) {
+  if (marca.donde === 'local') {
+    try { return Promise.resolve(JSON.parse(localStorage.getItem(VIAJE_GUARDADO.clave + '-ruta'))); } catch (e) { return Promise.resolve(null); }
+  }
+  if (!window.caches) return Promise.resolve(null);
+  return caches.open(VIAJE_GUARDADO.cache).then(function (c) { return c.match(VIAJE_GUARDADO.url); })
+    .then(function (resp) { return resp ? resp.json() : null; }).catch(function () { return null; });
+}
+function ocultarSeguirViaje() {
+  var b = document.getElementById('seguir-viaje');
+  if (b) b.remove();
+}
+// Al abrir la página: si quedó un viaje guardado (de menos de 24 h), el botón para seguirlo
+function ofrecerSeguirViaje() {
+  var m = leerGuardado(VIAJE_GUARDADO.clave);
+  if (!m || !m.t || Date.now() - m.t > VIAJE_GUARDADO.horas * 3600000) { if (m) borrarViajeGuardado(); return; }
+  var caja = document.createElement('div');
+  caja.id = 'seguir-viaje';
+  caja.className = 'seguir-viaje';
+  caja.innerHTML = '<button type="button" class="seguir-viaje-ir">' +
+    '<span class="seguir-viaje-titulo">▶ ' + (m.navegando ? 'Seguir el viaje' : 'Volver a la ruta') + '</span>' +
+    '<span class="seguir-viaje-destino">a ' + esc(m.nombre || 'tu destino') + '</span></button>' +
+    '<button type="button" class="seguir-viaje-no" aria-label="No, borrar ese viaje">✕</button>';
+  document.body.appendChild(caja);
+  caja.querySelector('.seguir-viaje-no').addEventListener('click', function () {
+    borrarViajeGuardado();
+    mostrarMensaje('Listo, borré ese viaje.');
+    setTimeout(ocultarMensaje, 2500);
+  });
+  caja.querySelector('.seguir-viaje-ir').addEventListener('click', function () {
+    // con el toque: el iPhone deja sonar la voz y mantener la pantalla prendida (después ya no hay "toque")
+    if (m.navegando) {
+      if (nav.voz) pitido();
+      pedirPantallaPrendida();
+    }
+    caja.querySelector('.seguir-viaje-titulo').textContent = 'Cargando el viaje...';
+    caja.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+    seguirViajeGuardado(m).then(function (ok) {
+      ocultarSeguirViaje();
+      if (!ok) {
+        borrarViajeGuardado();
+        mostrarMensaje('No pude recuperar el viaje. Buscá el destino de nuevo en "¿A dónde vas?".', true);
+        setTimeout(ocultarMensaje, 7000);
+      }
+    });
+  });
+}
+// Espera a que esté la lista de zonas (hace falta para revisar la ruta); sin ella sigue igual a los 20 s
+function esperarZonas() {
+  return new Promise(function (listo) {
+    var inicio = Date.now();
+    (function mirar() {
+      if (zonasIndice.length || Date.now() - inicio > 20000) listo();
+      else setTimeout(mirar, 200);
+    })();
+  });
+}
+function seguirViajeGuardado(marca) {
+  return Promise.all([leerViajeGuardado(marca), esperarZonas()]).then(function (res) {
+    var d = res[0];
+    if (!d || !d.r || !d.r.puntos || d.r.puntos.length < 2 || !d.hasta) return false;
+    if (!camion) { abrirVentanaCamion(); }
+    // los puntos del viaje, como estaban (sin calcular de nuevo)
+    ruta.numeroCalculo = (ruta.numeroCalculo || 0) + 1;
+    ruta.paradas.slice().forEach(function (c) { sacarParada(c, true); });
+    if (d.desde) ponerPunto('desde', [d.desde.lat, d.desde.lng], d.desde.nombre);
+    ponerPunto('hasta', [d.hasta.lat, d.hasta.lng], d.hasta.nombre);
+    (d.paradas || []).forEach(function (p) {
+      var id = agregarParada(true);
+      if (!id) return;
+      ponerPunto(id, [p.lat, p.lng], p.nombre);
+      ruta[id].pasada = !!p.pasada;
+    });
+    var input = document.getElementById('ruta-hasta');
+    if (input) input.value = d.hasta.nombre;
+    var c = d.r;
+    if (c.tierra && c.tierra.length) anotarTierra(c.puntos, c.tierra);
+    delete c.tierra;
+    decidirEvitarCapital(L.latLng(c.puntos[0]), L.latLng(d.hasta.lat, d.hasta.lng), paradasElegidas());
+    // las restricciones del camino (si no hay señal, las que el teléfono ya tenía guardadas) y se revisa de nuevo
+    var listas = [c.puntos];
+    var cargar = function (f) { return Promise.resolve().then(function () { return f(listas); }).catch(function (e) { console.warn(e); }); };
+    return Promise.all([cargar(cargarZonasEnRutas), cargar(cargarPaisEnRutas), cargar(cargarCortesEn)]).then(function () {
+      c.avisos = revisarRuta(c.puntos, c.pasos);
+      c.rojos = c.avisos.filter(function (x) { return x.rojo; }).length;
+      c.sinRevisar = zonasSinCargarEnRutas(listas);
+      ruta.opciones = [c];
+      abrirPanelRuta(true);
+      modoResultado(true);
+      document.getElementById('ruta-resultado').hidden = false;
+      mostrarRuta(0, marca.navegando);
+      if (marca.navegando) empezarNavegacion();
+      return true;
+    });
+  }).catch(function (e) { console.error(e); return false; });
+}
+setTimeout(ofrecerSeguirViaje, 600);
+
+// v113: en el iPhone, abierta desde Safari, la barra de Safari ocupa lugar y Safari recarga más seguido la página.
+// Agregada a la pantalla de inicio se abre como una app (pantalla completa). El iPhone no tiene un botón para
+// instalar, así que se explican los pasos UNA vez (no navegando ni con otra cosa abierta).
+var CLAVE_AVISO_INICIO = 'mapa-camiones:aviso-inicio';
+function esIphoneEnSafari() {
+  var ua = navigator.userAgent || '';
+  var ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  return ios && !navigator.standalone && !window.matchMedia('(display-mode: standalone)').matches && !navegadorDeApp() &&
+         !/CriOS|FxiOS|EdgiOS/.test(ua);
+}
+function ofrecerPantallaInicio(intento) {
+  if (!esIphoneEnSafari() || leerGuardado(CLAVE_AVISO_INICIO)) return;
+  var ocupado = nav.activo || document.getElementById('seguir-viaje') || (panelRuta && !panelRuta.hidden) ||
+                document.querySelector('.maplibregl-popup') || !camion || !panel.hidden ||
+                !document.getElementById('ventana-camion') || !document.getElementById('ventana-camion').hidden;
+  if (ocupado) { if ((intento || 0) < 20) setTimeout(function () { ofrecerPantallaInicio((intento || 0) + 1); }, 30000); return; }
+  var caja = document.createElement('div');
+  caja.id = 'aviso-inicio';
+  caja.className = 'aviso-inicio';
+  caja.innerHTML = '<b>📲 Usala como una app</b>' +
+    '<p>Se ve en pantalla completa, sin la barra de Safari: más lugar para el mapa.</p>' +
+    '<ol><li>Tocá <b>Compartir</b> <span class="aviso-inicio-icono">⬆</span> (en algunos iPhone está adentro de los tres puntitos <b>···</b>).</li>' +
+    '<li>Elegí <b>Agregar a inicio</b> y después <b>Agregar</b>.</li>' +
+    '<li>Abrila desde el ícono <b>Camiones</b> de tu pantalla.</li></ol>' +
+    '<p class="aviso-inicio-chico">La primera vez puede pedirte de nuevo las medidas del camión.</p>' +
+    '<button type="button">Entendido</button>';
+  document.body.appendChild(caja);
+  guardar(CLAVE_AVISO_INICIO, true);
+  caja.querySelector('button').addEventListener('click', function () { caja.remove(); });
+}
+setTimeout(ofrecerPantallaInicio, 20000);
 
 function pedirPantallaPrendida() {
   if (!('wakeLock' in navigator) || nav.wake) return;

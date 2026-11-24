@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v11';
+var VERSION = 'v12';
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;
 var CACHE_TILES = 'mapa-camiones-tiles';
 var MAX_TILES = 1500;
@@ -78,8 +78,16 @@ function primeroInternet(pedido) {
     }).catch(function () {
       guardado(pedido).then(function (r) { dar(r || Response.error()); });
     });
-    setTimeout(function () { guardado(pedido).then(dar); }, 6000);
+    // v113: 4 s (antes 6): con poca señal en la ruta la página tardaba mucho en abrir
+    setTimeout(function () { guardado(pedido).then(dar); }, 4000);
   });
+}
+
+// v113: el código y los estilos llevan su versión en la dirección (app.js?v=113): si ya está guardada ESA versión
+// exacta, se usa sin preguntar a internet (abre al instante con poca señal). Una versión nueva tiene otra dirección,
+// así que se baja sola. Si no está guardada, como siempre (primero internet).
+function versionGuardada(pedido) {
+  return caches.match(pedido).then(function (r) { return r || primeroInternet(pedido); });
 }
 
 // Igual que primeroInternet pero para otro dominio (estilo del mapa de fondo): se guarda aparte de la página
@@ -157,5 +165,8 @@ self.addEventListener('fetch', function (ev) {
   if (url.hostname === 'unpkg.com') { ev.respondWith(primeroGuardado(pedido, CACHE_APP)); return; }
   if (url.origin !== self.location.origin) return;   // rutas, buscador, Google: siempre por internet
   if (/\/iconos\//.test(url.pathname)) { ev.respondWith(primeroGuardado(pedido, CACHE_APP)); return; }
+  if (/\.(js|css)$/.test(url.pathname) && url.searchParams.has('v') && !/\/sw\.js$/.test(url.pathname)) {
+    ev.respondWith(versionGuardada(pedido)); return;
+  }
   ev.respondWith(primeroInternet(pedido));
 });

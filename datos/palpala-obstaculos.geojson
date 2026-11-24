@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","zona":"Palpalá","actualizado":"2026-11-24","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-65.188627,-24.251255]},"properties":{"capa":"barrera","titulo":"Portón","limite":null,"limite_texto":null,"calle":null,"detalle":null,"fuente":"OpenStreetMap","osm":"node/13650164854","bloquea":true}}]}

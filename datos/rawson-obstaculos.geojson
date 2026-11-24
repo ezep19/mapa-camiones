@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","zona":"Rawson (Chubut)","actualizado":"2026-11-24","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-65.028473,-43.194645]},"properties":{"capa":"barrera","titulo":"Portón","limite":null,"limite_texto":null,"calle":null,"detalle":null,"fuente":"OpenStreetMap","osm":"node/5967763855","bloquea":false}}]}

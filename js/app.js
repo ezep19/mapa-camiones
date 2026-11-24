@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 118;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 119;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -464,6 +464,28 @@ function crearBotonMapa(clase, etiqueta, html, alTocar) {
   controlesMapa.appendChild(b);
   return b;
 }
+
+// v119: botón de día / noche (pedido del chofer, 24/11/2026: "un botón para poner modo noche y día cuando yo quiera").
+// Muestra a qué se pasa: de día una luna, de noche un sol. Al tocarlo queda fijo (claro u oscuro); "Automático" sigue en
+// Qué mostrar → Mapa de noche.
+var botonDiaNoche = crearBotonMapa('boton-dia-noche', 'Cambiar a mapa de noche', '', function () {
+  modoNoche = esDeNoche() ? 'claro' : 'oscuro';
+  try { localStorage.setItem(CLAVE_NOCHE, JSON.stringify(modoNoche)); } catch (e) { /* sin lugar: no se recuerda */ }
+  var sel = document.getElementById('mapa-noche');
+  if (sel) sel.value = modoNoche;
+  revisarNoche();
+  ponerBotonDiaNoche();
+  mostrarMensaje(modoNoche === 'oscuro' ? '🌙 Mapa de noche.' : '☀️ Mapa de día.');
+  setTimeout(ocultarMensaje, 2000);
+});
+function ponerBotonDiaNoche() {
+  var noche = esDeNoche();
+  botonDiaNoche.innerHTML = '<span aria-hidden="true">' + (noche ? '☀️' : '🌙') + '</span>';
+  botonDiaNoche.title = noche ? 'Cambiar a mapa de día' : 'Cambiar a mapa de noche';
+  botonDiaNoche.setAttribute('aria-label', botonDiaNoche.title);
+}
+ponerBotonDiaNoche();
+setInterval(ponerBotonDiaNoche, 60 * 1000);   // en "automático" cambia solo al salir o ponerse el sol
 
 // Girar el mapa de a poco hasta un ángulo (0 = norte arriba; positivo = girado a la derecha, como antes)
 function girarA(destino) { gl.easeTo({ bearing: -destino, duration: 350 }); }
@@ -8346,6 +8368,7 @@ if (document.getElementById('nav-cartel')) {
       modoNoche = selNoche.value;
       try { localStorage.setItem(CLAVE_NOCHE, JSON.stringify(modoNoche)); } catch (e) { /* sin lugar: no se recuerda */ }
       revisarNoche();
+      ponerBotonDiaNoche();
     });
   }
   var selMotor = document.getElementById('voz-motor');

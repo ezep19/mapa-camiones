@@ -1590,3 +1590,11 @@ body.navegando .seguir-viaje { display: none; }
   width: 100%; min-height: 50px; margin-top: 6px; border: 0; border-radius: 14px; font: inherit; font-weight: 700;
   font-size: 17px; color: #fff; background: linear-gradient(180deg, #2a7bff, #1668f2); cursor: pointer;
 }
+
+/* v119: botón de día / noche (arriba de la brújula) */
+.boton-dia-noche {
+  width: 48px; height: 48px; margin: 0 16px 12px 0; border: 0; border-radius: 50%; background: #fff;
+  box-shadow: var(--sombra, 0 2px 10px rgba(0,0,0,.3)); font-size: 22px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+body.mapa-noche .boton-dia-noche { background: #243042; }

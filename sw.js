@@ -7,7 +7,7 @@
    - Rutas, buscador, formularios: siempre por internet (no se guardan). */
 'use strict';
 
-var VERSION = 'v13';
+var VERSION = 'v14';   // v14: ícono nuevo (los íconos se guardan y no se vuelven a pedir)
 var CACHE_APP = 'mapa-camiones-app-' + VERSION;   // la página: index, código, estilos, bibliotecas, íconos
 // v13: los datos y la voz van en cachés SIN versión: antes estaban en el de la página y se borraban enteros con cada
 // versión nueva del service worker (se perdían las ciudades y la voz guardadas para usar sin señal)

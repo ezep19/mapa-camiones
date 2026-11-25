@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 126;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 127;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -829,6 +829,8 @@ function evaluar(p) {
   if (p.capa === 'prohibido') {
     // ordenanzas como "prohibido camiones de más de 6 t": un camión liviano sí puede pasar
     if (p.peso_desde && camion && camion.peso <= p.peso_desde) return { estado: 'si', norma: true };
+    // v127: no prohíbe pasar: avisa que ahí hay horarios o permiso para cargar y descargar (amarillo, no se esquiva)
+    if (p.solo_aviso) return { estado: 'sin_dato', norma: true, soloAviso: true };
     if (p.horario && !enHorario(p.horario)) return { estado: 'sin_dato', norma: true, fueraDeHorario: true };
     // zonas imposibles para camiones largos (semis): con uno corto no es rojo, pero hay que verificar
     if (p.largo_desde && camion && camion.largo <= p.largo_desde) return { estado: 'sin_dato', norma: true };
@@ -1794,6 +1796,9 @@ function veredicto(p) {
   if (p.capa === 'prohibido' && e.estado === 'si') {
     titulo = 'PASÁS';
     nota = 'La prohibición es para camiones de más de ' + toneladas(p.peso_desde) + ' y el tuyo pesa ' + toneladas(camion.peso) + '.';
+  } else if (p.capa === 'prohibido' && e.soloAviso) {   // v127
+    titulo = 'PODÉS PASAR, pero ojo: zona con horarios y permiso';
+    nota = 'Para cargar o descargar acá hay horarios y, según el peso, permiso municipal. Mirá el detalle abajo.';
   } else if (p.capa === 'prohibido' && e.fueraDeHorario) {
     titulo = 'AHORA PODÉS PASAR, pero ojo con el horario';
     nota = 'Prohibido para camiones grandes ' + (horarioDe(p) || {}).texto + '. Fijate a qué hora vas a pasar.';

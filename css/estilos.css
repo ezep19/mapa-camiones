@@ -1641,3 +1641,21 @@ body.mapa-noche .boton-dia-noche { background: #243042; }
   font-weight: 700; padding: 5px 8px; min-height: 36px; max-width: 60%; cursor: pointer;
 }
 .ruta-salida span { margin-left: auto; font-weight: 700; color: #1b2330; white-space: nowrap; }
+
+/* v126: lugares guardados (favoritos) */
+.ruta-resultados li.con-extra { display: flex; align-items: stretch; background: #fff; border-bottom: 1px solid #edf0f4; }
+.ruta-resultados li.con-extra button.op { flex: 1 1 auto; min-width: 0; border-bottom: 0; }
+.ruta-resultados li.con-extra button.op-extra {
+  flex: 0 0 48px; width: 48px; min-height: 52px; padding: 0; border: 0; border-left: 1px solid #edf0f4; background: #fff;
+  font-size: 20px; line-height: 1; color: #8a94a3; text-align: center; cursor: pointer;
+}
+.ruta-resultados li.con-extra button.op-extra:active { background: var(--primario-claro, #e8f0fe); }
+.hv-nombre { display: block; margin: 4px 0 12px; font-size: 14px; font-weight: 700; color: #5a6575; }
+.hv-nombre input {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 10px 12px; border: 1.5px solid #cfd8e6;
+  border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; color: #1b2330; background: #fff;
+}
+.hv-aviso.fav { background: #f1f5fb; color: #1b2330; }
+.maplibregl-popup-content button.cartel-boton-chico { margin-top: 6px; }
+/* v126: sin ubicación nueva hace más de 30 s: el punto (o el camión) en gris */
+.punto-ubicacion.viejo { filter: grayscale(1); opacity: 0.6; }

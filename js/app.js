@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 125;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 126;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -1355,7 +1355,11 @@ function ponerDatos(id, features) {
 
 var restrPorId = {};        // número -> capa de Leaflet (para el cartel)
 var pintura = { timer: null };
-function pedirRepintar() { if (!pintura.timer) pintura.timer = setTimeout(repintar, 60); }
+// v126: manejando se espera 2,5 s (los cortes en vivo y las zonas llegan de a pedazos: cada uno redibujaba todo; así se
+// juntan en un solo redibujo). Sin manejar, enseguida como antes.
+function pedirRepintar() {
+  if (!pintura.timer) pintura.timer = setTimeout(repintar, typeof nav !== 'undefined' && nav && nav.activo ? 2500 : 60);
+}
 // --- Zonas agrupadas (20/11/2026, pedido del chofer: "unirlas como la zona de Mar del Plata, que no haya tantas rayas") ---
 // Donde hay MUCHAS calles rojas juntas (ej. el microcentro de Buenos Aires), de lejos se dibuja una sola zona roja
 // clarita y se esconden esas rayas; de cerca (zoom de MapLibre 14,5 o más) desaparece la zona y se ven las calles
@@ -2214,6 +2218,10 @@ mapa.on('contextmenu', function (e) {
       });
     });
   }
+  var bFav = L.DomUtil.create('button', 'cartel-boton-chico', caja);   // v126
+  bFav.type = 'button';
+  bFav.textContent = '⭐ Guardar este lugar';
+  L.DomEvent.on(bFav, 'click', function () { mapa.closePopup(); ofrecerGuardarFavorito(e.latlng, ''); });
   var url = linkFormulario(e.latlng, null);
   if (url) {
     var aviso = L.DomUtil.create('div', 'cartel-linea', caja);
@@ -2969,9 +2977,21 @@ function circuloGeo(ll, radio) {
   return { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [pts] } };
 }
 
+// v126: si hace más de 30 s que no llega una ubicación (túnel, el teléfono cortó el GPS), el punto se pone gris: ya no es
+// "estás acá", es "estabas acá". Al tocar el botón de ubicación se vuelve a pedir.
+setInterval(function () {
+  if (!ubicacion.punto || !ubicacion.cuando) return;
+  var viejo = Date.now() - ubicacion.cuando > 30000;
+  if (viejo !== !!ubicacion.viejo) { ubicacion.viejo = viejo; ubicacion.punto.getElement().classList.toggle('viejo', viejo); }
+}, 5000);
 function tocarUbicacion() {
   if (ubicacion.ultima) {
     mapa.setView(ubicacion.ultima, Math.max(mapa.getZoom(), 16));
+    if (ubicacion.viejo && navigator.geolocation && window.isSecureContext) {
+      mapa.stopLocate();
+      mapa.locate({ watch: true, enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+      mostrarMensaje('Buscando tu ubicación otra vez...'); ocultarMensajeLuego(4000);
+    }
     return;
   }
   if (!navigator.geolocation) {
@@ -2993,6 +3013,7 @@ function tocarUbicacion() {
 mapa.on('locationfound', function (e) {
   var primera = !ubicacion.ultima;
   ubicacion.ultima = e.latlng;
+  ubicacion.cuando = Date.now();   // v126
   if (!ubicacion.punto) {
     var el = document.createElement('div');
     el.className = 'punto-ubicacion';
@@ -3191,10 +3212,77 @@ function guardarReciente(nombre, latlng) {
   lista.unshift({ nombre: nombre, lat: +ll.lat.toFixed(6), lng: +ll.lng.toFixed(6) });
   guardar(CLAVE_RECIENTES, lista.slice(0, 6));
 }
+// ===== v126: LUGARES GUARDADOS (el chofer va siempre a los mismos lugares: casa, la base, clientes, su parada). Se
+// guardan en el teléfono ("mapa-camiones:favoritos", hasta 20) y aparecen primeros al tocar "¿A dónde vas?".
+// Se guarda desde: la ☆ de un destino reciente, "☆ Guardar" en la tarjeta de la ruta, el dedo apretado en el mapa y el
+// cartel de un negocio. "Casa" y "Base" hay uno solo de cada uno (el nuevo reemplaza al anterior).
+var CLAVE_FAVORITOS = 'mapa-camiones:favoritos';
+var TIPOS_FAVORITO = [['casa', '🏠', 'Casa'], ['base', '🏭', 'Base'], ['cliente', '📦', 'Cliente'], ['parada', '⛽', 'Parada'],
+                      ['otro', '⭐', 'Otro lugar']];
+var favoritoPendiente = null;
+function leerFavoritos() {
+  return (leerGuardado(CLAVE_FAVORITOS) || []).filter(function (f) {
+    return f && f.nombre && typeof f.lat === 'number' && typeof f.lng === 'number';
+  });
+}
+function favoritoEn(ll) {
+  ll = L.latLng(ll);
+  return leerFavoritos().filter(function (f) { return ll.distanceTo([f.lat, f.lng]) < 40; })[0] || null;
+}
+function ofrecerGuardarFavorito(ll, nombre) {
+  ll = L.latLng(ll);
+  var lugar = nombre && !/^Mi ubicaci/.test(nombre) ? String(nombre) : '';
+  favoritoPendiente = { lat: +ll.lat.toFixed(6), lng: +ll.lng.toFixed(6), lugar: lugar };
+  abrirHoja('⭐ Guardar este lugar',
+    '<p class="hv-ayuda">Después lo elegís con un toque en <b>"¿A dónde vas?"</b>. Queda guardado en este teléfono.</p>' +
+    '<label class="hv-nombre">Nombre<input type="text" id="fav-nombre" maxlength="40" autocomplete="off" value="' +
+    esc(lugar.split(', ')[0]) + '" placeholder="Ej.: Depósito de Pérez"></label>' +
+    '<div class="hv-avisos">' + TIPOS_FAVORITO.map(function (t) {
+      return '<button type="button" class="hv-aviso fav" data-accion="favorito" data-valor="' + t[0] + '"><b>' + t[1] +
+             '</b><span>' + t[2] + '</span></button>';
+    }).join('') + '</div>', 'avisar');
+}
+function guardarFavorito(tipo) {
+  var t = TIPOS_FAVORITO.filter(function (x) { return x[0] === tipo; })[0], q = favoritoPendiente;
+  if (!t || !q) return;
+  var campo = document.getElementById('fav-nombre'), escrito = campo ? campo.value.trim() : '';
+  var unico = tipo === 'casa' || tipo === 'base';
+  var lista = leerFavoritos().filter(function (f) {
+    return L.latLng(f.lat, f.lng).distanceTo([q.lat, q.lng]) >= 40 && !(unico && f.tipo === tipo);
+  });
+  var nombre = unico ? t[2] : (escrito || q.lugar.split(', ')[0] || t[2]);
+  lista.unshift({ tipo: tipo, icono: t[1], nombre: nombre, lugar: q.lugar || escrito, lat: q.lat, lng: q.lng });
+  guardar(CLAVE_FAVORITOS, lista.slice(0, 20));
+  favoritoPendiente = null;
+  cerrarHoja();
+  mostrarMensaje(t[1] + ' Guardado como "' + nombre + '". Lo encontrás al tocar "¿A dónde vas?".');
+  ocultarMensajeLuego(4000);
+  refrescarFavoritos();
+}
+function borrarFavorito(lat, lng) {
+  guardar(CLAVE_FAVORITOS, leerFavoritos().filter(function (f) { return !(f.lat === lat && f.lng === lng); }));
+  refrescarFavoritos();
+}
+// Después de guardar o borrar: la lista de "¿A dónde vas?" (si está a la vista) y el botón de la tarjeta de la ruta
+function refrescarFavoritos() {
+  var campo = document.getElementById('ruta-hasta'), lista = document.getElementById('resultados-hasta');
+  if (campo && lista && !lista.hidden && !campo.value.trim()) mostrarRecientes();
+  var b = document.getElementById('guardar-destino');
+  if (b && ruta.hasta) b.textContent = favoritoEn(ruta.hasta.latlng) ? '⭐ Guardado' : '☆ Guardar';
+}
 function mostrarRecientes() {
-  var lista = (leerGuardado(CLAVE_RECIENTES) || []).filter(function (r) { return r && r.nombre && typeof r.lat === 'number'; });
-  if (!lista.length) { document.getElementById('resultados-hasta').hidden = true; return; }
-  mostrarOpciones('hasta', lista, 'Destinos recientes', '🕘 ');
+  var aca = ubicacion.ultima ? L.latLng(ubicacion.ultima) : null;
+  var favs = leerFavoritos().map(function (f) {
+    return { icono: f.icono || '⭐', tit: f.nombre, det: f.lugar && f.lugar !== f.nombre ? f.lugar : '', nombre: f.nombre,
+             lat: f.lat, lng: f.lng, fav: true, d: aca ? aca.distanceTo([f.lat, f.lng]) : undefined };
+  });
+  var lista = (leerGuardado(CLAVE_RECIENTES) || []).filter(function (r) {
+    return r && r.nombre && typeof r.lat === 'number' &&
+           !favs.some(function (f) { return L.latLng(f.lat, f.lng).distanceTo([r.lat, r.lng]) < 40; });
+  }).map(function (r) { return Object.assign({}, r, { guardable: true }); });
+  if (!lista.length && !favs.length) { document.getElementById('resultados-hasta').hidden = true; return; }
+  mostrarOpciones('hasta', favs.concat(lista), favs.length ? (lista.length ? 'Guardados y recientes' : 'Lugares guardados')
+                                                           : 'Destinos recientes', '🕘 ');
 }
 
 // Lista de opciones debajo de un campo (sugerencias, resultados o recientes)
@@ -3223,6 +3311,18 @@ function mostrarOpciones(cual, opciones, titulo, icono) {
       (dist ? '<span class="op-dist">' + esc(dist) + '</span>' : '');
     b.addEventListener('click', function () { elegirPunto(cual, [o.lat, o.lng], o.nombre); });
     li.appendChild(b);
+    if (o.fav || o.guardable) {   // v126: ✕ saca un lugar guardado; ☆ guarda un destino reciente
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'op-extra';
+      x.textContent = o.fav ? '✕' : '☆';
+      x.setAttribute('aria-label', o.fav ? 'Sacar de los lugares guardados' : 'Guardar este lugar');
+      x.addEventListener('click', function () {
+        if (o.fav) borrarFavorito(o.lat, o.lng); else ofrecerGuardarFavorito([o.lat, o.lng], o.nombre);
+      });
+      li.className = 'con-extra';
+      li.appendChild(x);
+    }
     lista.appendChild(li);
   });
 }
@@ -3348,6 +3448,48 @@ function ciudadesQueCoinciden(texto) {
   return res.sort(function (a, b) { return a.orden - b.orden; }).slice(0, 4).map(function (x) { return opcionCiudad(x.e); });
 }
 
+// ===== v126: BUSCAR POR MOJÓN ("ruta 14 km 300", "rn 9 km 1028"). datos/mojones.json (scripts/hacer_mojones.py): los
+// mojones cargados en OpenStreetMap con su kilómetro y su ruta. HAY POCOS (unas 40 rutas bien cubiertas): se muestra solo
+// si hay uno a 3 km o menos del pedido; si no, se avisa y se busca como siempre. Las rutas provinciales repiten número
+// entre provincias: primero la más cercana a donde estás.
+var mojones = { datos: null, pedido: null };
+function pedidoDeMojon(texto) {
+  var m = /^(ruta|rn|rp|autovia|au|r)\s*(nacional|provincial|nac|prov|n|p)?\s*(\d{1,4})\s*(?:km|kilometro|k)\s*(\d{1,4}(?: \d)?)$/.exec(sinTildes(texto));
+  if (!m) return null;
+  var tipo = m[1] === 'rn' || /^n/.test(m[2] || '') ? 'N' : m[1] === 'rp' || /^p/.test(m[2] || '') ? 'P' : '';
+  return { tipo: tipo, numero: m[3], km: parseFloat(m[4].replace(' ', '.')) };
+}
+function buscarMojon(cual, texto, mj, inmediato) {
+  var input = document.getElementById('ruta-' + cual), lista = document.getElementById('resultados-' + cual);
+  lista.hidden = false;
+  lista.innerHTML = '<li class="ruta-cargando">Buscando el mojón...</li>';
+  if (!mojones.pedido) mojones.pedido = bajarJSON('mojones.json', true).then(function (d) { mojones.datos = d.rutas || {}; },
+                                                                           function () { mojones.pedido = null; });
+  mojones.pedido.then(function () {
+    if (input.value.trim() !== texto) return;
+    var c = puntoDeBusqueda(), aca = L.latLng(c.lat, c.lng), ops = [];
+    (mj.tipo ? ['R' + mj.tipo] : ['RN', 'RP']).forEach(function (pre) {
+      ((mojones.datos || {})[pre + mj.numero] || []).forEach(function (q) {
+        if (Math.abs(q[0] - mj.km) > 3) return;
+        var ll = L.latLng(q[1] / 1e5, q[2] / 1e5), ruta0 = pre + ' ' + mj.numero, justo = Math.abs(q[0] - mj.km) < 0.05;
+        ops.push({ icono: '📍', tit: ruta0 + ' km ' + numero(q[0], 1, 0), nombre: ruta0 + ' km ' + numero(q[0], 1, 0),
+                   det: justo ? 'Mojón de la ruta' : 'El mojón cargado más cercano al km ' + numero(mj.km, 1, 0),
+                   lat: ll.lat, lng: ll.lng, d: aca.distanceTo(ll), dif: Math.abs(q[0] - mj.km) });
+      });
+    });
+    // de cada lugar (la misma ruta en otra provincia queda lejos), el mojón más parecido al pedido; primero lo más cerca tuyo
+    ops.sort(function (a, b) { return a.dif - b.dif; });
+    var elegidos = [];
+    ops.forEach(function (o) {
+      if (!elegidos.some(function (x) { return L.latLng(x.lat, x.lng).distanceTo([o.lat, o.lng]) < 30000; })) elegidos.push(o);
+    });
+    elegidos.sort(function (a, b) { return a.d - b.d; });
+    if (elegidos.length) { mostrarOpciones(cual, elegidos.slice(0, 4), 'Mojones del mapa'); return; }
+    lista.innerHTML = '<li class="ruta-cargando">No tengo cargado ese mojón (en el mapa hay pocos). Busco el nombre...</li>';
+    buscarPhoton(cual, texto, true);
+  });
+}
+
 function sugerir(cual, inmediato) {
   var input = document.getElementById('ruta-' + cual);
   var lista = document.getElementById('resultados-' + cual);
@@ -3358,6 +3500,8 @@ function sugerir(cual, inmediato) {
     if (cual === 'hasta' && !texto) mostrarRecientes(); else lista.hidden = true;
     return;
   }
+  var mj = pedidoDeMojon(texto);   // v126: "ruta 14 km 300"
+  if (mj) { buscarMojon(cual, texto, mj, inmediato); return; }
   // al instante: las ciudades y provincias de la lista propia
   var locales = ciudadesQueCoinciden(texto);
   if (locales.length) mostrarOpciones(cual, locales);
@@ -5869,6 +6013,13 @@ function mostrarRuta(indice, sinMoverMapa) {
     mostrarRuta(indice, true);
   });
   if (botCompartir) botCompartir.addEventListener('click', compartirViaje);
+  var botGuardar = document.getElementById('guardar-destino');   // v126
+  if (botGuardar) botGuardar.addEventListener('click', function () {
+    if (!ruta.hasta) return;
+    var ya = favoritoEn(ruta.hasta.latlng);
+    if (ya) { mostrarMensaje('Ya lo tenés guardado como "' + ya.nombre + '".'); ocultarMensajeLuego(3000); return; }
+    ofrecerGuardarFavorito(ruta.hasta.latlng, ruta.hasta.nombre);
+  });
   var selSalida = document.getElementById('salgo-a');   // v125
   if (selSalida) selSalida.addEventListener('change', function () {
     ruta.saleEn = +selSalida.value || null;
@@ -5970,6 +6121,8 @@ function htmlExtrasViaje(r) {
       }).join('') + '</select></span>';
   }
   return '<div class="ruta-extras">' + gas +
+         '<button type="button" id="guardar-destino" class="ruta-compartir">' +
+         (ruta.hasta && favoritoEn(ruta.hasta.latlng) ? '⭐ Guardado' : '☆ Guardar') + '</button>' +   // v126
          '<button type="button" id="compartir-viaje" class="ruta-compartir">📤 Compartir</button></div>';
 }
 // Arma un mensaje ("Voy a Tandil, llego a eso de las 01:25. Estoy acá: <link>") y abre el menú de compartir del teléfono
@@ -7547,6 +7700,7 @@ function hojaViaje() {
     else if (acc === 'parar') pararEnLista(+v);
     else if (acc === 'avisar') avisarRapido(v);
     else if (acc === 'compartir') { cerrarHoja(); compartirViaje(); }   // v124
+    else if (acc === 'favorito') guardarFavorito(v);   // v126
   });
   return h;
 }
@@ -9125,6 +9279,12 @@ function abrirCartelNegocio(f) {
     elegirPunto('hasta', ll, nombre);
   });
   caja.appendChild(ir);
+  var gFav = document.createElement('button');   // v126
+  gFav.type = 'button';
+  gFav.className = 'cartel-boton-chico';
+  gFav.textContent = '⭐ Guardar este lugar';
+  gFav.addEventListener('click', function () { cerrarCartel(); ofrecerGuardarFavorito(ll, p.name + (p.dir ? ', ' + p.dir : '')); });
+  caja.appendChild(gFav);
   var mas = document.createElement('div');
   mas.innerHTML = '<a class="cartel-boton fotos" target="_blank" rel="noopener" href="https://www.google.com/maps/search/' +
     encodeURIComponent(p.name) + '/@' + c[1] + ',' + c[0] + ',18z">Ver fotos, horario y opiniones (Google)</a>' +

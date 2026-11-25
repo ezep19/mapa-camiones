@@ -1605,3 +1605,31 @@ body.mapa-noche .boton-dia-noche { background: #243042; }
   background: linear-gradient(135deg, #2d7bff, var(--primario-osc, #0d4fc2)); color: #fff; font: inherit; font-size: 17px;
   font-weight: 800; cursor: pointer; box-shadow: 0 3px 10px rgba(22, 104, 242, .35);
 }
+
+/* v124: renglones de la lista del buscador (ícono, nombre, dirección abajo, distancia a la derecha) */
+.ruta-resultados button.op { display: flex; align-items: center; gap: 10px; padding: 7px 10px; min-height: 52px; }
+.op-icono {
+  flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; background: #eef3fb; font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.op-texto { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.op-texto b { font-weight: 700; font-size: 0.95rem; color: #1b2330; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.op-texto small { font-size: 0.8rem; color: #5a6575; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.op-dist { flex: none; font-size: 0.8rem; font-weight: 700; color: var(--primario, #1668f2); white-space: nowrap; }
+
+/* v124: gasoil estimado del viaje y botón de compartir (tarjeta de la ruta) */
+.ruta-extras { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; flex-wrap: wrap; }
+.ruta-gasoil { flex: 1 1 200px; min-width: 0; font-size: 14px; color: #1b2330; }
+.ruta-gasoil select {
+  display: block; margin-top: 2px; max-width: 100%; border: 0; background: transparent; color: #5a6575; font: inherit;
+  font-size: 13px; padding: 2px 0; text-decoration: underline; cursor: pointer;
+}
+.ruta-compartir {
+  flex: none; min-height: 40px; padding: 6px 12px; border: 1.5px solid #cfd8e6; border-radius: 12px; background: #fff;
+  color: #1b2330; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+}
+.ruta-compartir:active { background: var(--primario-claro, #e8f0fe); }
+.hv-compartir {
+  display: block; width: 100%; min-height: 50px; margin-top: 12px; padding: 8px 12px; border: 1.5px solid #cfd8e6;
+  border-radius: 14px; background: #fff; color: #1b2330; font: inherit; font-size: 15px; font-weight: 700; cursor: pointer;
+}

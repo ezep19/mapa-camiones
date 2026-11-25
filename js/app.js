@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 123;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 124;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -232,6 +232,7 @@ function ponerFondo() {
   bajar(oscuro ? ESTILO_NOCHE : ESTILO_FONDO).catch(function (e) {
     if (!oscuro) throw e;
     oscuro = false;
+    fondo.falloNoche = Date.now();   // v124
     return bajar(ESTILO_FONDO);
   }).then(function (est) {
     if (!oscuro || !claro) return est;
@@ -251,6 +252,8 @@ ponerFondo();
 function revisarNoche() {
   // (si quedó el mapa de respaldo de OSM, se vuelve a probar el vectorial)
   if (fondo.tipo === 'vectorial' && !!fondo.oscuro === esDeNoche()) return;
+  // v124: de noche sin señal quedó el mapa claro (el oscuro no se pudo bajar): no recargar todo el mapa cada 5 minutos
+  if (fondo.tipo === 'vectorial' && !fondo.oscuro && Date.now() - (fondo.falloNoche || 0) < 20 * 60000 && navigator.onLine === false) return;
   ponerFondo();
 }
 setInterval(revisarNoche, 5 * 60 * 1000);
@@ -837,7 +840,7 @@ function evaluar(p) {
   if (p.capa === 'obra') return { estado: 'sin_dato' };
   if (p.capa === 'corte') return { estado: p.cortada ? 'no' : 'sin_dato' };   // en vivo (TomTom)
   var medida = MEDIDA_DE_CAPA[p.capa];
-  if (!medida || p.limite == null || !camion) return { estado: 'sin_dato', medida: medida };
+  if (!medida || typeof p.limite !== 'number' || !isFinite(p.limite) || !camion) return { estado: 'sin_dato', medida: medida };   // v124
   var valor = medidaCamion(medida);
   // Ancho de la calle (no un cartel de ancho máximo): hace falta medio metro más que el camión (espejos)
   if (p.calzada) {
@@ -870,11 +873,13 @@ LUGARES.forEach(function (l) {
   gruposLugares[l.id] = crearCapaLugares([]);
 });
 
+// v124: con tiempo límite (25 s): con una rayita de señal la ruta quedaba "Revisando..." sin fin. Y si NO es obligatorio y
+// falla, se marca `fallo` (no es lo mismo "no hay archivo" que "no lo pude bajar").
 function bajarJSON(archivo, obligatorio) {
   if (!archivo) return Promise.resolve({ features: [] });
-  var pedido = fetch('datos/' + archivo, { cache: 'no-cache' })
+  var pedido = conTiempoLimite('datos/' + archivo, { cache: 'no-cache' }, 25)
     .then(function (r) { if (!r.ok) throw new Error(archivo + ' ' + r.status); return r.json(); });
-  return obligatorio ? pedido : pedido.catch(function (e) { console.error(e); return { features: [] }; });
+  return obligatorio ? pedido : pedido.catch(function (e) { console.error(e); return { features: [], fallo: true }; });
 }
 
 // Las restricciones de una zona (lo que hace falta para revisar una ruta). v73: los lugares y la red de tránsito
@@ -887,7 +892,8 @@ function cargarZona(z) {
     zonasExtras[z.id] = Promise.all([bajarJSON(z.lugares), bajarJSON(z.red), bajarJSON(z.overture)]).then(function (r) {
       try {
         r[0].features = r[0].features.concat(r[2].features || []);
-        agregarExtrasZona({ zona: z, lugares: r[0], red: r[1] }); zonasExtrasListas[z.id] = true;
+        agregarExtrasZona({ zona: z, lugares: r[0], red: r[1] });
+        zonasExtrasListas[z.id] = !r[0].fallo;   // v124: si los lugares no bajaron, no se avisa "sin estaciones" de más
       } catch (e) { console.error(e); }
     });
   }
@@ -902,9 +908,11 @@ function agregarExtrasZona(r) {
 function cargarRestriccionesZona(z) {
   if (zonasPedidas[z.id]) return zonasPedidas[z.id];
   zonasCargando++;
-  mostrarMensaje('Cargando ' + z.titulo + '...');
-  // Las restricciones son obligatorias; si fallan las normas o los obstáculos, el mapa anda igual
-  zonasPedidas[z.id] = Promise.all([bajarJSON(z.archivo, true), bajarJSON(z.normas), bajarJSON(z.obstaculos)])
+  if (!(typeof nav !== 'undefined' && nav && nav.activo)) mostrarMensaje('Cargando ' + z.titulo + '...');   // v124: manejando, sin cartel
+  // v124: las normas (ordenanzas: microcentro de Tucumán, centro de Mar del Plata...) y los obstáculos TAMBIÉN son
+  // obligatorios si la zona los tiene. Antes, si fallaban por mala señal, la zona quedaba como "revisada" sin esas reglas:
+  // la ruta podía cruzar una zona prohibida y decir "sin problemas". Ahora la zona entera se vuelve a pedir.
+  zonasPedidas[z.id] = Promise.all([bajarJSON(z.archivo, true), bajarJSON(z.normas, !!z.normas), bajarJSON(z.obstaculos, !!z.obstaculos)])
     .then(function (r) {
       zonasCargando--;
       // las normas locales (ordenanzas) se suman a las restricciones de OpenStreetMap
@@ -917,6 +925,7 @@ function cargarRestriccionesZona(z) {
       zonasCargando--;
       console.error(e);
       delete zonasPedidas[z.id];   // se puede volver a intentar
+      z.reintentar = Date.now() + 20000;   // v124: mirando el mapa, recién a los 20 s (antes, en cada movimiento)
       mostrarMensaje('No pude cargar ' + z.titulo + '. Revisá la conexión y mové el mapa para reintentar.', true);
     });
   return zonasPedidas[z.id];
@@ -965,7 +974,11 @@ function zonasEnRutas(listas) {
 }
 function cargarZonasEnRutas(listas) { return Promise.all(zonasEnRutas(listas).map(cargarRestriccionesZona)); }
 function zonasSinCargarEnRutas(listas) {
-  return zonasEnRutas(listas).filter(function (z) { return !zonasOk[z.id]; }).map(function (z) { return z.titulo; });
+  var res = zonasEnRutas(listas).filter(function (z) { return !zonasOk[z.id]; }).map(function (z) { return z.titulo; });
+  // v124: también las restricciones de las rutas (fuera de las ciudades) que no se pudieron bajar
+  if (Object.keys(pais.fallo).length &&
+      celdasEnRutas(pais.celdas, listas).some(function (c) { return pais.fallo[c.archivo]; })) res.push('las rutas fuera de las ciudades');
+  return res;
 }
 function cargarZonasEn(limites) {
   return Promise.all(zonasEn(limites).map(cargarZona));
@@ -995,14 +1008,26 @@ function cargarZonasVisibles() {
     setTimeout(function () { if (/^Todavía no hay datos/.test(m.textContent)) ocultarMensaje(); }, 6000);
     return;
   }
-  visibles.forEach(cargarZona);
+  visibles.forEach(function (z) { if (!(z.reintentar > Date.now())) cargarZona(z); });
 }
-mapa.on('moveend', cargarZonasVisibles);
+// v124: navegando, la cámara se mueve cuadro a cuadro y MapLibre avisa "terminó de moverse" en CADA cuadro (60 por segundo):
+// bajar zonas, cortes y guardar la vista se hacían 60 veces por segundo (el chofer: "se traba"). Navegando, como mucho
+// una vez cada 2 segundos (y siempre una última vez al parar); sin navegar, como antes.
+function conFreno(fn, ms) {
+  var ult = 0, timer = 0;
+  function correr() { ult = Date.now(); fn(); }
+  return function () {
+    clearTimeout(timer);
+    var falta = (typeof nav !== 'undefined' && nav && nav.activo ? (ms || 2000) : 0) - (Date.now() - ult);
+    if (falta > 0) timer = setTimeout(correr, falta); else correr();
+  };
+}
+mapa.on('moveend', conFreno(cargarZonasVisibles));
 
 // --- Resto del país: restricciones cargadas en OSM fuera de las zonas (rutas, pueblos) ---
 // Las baja scripts/descargar_pais.py en cuadrados de 2° (datos/pais/*.geojson, índice datos/pais.json).
 // Se bajan los cuadrados que se miran (zoom >= 9) y los de por donde pasa una ruta.
-var pais = { celdas: [], pedidas: {}, cargadas: 0, actualizado: null, timer: null, avisado: false, capas: {} };
+var pais = { celdas: [], pedidas: {}, cargadas: 0, actualizado: null, timer: null, avisado: false, capas: {}, fallo: {} };
 var enZonas = {};   // restricciones ya cargadas por alguna zona (para no ponerlas dos veces)
 function clavePais(p) { return p.osm && /^(altura|peso|largo|prohibido)$/.test(p.capa) ? p.osm + '|' + p.capa : null; }
 fetch('datos/pais.json', { cache: 'no-cache' })
@@ -1028,17 +1053,21 @@ function cargarCeldaPais(c) {
       if (k) { var capas = g.getLayers(); pais.capas[k] = capas[capas.length - 1]; }
     });
     pais.cargadas++;
+    delete pais.fallo[c.archivo];
     clearTimeout(pais.timer);   // si llegan varios cuadrados juntos, se redibuja una vez
     pais.timer = setTimeout(function () { if (zonasIndice.length && !panel.hidden) armarPanel(); }, 250);
   }, function (e) {
     console.error(e);
     delete pais.pedidas[c.archivo];   // se puede volver a intentar
+    pais.fallo[c.archivo] = true;     // v124: la ruta avisa que no pudo revisar ese pedazo
+    c.reintentar = Date.now() + 20000;
   });
   return pais.pedidas[c.archivo];
 }
 function cargarPaisEn(limites) {
-  return Promise.all(pais.celdas.filter(function (c) { return L.latLngBounds(c.limites).intersects(limites); })
-    .map(cargarCeldaPais));
+  return Promise.all(pais.celdas.filter(function (c) {
+    return !(c.reintentar > Date.now()) && L.latLngBounds(c.limites).intersects(limites);
+  }).map(cargarCeldaPais));
 }
 // Los cuadrados por donde pasan uno o varios recorridos (no el rectángulo entero: en un viaje en diagonal serían muchos)
 function celdasEnRutas(celdas, listas) {
@@ -1099,6 +1128,7 @@ function cargarCeldaLugares(c) {
   }, function (e) {
     console.error(e);
     delete paisLugares.pedidas[c.archivo];   // se puede volver a intentar
+    c.reintentar = Date.now() + 20000;   // v124
   });
   return paisLugares.pedidas[c.archivo];
 }
@@ -1106,7 +1136,9 @@ function cargarLugaresVista() {
   if (!paisLugares.celdas.length || mapa.getZoom() < ZOOM_LUGARES_LEJOS) return;
   if (!LUGARES.some(function (l) { return lugaresPrendidos[l.id]; })) return;
   var lim = mapa.getBounds().pad(0.2);
-  paisLugares.celdas.forEach(function (c) { if (L.latLngBounds(c.limites).intersects(lim)) cargarCeldaLugares(c); });
+  paisLugares.celdas.forEach(function (c) {
+    if (!(c.reintentar > Date.now()) && L.latLngBounds(c.limites).intersects(lim)) cargarCeldaLugares(c);
+  });
 }
 
 // ===== v114: CORRECCIONES DE LOS CHOFERES (pedido del chofer, 24/11/2026: un McDonald's de Güemes que cerró hace años
@@ -1648,9 +1680,14 @@ gl.on('style.load', ponerCapasPropias);
 function ponerModoViaje(prender) {
   if (!gl.getLayer('ruta-linea')) return;
   ['viaje-3d', 'ruta-brillo', 'ruta-centro'].forEach(function (id) {
-    if (gl.getLayer(id)) gl.setLayoutProperty(id, 'visibility', prender ? 'visible' : 'none');
+    // (v124: en modo liviano, sin edificios en 3D)
+    if (gl.getLayer(id)) gl.setLayoutProperty(id, 'visibility', prender && !(modoLiviano && id === 'viaje-3d') ? 'visible' : 'none');
   });
-  ['ruta-alt', 'ruta-alt-borde', 'ruta-letras'].forEach(function (id) {   // v107: navegando, solo el camino elegido
+  // v124: + los cartelitos de calle sin salida (manejando por la ruta llenaban la pantalla; el aviso de "tu destino
+  // está en una sin salida" sigue)
+  // y los negocios chicos del mapa de fondo (kioscos, ropa...: de cerca tapaban la ruta; estaciones, hospitales y los
+  // importantes siguen)
+  ['ruta-alt', 'ruta-alt-borde', 'ruta-letras', 'r-sin-salida', 'poi_r20'].forEach(function (id) {   // v107: navegando, solo el camino elegido
     if (gl.getLayer(id)) gl.setLayoutProperty(id, 'visibility', prender ? 'none' : 'visible');
   });
   gl.setPaintProperty('ruta-linea', 'line-width', prender ? 12 : 7);
@@ -2027,7 +2064,7 @@ function armarCartelLugar(f, l) {
   html += '<div class="cartel-fuente">Google Maps no conoce las restricciones para camiones: mirá este mapa antes de salir.</div>';
   if (p.energia) html += '<div class="cartel-fuente">Fuente: lista oficial de estaciones de la Secretaría de Energía (no está en OpenStreetMap)</div>';
   else if (p.overture) html += '<div class="cartel-fuente">Fuente: <a href="https://overturemaps.org" target="_blank" rel="noopener">' +
-          'Overture Maps</a> (datos de ' + esc(String(p.fuente_datos || 'Meta y Microsoft').replace(/meta/, 'Meta')) + '; no está en OpenStreetMap)</div>';
+          'Overture Maps</a> (datos de ' + esc(String(p.fuente_datos || 'Meta y Microsoft').replace(/\bmeta\b/, 'Meta')) + '; no está en OpenStreetMap)</div>';
   else if (p.chofer) html += '<div class="cartel-fuente">Lo agregó un chofer' + (p.fecha ? ' (' + esc(p.fecha) + ')' : '') + '</div>';
   else html += '<div class="cartel-fuente">Fuente: OpenStreetMap · <a href="https://www.openstreetmap.org/' + encodeURI(p.osm) +
           '" target="_blank" rel="noopener">ver en OpenStreetMap</a></div>';
@@ -2102,7 +2139,7 @@ function cargarReportes() {
       });
     })
     .then(function (csv) { if (csv) mostrarReportes(leerCSV(csv)); else dibujarReportes(); mandarPendientes(); })
-    .catch(function (e) { console.warn('Reportes:', e.message); })
+    .catch(function (e) { console.warn('Reportes:', e.message); try { dibujarReportes(); } catch (e2) { /* nada */ } })   // v124
     .then(armarPanelReportes);
 }
 
@@ -2406,12 +2443,20 @@ function armarCartelControl(p) {
 function controlesEnRuta(puntosRuta) {
   if (!controles.lista.length || !puntosRuta.length) return [];
   var lat0 = puntosRuta[0][0] * Math.PI / 180, kx = Math.cos(lat0) * 111320, ky = 110540;
-  // rectángulo de la ruta agrandado 80 m (una ruta recta tiene un rectángulo finito)
-  var c0 = L.latLngBounds(puntosRuta);
-  var caja = L.latLngBounds([c0.getSouth() - 80 / ky, c0.getWest() - 80 / kx], [c0.getNorth() + 80 / ky, c0.getEast() + 80 / kx]);
+  // v124: casilleros de ~3 km por donde pasa la ruta (con sus vecinos): solo los controles de esos casilleros se miden
+  // contra la ruta. Antes se medían todos los del rectángulo (en un viaje largo, casi todos los del país: 1–2 s).
+  var cerca = {}, G = 0.03;
+  for (var q = 0; q < puntosRuta.length; q++) {
+    var pa = puntosRuta[q], pb = puntosRuta[q + 1] || pa;
+    var pasosG = Math.max(1, Math.ceil(Math.max(Math.abs(pb[0] - pa[0]), Math.abs(pb[1] - pa[1])) / (G * 0.6)));
+    for (var w = 0; w < pasosG; w++) {
+      var gy = Math.floor((pa[0] + (pb[0] - pa[0]) * w / pasosG) / G), gx = Math.floor((pa[1] + (pb[1] - pa[1]) * w / pasosG) / G);
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) cerca[(gy + dy) + ',' + (gx + dx)] = 1;
+    }
+  }
   var res = [];
   controles.lista.forEach(function (it) {
-    if (!caja.contains(it.latlng)) return;
+    if (!cerca[Math.floor(it.latlng.lat / G) + ',' + Math.floor(it.latlng.lng / G)]) return;
     var px = it.latlng.lng * kx, py = it.latlng.lat * ky, mejor = Infinity, idx = 0, tMejor = 0;
     for (var i = 1; i < puntosRuta.length; i++) {
       var ax = puntosRuta[i - 1][1] * kx, ay = puntosRuta[i - 1][0] * ky, bx = puntosRuta[i][1] * kx, by = puntosRuta[i][0] * ky;
@@ -2641,7 +2686,7 @@ function mostrarCortes() {
   }).sort(function (a, b) { return a.d - b.d; }).slice(0, CORTES.maxCeldasVista)
     .forEach(function (c) { bajarCeldaCortes(c.k); });
 }
-mapa.on('moveend', mostrarCortes);
+mapa.on('moveend', conFreno(mostrarCortes, 3000));
 // Con el mapa abierto (por ejemplo, navegando) se actualizan cada 10 minutos
 setInterval(function () { if (!document.hidden) mostrarCortes(); }, 60 * 1000);
 
@@ -2794,11 +2839,11 @@ function armarBotonesZonas() {
 }
 
 // Recordar dónde quedó mirando el mapa
-mapa.on('moveend', function () {
+mapa.on('moveend', conFreno(function () {
   var c = mapa.getCenter();
   guardar(CLAVE_VISTA, { lat: +c.lat.toFixed(5), lng: +c.lng.toFixed(5), zoom: mapa.getZoom() });
   revisarAvisoZona();
-});
+}, 5000));
 
 // Aviso especial de una zona (ej.: Mar del Plata casi no tiene restricciones cargadas).
 // Se muestra una vez cada vez que se abre la página, al mirar esa zona.
@@ -2806,6 +2851,7 @@ var avisosMostrados = {};
 function revisarAvisoZona() {
   // con el panel de ruta arriba (escribiendo) el aviso lo taparía: se muestra después
   if (panelRuta && !panelRuta.hidden && !panelRuta.classList.contains('con-resultado')) return;
+  if (typeof nav !== 'undefined' && nav && nav.activo) return;   // v124: manejando no (tapaba el mapa al entrar a cada ciudad)
   var c = mapa.getCenter();
   var m = document.getElementById('mensaje');
   zonasIndice.forEach(function (zi) {
@@ -3133,7 +3179,15 @@ function mostrarOpciones(cual, opciones, titulo, icono) {
     var li = document.createElement('li');
     var b = document.createElement('button');
     b.type = 'button';
-    b.textContent = (o.icono || icono || '') + (o.etiqueta || o.nombre);
+    // v124: renglón prolijo (ícono, nombre en negrita, dirección abajo en gris, distancia a la derecha). Antes era un
+    // solo texto corrido ("nombre · dirección · a 4,1 km") que se partía en dos renglones.
+    var txt = String(o.etiqueta || o.nombre || ''), tit = o.tit, det = o.det || '';
+    if (!tit) { var coma = txt.indexOf(', '); tit = coma > 0 ? txt.slice(0, coma) : txt; det = coma > 0 ? txt.slice(coma + 2) : ''; }
+    var dist = typeof o.d === 'number' && o.tit ? (o.d >= 10000 ? Math.round(o.d / 1000) + ' km' : textoDistancia(o.d)) : '';
+    b.className = 'op';
+    b.innerHTML = '<span class="op-icono">' + esc(String(o.icono || icono || '📍').trim()) + '</span>' +
+      '<span class="op-texto"><b>' + esc(tit) + '</b>' + (det ? '<small>' + esc(det) + '</small>' : '') + '</span>' +
+      (dist ? '<span class="op-dist">' + esc(dist) + '</span>' : '');
     b.addEventListener('click', function () { elegirPunto(cual, [o.lat, o.lng], o.nombre); });
     li.appendChild(b);
     lista.appendChild(li);
@@ -3222,7 +3276,7 @@ mapa.on('click', function (e) {
 var sugerencia = { timer: null, ctrl: null };
 var ciudades = { lista: null, pedido: null };
 function sinTildes(t) {
-  return String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/['’´`]/g, '').replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 function cargarCiudades() {
   if (!ciudades.pedido) {
@@ -3275,6 +3329,7 @@ function sugerir(cual, inmediato) {
   var locales = ciudadesQueCoinciden(texto);
   if (locales.length) mostrarOpciones(cual, locales);
   else if (texto.length >= 3) { lista.hidden = false; lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>'; }   // no dejar la lista de antes
+  else lista.hidden = true;   // v124: con 2 letras y sin ciudad que coincida no queda la lista vieja
   if (!locales.length && !ciudades.lista) cargarCiudades().then(function () {
     if (input.value.trim() === texto) { var l = ciudadesQueCoinciden(texto); if (l.length) mostrarOpciones(cual, l); }
   });
@@ -3336,6 +3391,7 @@ function negocioCerrado(nombre, ll) {
 function opcionNegocio(nombre, icono, direccion, ll, desde) {
   var d = L.latLng(ll).distanceTo(desde);
   return { icono: icono, nombre: nombre + (direccion ? ', ' + direccion : ''), lat: ll.lat, lng: ll.lng, d: d, conDireccion: !!direccion, clave: sinTildes(nombre).replace(/[^a-z0-9]/g, ''),
+           tit: nombre, det: direccion || '',   // v124: para el renglón de la lista
            etiqueta: nombre + (direccion ? ' · ' + direccion : '') + ' · a ' + textoDistancia(d) };
 }
 // Nuestros lugares útiles (los de las zonas ya cargadas) con ese nombre o de ese tipo ("gomería", "taller", "YPF")
@@ -3367,7 +3423,7 @@ function juntarNegocios(lista) {
     if (!igual) { res.push(o); return; }
     // el mismo lugar de dos fuentes: queda el que dice la dirección (la distancia es la del más cercano)
     if (!igual.conDireccion && o.conDireccion) {
-      igual.nombre = o.nombre; igual.conDireccion = true;
+      igual.nombre = o.nombre; igual.conDireccion = true; igual.det = o.det;
       igual.etiqueta = o.etiqueta.replace(/ · a [^·]+$/, ' · a ' + textoDistancia(igual.d));
     }
   });
@@ -3408,7 +3464,9 @@ function marcaDe(texto) {
   var mejor = null;
   marcasClaves.forEach(function (x) {
     var d = x[0] === k ? 0 : (k.length >= 4 && x[0].indexOf(k) === 0) ? 0.5 :
-            distanciaLetras(k, x[0]) <= (x[0].length >= 7 ? 2 : x[0].length >= 5 ? 1 : 0) ? 1 : 9;
+            // v124: más exigente (misma primera letra; 2 letras distintas solo en nombres largos): "garcia" daba Galicia,
+            // "habana" Havanna, "vidal" Vital, "avion" Axion
+            x[0].charAt(0) === k.charAt(0) && distanciaLetras(k, x[0]) <= (x[0].length >= 9 ? 2 : x[0].length >= 6 ? 1 : 0) ? 1 : 9;
     if (d < 9 && (!mejor || d < mejor.d)) mejor = { d: d, m: x[1] };
   });
   return mejor ? mejor.m : null;
@@ -3657,13 +3715,14 @@ function buscarPhoton(cual, texto, conRespaldo) {
       vistos[nombre] = true;
       calles.push({ icono: '📍 ', etiqueta: nombre, nombre: nombre, lat: ll.lat, lng: ll.lng });
     });
-    negocios = juntarNegocios(negocios.concat(lugaresQueCoinciden(marcaDe(texto) || texto, c)));
+    var marcaTxt = marcaDe(texto);   // v124: lo que escribiste Y la cadena (antes, la cadena en lugar de lo escrito)
+    negocios = juntarNegocios(negocios.concat(lugaresQueCoinciden(texto, c), marcaTxt ? lugaresQueCoinciden(marcaTxt, c) : []));
     if (!esParada) negocios = juntarNegocios(sumarOverture(negocios, buscarEnNegocios(texto, c)));   // v121
     sugerencia.ultimoArmado = texto;
     // con número ("Colón 2500") primero las direcciones; si no, primero ciudades y pueblos
     var res;
     var ciudadExacta = lugares.some(function (o) { return sinTildes(o.ciudad || o.nombre || '').indexOf(sinTildes(texto)) === 0; });
-    if (/\d/.test(texto)) res = calles.slice(0, 5).concat(lugares.slice(0, 3));
+    if (/\d/.test(texto)) res = calles.slice(0, 5).concat(negocios.slice(0, 5), lugares.slice(0, 3));   // v124: + negocios ("ypf ruta 2")
     else if (esParada) res = lugares.length ? lugares.slice(0, 6) : calles.slice(0, 5);
     else if (negocios.length && !ciudadExacta) res = negocios.slice(0, 10).concat(lugares.slice(0, 2), calles.slice(0, 2));
     else res = lugares.slice(0, 4).concat(negocios.slice(0, 6), calles.slice(0, 3));
@@ -3861,14 +3920,25 @@ function calcularRuta() {
   var paradas = paradasElegidas();
   decidirEvitarCapital(desde, hasta, paradas);
 
+  // v124: los pasos del cálculo escriben "Buscando...", "Esquivando..." en la tarjeta. Si mientras tanto se pidió OTRA
+  // ruta (o este cálculo ya terminó / falló), no pueden escribir más: antes un cálculo viejo borraba la tarjeta del nuevo
+  // (con su botón Ir) y quedaba "Buscando..." para siempre.
+  var terminado = false, salidaReal = salida;
+  salida = { nodeType: 1 };
+  Object.defineProperty(salida, 'innerHTML', {
+    set: function (h) { if (!terminado && numero === ruta.numeroCalculo) salidaReal.innerHTML = h; },
+    get: function () { return salidaReal.innerHTML; }
+  });
+
   (paradas.length ? calcularConParadas([ruta.desde].concat(paradas, [ruta.hasta]), salida)
    : (largo ? cargarZonasEnRutas([[[desde.lat, desde.lng]], [[hasta.lat, hasta.lng]]])
             : cargarZonasEn(L.latLngBounds([desde, hasta]).pad(0.1)))
     .then(function () {
       if (!largo) return calcularTramo(desde, hasta, salida, true);
-      return calcularViajeLargo(desde, hasta, salida);
+      return calcularViajeLargo(desde, hasta, salida, numero);
     }))
     .then(function (caminos) {
+      terminado = true;
       if (numero !== ruta.numeroCalculo) return;   // hay un cálculo más nuevo: este ya no sirve
       ruta.opciones = elegirOpciones(caminos);
       mostrarRuta(0, !!ruta.alTerminarCalculo);
@@ -3880,8 +3950,10 @@ function calcularRuta() {
       });
     })
     .catch(function (e) {
+      terminado = true;
       if (numero !== ruta.numeroCalculo) return;
       console.error(e);
+      salida = salidaReal;
       // no queda dibujado un borrador sin revisar: navegando, la ruta que se sigue; si no, nada
       if (nav.activo && nav.r) ponerDatos('ruta', [{ type: 'Feature', properties: { t: 'p' },
         geometry: { type: 'LineString', coordinates: nav.r.puntos.map(function (q) { return [q[1], q[0]]; }) } }]);
@@ -3902,16 +3974,16 @@ function calcularConParadas(puntos, salida) {
   salida.innerHTML = '<p class="ruta-cargando">Buscando el camino (' + n + ' partes)...</p>';
   // de a 2 partes a la vez (antes, una por una: tardaba mucho más; todas juntas pasan el límite de pedidos por
   // minuto de OpenRouteService y caen al servicio de respaldo, que elige peor)
-  var partes = [], siguiente = 0;
+  var partes = [], siguiente = 0, roto = false, nCalc = ruta.numeroCalculo;
   function trabajar() {
     var k = siguiente++;
-    if (k >= n) return Promise.resolve();
+    if (k >= n || roto || nCalc !== ruta.numeroCalculo) return Promise.resolve();   // v124: si una parte falló, no seguir pidiendo
     return mejorCaminoEntre(puntos[k].latlng, puntos[k + 1].latlng, {}).then(function (c) {
       partes[k] = c;
       listas++;
       salida.innerHTML = '<p class="ruta-cargando">Buscando el camino: ' + listas + ' de ' + n + ' partes listas...</p>';
       return trabajar();
-    });
+    }, function (e) { roto = true; throw e; });
   }
   return Promise.all([trabajar(), trabajar()]).then(function () { return [unirPartes(partes)]; });
 }
@@ -3977,6 +4049,9 @@ function pedirCaminos(a, b, evitar, conAlternativas) {
         if (/ 403$/.test(e.message)) ruta.orsHasta = Date.now() + 15 * 60 * 1000;
         if (/ 429$/.test(e.message)) ruta.orsHasta = Date.now() + 60 * 1000;
         if (e instanceof TypeError) ruta.orsHasta = Date.now() + 2 * 60 * 1000;
+        // v124: si tardó demasiado o el servidor está con problemas, 2 minutos con los otros servicios (antes cada etapa
+        // de un viaje largo volvía a esperarlo 30 s)
+        if ((e && e.name === 'AbortError') || / 5\d\d$/.test(e.message || '')) ruta.orsHasta = Date.now() + 2 * 60 * 1000;
         return respaldo();
       })
     : respaldo();
@@ -4132,9 +4207,11 @@ function mostrarBorrador(c, salida, nCalculo) {
   salida.innerHTML = '<p class="ruta-resumen"><b>' + esc(duracion(c.segundos)) + '</b> ' + esc(numero(c.km, 1)) + ' km</p>' +
                      '<p class="ruta-cargando">Revisando que tu camión pase por todo el camino... (unos segundos)</p>';
 }
-function calcularViajeLargo(desde, hasta, salida) {
+function calcularViajeLargo(desde, hasta, salida, nCalc) {
   salida.innerHTML = '<p class="ruta-cargando">Viaje largo: buscando el recorrido...</p>';
-  var nCalculo = ruta.numeroCalculo;   // (no "numero": así se llama la función que escribe los números)
+  // (no "numero": así se llama la función que escribe los números). v124: el número del cálculo viene de calcularRuta
+  // (leerlo acá, después de bajar las zonas, podía tomar el de un cálculo más nuevo y dibujar un borrador viejo)
+  var nCalculo = nCalc != null ? nCalc : ruta.numeroCalculo;
   var evitarBase = ruta.evitarCapital ? [ANILLO_CAPITAL] : [];
   return pedirCaminos(desde, hasta, evitarBase, false).then(function (caminos) {
     if (evitarBase.length && caminos[0].km > 0) caminos[0].sinCapital = true;
@@ -4147,7 +4224,9 @@ function calcularViajeLargo(desde, hasta, salida) {
     var base = caminos[0];
     mostrarBorrador(base, salida, nCalculo);
     // v107: otras opciones (A, B, C) mientras se arma la principal
-    var otras = alternativasLargas(desde, hasta, evitarBase, base, caminos.slice(1));
+    // (v124: solo para el viaje que se muestra; en las partes de "Pasar por" se calculaban y se tiraban: más lento y
+    // gastaba pedidos del servicio de rutas)
+    var otras = salida && salida.nodeType ? alternativasLargas(desde, hasta, evitarBase, base, caminos.slice(1)) : Promise.resolve([]);
     // distancia acumulada a lo largo del recorrido
     var acum = [0];
     for (var i = 1; i < base.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(base.puntos[i - 1]).distanceTo(base.puntos[i]) / 1000);
@@ -4368,7 +4447,10 @@ function empalmar(c, iA, iB, nuevo, kmViejo) {
 //   + 2 por cada km FUERA de la red de tránsito pesado, solo en las zonas que la tienen cargada
 //   + 1000 por cada lugar rojo que no se pudo esquivar
 //   + 6 por cada km de camino de tierra o ripio (v88)
-var PUNTAJE = { kmCallesChicas: 12, vuelta: 0.7, kmFueraDeRed: 2, rojo: 1000, kmTierra: 6 };
+// v124: + km (0,12 min por km): con casi el mismo tiempo gana el camino más corto (menos gasoil). Caso real: Mar del
+// Plata → Tandil recomendaba 217 km en vez de 178 km por 1 minuto menos. No más que eso: un desvío de 4 km por la
+// avenida de circunvalación que ahorra 1 minuto tiene que seguir ganándole a cortar por adentro.
+var PUNTAJE = { kmCallesChicas: 12, vuelta: 0.7, kmFueraDeRed: 2, rojo: 1000, kmTierra: 6, km: 0.12 };
 // Nombres de calles grandes (si el servicio dice que es una calle "común" y el nombre no tiene nada de esto,
 // se la trata como calle de barrio)
 var NOMBRE_DE_AVENIDA = /(^|[^a-záéíóúñ])(av(da)?\.?|avenida|ruta|r[pn] ?\d|autopista|autov[ií]a|acceso|camino|colectora|bulevar|boulevard|bv\.?|costanera|circunvalaci[oó]n|diagonal|paseo|ruta|variante|traza|puente|t[uú]nel|rotonda)([^a-záéíóúñ]|$)/i;
@@ -4481,7 +4563,7 @@ function elegirOpciones(caminos) {
     var red = medirRed(c.puntos);
     c.kmEnRed = red.enRed; c.kmZonaConRed = red.zonaConRed;
     c.kmTierra = tramosDeTierra(c.puntos).reduce(function (s, x) { return s + x.m; }, 0) / 1000;
-    c.puntaje = c.segundos / 60 + PUNTAJE.kmCallesChicas * (c.kmChicas || 0) + PUNTAJE.vuelta * c.vueltas + PUNTAJE.kmTierra * c.kmTierra +
+    c.puntaje = c.segundos / 60 + PUNTAJE.km * (c.km || 0) + PUNTAJE.kmCallesChicas * (c.kmChicas || 0) + PUNTAJE.vuelta * c.vueltas + PUNTAJE.kmTierra * c.kmTierra +
                 PUNTAJE.kmFueraDeRed * Math.max(0, red.zonaConRed - red.enRed) + PUNTAJE.rojo * c.rojos;
     medirPrincipales(c);
     c.etiquetas = []; c.etiqueta = ''; c.letra = ''; c.recomendada = false;
@@ -4729,7 +4811,7 @@ function rutaORS(clave, evitar, sinAlternativas, a, b) {
     method: 'POST',
     headers: { 'Authorization': clave, 'Content-Type': 'application/json', 'Accept': 'application/geo+json' },
     body: JSON.stringify(cuerpo)
-  }, 30).then(function (r) {
+  }, 18).then(function (r) {
     // los caminos alternativos tienen límites (por ejemplo, rutas muy largas): se pide uno solo
     if (!r.ok && !sinAlternativas && r.status !== 401 && r.status !== 403 && r.status !== 429) return rutaORS(clave, evitar, true, a, b);
     if (!r.ok) throw new Error('OpenRouteService ' + r.status);
@@ -4793,8 +4875,8 @@ function rutaValhalla(evitar, a, b) {
   // Valhalla acepta muy pocos polígonos (100 vértices en total): se le pasa el centro de cada
   // cuadradito como "lugar a evitar" (acepta hasta 50)
   if (evitar && evitar.length) {
-    var grandes = evitar.filter(function (a) { return a.length > 5; });
-    var chicos = evitar.filter(function (a) { return a.length <= 5; });
+    var grandes = evitar.filter(esZonaGrande);
+    var chicos = evitar.filter(function (a) { return !esZonaGrande(a); });
     var vertices = 0;
     cuerpo.exclude_polygons = grandes.filter(function (a) { vertices += a.length; return vertices <= 100; });
     if (!cuerpo.exclude_polygons.length) delete cuerpo.exclude_polygons;
@@ -4849,13 +4931,21 @@ function rutaValhalla(evitar, a, b) {
 // TomTom Routing (travelMode=truck): medidas del camión en el pedido. Lo que hay que esquivar va como rectángulos
 // (TomTom acepta hasta 10): los cuadraditos cercanos se juntan en uno; las zonas de ordenanza, su rectángulo.
 var VUELTAS_TOMTOM = { TURN_LEFT: 1, TURN_RIGHT: 1, SHARP_LEFT: 1, SHARP_RIGHT: 1, MAKE_UTURN: 1 };
+// v124: ¿es una zona (ordenanza, la Capital) y no un cuadradito de 4–24 m para esquivar un lugar? Antes se miraba solo
+// la cantidad de puntos (> 5): las zonas de 4 esquinas (microcentro de Tucumán, Bahía Blanca, Catamarca) quedaban como
+// "lugar chico" y los servicios de respaldo las cruzaban.
+function esZonaGrande(a) {
+  if (a.length > 5) return true;
+  var b = L.latLngBounds(a.map(function (q) { return [q[1], q[0]]; }));
+  return b.getNorth() - b.getSouth() > 0.0006 || b.getEast() - b.getWest() > 0.0008;   // más de ~65 m
+}
 function rectangulosTomTom(evitar) {
   var cajas = [];
-  var lista = (evitar || []).filter(function (a) { return a.length > 5; })
-    .concat((evitar || []).filter(function (a) { return a.length <= 5; }).reverse());
+  var lista = (evitar || []).filter(esZonaGrande)
+    .concat((evitar || []).filter(function (a) { return !esZonaGrande(a); }).reverse());
   lista.forEach(function (anillo) {   // primero las zonas; después los lugares, los más nuevos primero
     var b = L.latLngBounds(anillo.map(function (q) { return [q[1], q[0]]; }));
-    var junto = cajas.filter(function (c) { return c.pad(0.0).getCenter().distanceTo(b.getCenter()) < 300 && anillo.length <= 5; })[0];
+    var junto = cajas.filter(function (c) { return c.pad(0.0).getCenter().distanceTo(b.getCenter()) < 300 && !esZonaGrande(anillo); })[0];
     if (junto) junto.extend(b); else cajas.push(b);
   });
   return cajas.slice(0, 10).map(function (b) {
@@ -5487,8 +5577,9 @@ function tramosFeriadoEnRuta(puntos) {
 
 // Avisos de la ruta por las restricciones de feriado (se agregan a r.avisos; los rojos suman a r.rojos)
 function agregarFeriados(r) {
-  if (!r || r.feriadosVersion === feriados.version + '|' + (camion && camion.peso)) return;
-  r.feriadosVersion = feriados.version + '|' + (camion && camion.peso);
+  var versionF = feriados.version + '|' + (camion && camion.peso) + '|' + Math.floor(Date.now() / 600000);   // v124: + la hora (cada 10 min)
+  if (!r || r.feriadosVersion === versionF) return;
+  r.feriadosVersion = versionF;
   r.avisos = (r.avisos || []).filter(function (a) { return !a.feriado; });
   var km = r.km || 1, totalM = 0;
   for (var i = 1; i < r.puntos.length; i++) totalM += L.latLng(r.puntos[i - 1]).distanceTo(r.puntos[i]);
@@ -5591,6 +5682,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   }
   html += '<div id="ruta-clima" class="ruta-clima"></div>';   // v89: se llena cuando llega el pronóstico
   html += '<div id="ruta-sin-senal" class="ruta-sin-senal"></div>';   // v93: mapa del viaje guardado para usar sin señal
+  html += htmlExtrasViaje(r);   // v124: gasoil estimado y compartir
   if (opciones.length > 1) html += htmlOpcionesRuta(opciones, indice);   // v107: A, B, C
   // Lo demás, escondido
   // abierto solo si hay lugares donde NO pasás (si no, la tarjeta tapaba medio mapa; lo demás se ve al tocar)
@@ -5602,7 +5694,8 @@ function mostrarRuta(indice, sinMoverMapa) {
     });
     html += '</ul>';
   }
-  r.controles = controlesEnRuta(r.puntos);
+  // v124: se calcula una vez por ruta (la tarjeta se arma 2 o 3 veces), salvo que hayan llegado más controles
+  if (!r.controles || r.controlesN !== controles.lista.length) { r.controles = controlesEnRuta(r.puntos); r.controlesN = controles.lista.length; }
   if (r.controles.length) {
     html += '<details class="ruta-pasos"><summary>👮📷 Controles y radares (' + r.controles.length + ')</summary><ul class="ruta-lista">';
     r.controles.forEach(function (c, i) {
@@ -5675,6 +5768,13 @@ function mostrarRuta(indice, sinMoverMapa) {
   ponerClima(r);   // v89: el pronóstico llega después (si ya estaba, aparece enseguida)
   guardarMapaDelViaje(r);   // v93
   document.getElementById('empezar-manejo').addEventListener('click', function () { empezarNavegacion(); });
+  var selConsumo = document.getElementById('consumo-camion'), botCompartir = document.getElementById('compartir-viaje');   // v124
+  if (selConsumo) selConsumo.addEventListener('change', function () {
+    consumoCamion = +selConsumo.value || 35;
+    guardar(CLAVE_CONSUMO, consumoCamion);
+    mostrarRuta(indice, true);
+  });
+  if (botCompartir) botCompartir.addEventListener('click', compartirViaje);
   salida.querySelectorAll('[data-opcion]').forEach(function (b) {
     b.addEventListener('click', function () { mostrarRuta(+b.getAttribute('data-opcion'), true); });
   });
@@ -5734,6 +5834,67 @@ function resumenFacilidad(o) {
   if (o.kmChicas != null) partes.push(o.kmChicas < 0.05 ? 'sin calles chicas' : numero(o.kmChicas, 1) + ' km por calles chicas');
   if (o.kmTierra >= 0.1) partes.push(numero(o.kmTierra, 1) + ' km de tierra o ripio');
   return esc(partes.join(' · '));
+}
+
+// ===== v124: GASOIL ESTIMADO DEL VIAJE y COMPARTIR EL VIAJE =====
+// Gasoil: km del camino × lo que gasta el camión (se elige en la misma tarjeta; por defecto 35 L cada 100 km) × el precio
+// típico del gasoil común (la mediana de las estaciones del camino con precio de hace 60 días o menos; si hay pocas, la
+// de todo el país; lista oficial de la Secretaría de Energía). Es una cuenta aproximada: lo dice ("unos").
+var CLAVE_CONSUMO = 'mapa-camiones:consumo';
+var CONSUMOS = [20, 22, 25, 28, 30, 32, 35, 38, 40, 45, 50, 55];
+var consumoCamion = +leerGuardado(CLAVE_CONSUMO) || 35;
+function precioGasoilTipico(r) {
+  function mediana(a) { a.sort(function (x, y) { return x - y; }); return a.length ? a[Math.floor(a.length / 2)] : null; }
+  var enRuta = [];
+  ((r && r.lugares) || []).forEach(function (x) {
+    var pr = precioDe(x.l.feature.properties);
+    if (pr && pr.g2 && diasDesde(pr.fecha) <= 60) enRuta.push(pr.g2);
+  });
+  if (enRuta.length >= 3) return mediana(enRuta);
+  if (!precios.listo) return null;
+  if (precios.tipico === undefined) {
+    var todos = [];
+    Object.keys(precios.porOsm).forEach(function (k) { var x = precios.porOsm[k]; if (x.g2 && diasDesde(x.fecha) <= 60) todos.push(x.g2); });
+    precios.tipico = todos.length >= 20 ? mediana(todos) : null;
+  }
+  return precios.tipico;
+}
+function htmlExtrasViaje(r) {
+  var gas = '';
+  if (r && r.km > 5) {
+    var litros = r.km * consumoCamion / 100, precio = precioGasoilTipico(r);
+    gas = '<span class="ruta-gasoil">⛽ Gasoil: unos <b>' + numero(litros < 20 ? litros : Math.round(litros / 5) * 5, 0) + ' L</b>' +
+      (precio ? ' · <b>' + pesos(Math.round(litros * precio / 1000) * 1000) + '</b>' : '') +
+      '<select id="consumo-camion" aria-label="Cuánto gasta tu camión">' + CONSUMOS.map(function (n) {
+        return '<option value="' + n + '"' + (n === consumoCamion ? ' selected' : '') + '>gasta ' + n + ' L cada 100 km</option>';
+      }).join('') + '</select></span>';
+  }
+  return '<div class="ruta-extras">' + gas +
+         '<button type="button" id="compartir-viaje" class="ruta-compartir">📤 Compartir</button></div>';
+}
+// Arma un mensaje ("Voy a Tandil, llego a eso de las 01:25. Estoy acá: <link>") y abre el menú de compartir del teléfono
+// (WhatsApp, mensaje...). Lo manda el chofer a quien él elija; la página no manda nada sola.
+function compartirViaje() {
+  var r = nav.activo ? nav.r : ruta.linea, pos = (nav.activo && nav.ultimaPos) || ubicacion.ultima, partes = [];
+  var destino = ruta.hasta && ruta.hasta.nombre;
+  if (r && destino) {
+    var totalM = nav.activo && nav.acum ? nav.acum[nav.acum.length - 1] : r.km * 1000;
+    var faltaM = nav.activo ? Math.max(0, totalM - (nav.recorrido || 0)) : totalM;
+    var llega = new Date(Date.now() + (r.segundos || 0) * faltaM / (totalM || 1) * 1000);
+    var hora = ('0' + llega.getHours()).slice(-2) + ':' + ('0' + llega.getMinutes()).slice(-2);
+    var otroDia = llega.toDateString() !== new Date().toDateString()
+      ? ' del ' + ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][llega.getDay()] : '';
+    partes.push('🚛 Voy a ' + destino + '. ' + (nav.activo ? 'Me faltan ' + textoDistancia(faltaM) : 'Son ' + textoDistancia(faltaM) + ' (salgo ahora)') +
+                ': llego a eso de las ' + hora + otroDia + '.');
+  }
+  if (pos) {
+    var ll = L.latLng(pos);
+    partes.push('Estoy acá: https://www.google.com/maps?q=' + ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5));
+  }
+  if (!partes.length) { mostrarMensaje('Todavía no sé dónde estás: tocá el botón de ubicación (abajo a la derecha).'); setTimeout(ocultarMensaje, 5000); return; }
+  var texto = partes.join('\n');
+  if (navigator.share) navigator.share({ text: texto }).catch(function () { /* lo cerró sin mandar */ });
+  else window.open('https://wa.me/?text=' + encodeURIComponent(texto), '_blank', 'noopener');
 }
 
 function duracion(seg) {
@@ -5799,7 +5960,9 @@ var RED_C = 50, RED_KX = 111320 * Math.cos(-35 * Math.PI / 180), RED_KY = 110540
 // Líneas rojas o amarillas: que la ruta vaya por encima al menos 30 m (no solo que las cruce).
 function revisarRuta(puntosRuta, pasos) {
   // nombres de calles por las que va la ruta (para saber si va POR DEBAJO de un puente o por arriba)
-  var textoPasos = normalizarCalle((pasos || []).map(function (p) { return p.texto; }).join(' | '));
+  var textoPasos = normalizarCalle((pasos || []).map(function (p) {
+    return p.texto + (p.calle ? ' | ' + p.calle : '') + (p.cartel && p.cartel.rutas && p.cartel.rutas.length ? ' | ' + p.cartel.rutas.join(' ') : '');   // v124
+  }).join(' | '));
   var desde = ruta.desde && ruta.desde.latlng, hasta = ruta.hasta && ruta.hasta.latlng;
   function cercaDeLosExtremos(ll) {
     return (desde && desde.distanceTo(ll) < 30) || (hasta && hasta.distanceTo(ll) < 30);
@@ -5877,9 +6040,19 @@ function revisarRuta(puntosRuta, pasos) {
       if (l.feature.geometry.type === 'Polygon') {   // zona entera
         if (!caja.intersects(l.getBounds())) return;
         var anillo = l.feature.geometry.coordinates[0];
-        var primero = -1;
-        for (var q = 0; q < puntosRuta.length; q++) {
-          if (dentroDeAnillo([puntosRuta[q][1], puntosRuta[q][0]], anillo)) { primero = q; break; }
+        var primero = -1, limZ = l.getBounds();
+        for (var q = 0; q < puntosRuta.length && primero < 0; q++) {
+          var qa = puntosRuta[q], qb = puntosRuta[q + 1];
+          if (dentroDeAnillo([qa[1], qa[0]], anillo)) { primero = q; break; }
+          if (!qb) continue;
+          // v124: también puntos intermedios (cada ~80 m) de los tramos largos que pasan por el rectángulo de la zona
+          var nq = Math.ceil(Math.max(Math.abs(qb[0] - qa[0]), Math.abs(qb[1] - qa[1])) / 0.0008);
+          if (nq < 2 || nq > 2000) continue;
+          if (Math.max(qa[0], qb[0]) < limZ.getSouth() || Math.min(qa[0], qb[0]) > limZ.getNorth() ||
+              Math.max(qa[1], qb[1]) < limZ.getWest() || Math.min(qa[1], qb[1]) > limZ.getEast()) continue;
+          for (var w = 1; w < nq; w++) {
+            if (dentroDeAnillo([qa[1] + (qb[1] - qa[1]) * w / nq, qa[0] + (qb[0] - qa[0]) * w / nq], anillo)) { primero = q; break; }
+          }
         }
         if (primero < 0) return;
         var extremoAdentro = [desde, hasta].some(function (x) { return x && dentroDeAnillo([x.lng, x.lat], anillo); });
@@ -6112,9 +6285,10 @@ function rumboEnRuta(u) {
 }
 // El punto de la ruta a tantos metros de la salida
 function puntoEnRuta(m) {
-  var pts = nav.r.puntos, ac = nav.acum, i = 1;
+  var pts = nav.r.puntos, ac = nav.acum, i = 1, fin = pts.length - 1;
   if (m <= 0) return L.latLng(pts[0]);
-  while (i < pts.length - 1 && ac[i] < m) i++;
+  // v124: por mitades (se llama varias veces por cuadro; antes recorría la ruta desde el principio: lento al final del viaje)
+  while (i < fin) { var mit = (i + fin) >> 1; if (ac[mit] < m) i = mit + 1; else fin = mit; }
   var t = Math.max(0, Math.min(1, (m - ac[i - 1]) / ((ac[i] - ac[i - 1]) || 1)));
   return L.latLng(pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t);
 }
@@ -6285,7 +6459,7 @@ function paraDecir(texto) {
 // sonó una vez después de un toque (el pitido de "▶ Ir" o de "Probar la voz").
 var ES_IPHONE = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 voz.motor = leerGuardado('mapa-camiones:voz-motor') || (ES_IPHONE ? 'grabada' : 'telefono');
-var grabada = { el: null, cola: [], sonando: false, bajadas: false };
+var grabada = { el: null, cola: [], sonando: false, bajadas: false, enMemoria: {}, sinMemoria: false, actual: null, guardia: 0 };
 // v108: qué voz grabada (pedido del chofer: "la quiero más natural"): Elena o Tomás (voces argentinas de Microsoft, mp3 en
 // voz/elena/ y voz/tomas/, scripts/grabar_voz_edge.py) o Daniela (la de antes, Piper, wav en voz/)
 var VOCES_GRABADAS = { elena: 'Elena', tomas: 'Tomás', daniela: 'Daniela' };
@@ -6297,21 +6471,40 @@ function reproductor() {
     grabada.el = new Audio();
     grabada.el.preload = 'auto';
     grabada.el.addEventListener('ended', siguienteGrabada);
-    grabada.el.addEventListener('error', function () { setTimeout(siguienteGrabada, 50); });
+    grabada.el.addEventListener('error', function () {
+      // v124: si falló una frase tomada de la memoria, se prueba de nuevo con la dirección (y no se usa más la memoria)
+      if (grabada.el.src.indexOf('blob:') === 0) {
+        if (grabada.sinMemoria) return;   // ya lo está reintentando el otro aviso de error (play)
+        grabada.sinMemoria = true;
+        if (grabada.actual) grabada.cola.unshift(grabada.actual);
+      }
+      setTimeout(siguienteGrabada, 50);
+    });
   }
   return grabada.el;
 }
 function siguienteGrabada() {
+  clearTimeout(grabada.guardia);
   var url = grabada.cola.shift();
   if (!url) { grabada.sonando = false; return; }
   grabada.sonando = true;
+  // v124: si el iPhone pausa el sonido (una llamada, cambiar de app) no llega ni "terminó" ni "error" y la voz quedaba muda
+  // hasta recargar la página. A los 12 s se da por terminada y se tira lo que esperaba (indicaciones ya viejas).
+  grabada.guardia = setTimeout(function () { grabada.cola = []; grabada.sonando = false; }, 12000);
   var a = reproductor();
   sesionDeAudio();
-  a.src = url;
+  // v124: las frases se reproducen desde la memoria (bajarVozGrabada): antes cada pedazo de frase iba primero a internet
+  // (con mala señal, hasta 4 s de espera por pedazo) y sin señal Safari podía no reproducirlas
+  grabada.actual = url;
+  a.src = (!grabada.sinMemoria && grabada.enMemoria[url]) || url;
   try {
     var p = a.play();
     if (p && p.catch) p.catch(function (e) {
       if (e && e.name === 'AbortError') return;   // se cambió el sonido antes de empezar: normal
+      if (a.src.indexOf('blob:') === 0) {   // v124: falló la frase de la memoria: otra vez, con la dirección
+        if (!grabada.sinMemoria) { grabada.sinMemoria = true; grabada.cola.unshift(url); setTimeout(siguienteGrabada, 50); }
+        return;
+      }
       grabada.sonando = false;
       grabada.cola = [];
       avisarVozFalla('el teléfono no dejó reproducir el sonido');
@@ -6330,7 +6523,15 @@ function bajarVozGrabada() {
   if (grabada.bajadas === voz.grabada) return;
   grabada.bajadas = voz.grabada;
   fetch('voz/frases.json').then(function (r) { return r.json(); }).then(function (lista) {
-    lista.forEach(function (k, i) { setTimeout(function () { fetch(urlClip(k)).catch(function () {}); }, i * 40); });
+    lista.forEach(function (k, i) {
+      setTimeout(function () {
+        var u = urlClip(k);
+        if (grabada.enMemoria[u]) return;
+        fetch(u).then(function (r) { return r.ok ? r.blob() : null; })
+          .then(function (b) { if (b && b.size) grabada.enMemoria[u] = URL.createObjectURL(b); })
+          .catch(function () {});
+      }, i * 40);
+    });
   }).catch(function () { grabada.bajadas = false; });
 }
 // Distancia dicha ("300 metros", "1 coma 5 kilómetros") → grabación "En 300 metros"
@@ -6369,7 +6570,7 @@ function clipPeligro(t) {
   if (/lluvia/.test(t)) return ['h_lluvia'];
   if (/niebla/.test(t)) return ['h_niebla'];
   var tipo = /caminera/.test(t) ? 'h_caminera' : /gendarmer/.test(t) ? 'h_gendarmeria' : /fitosanitari/.test(t) ? 'h_fito'
-    : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /zona|centro/.test(t) ? 'h_zona'
+    : /control/.test(t) ? 'h_control' : /reporte/.test(t) ? 'h_reporte' : /\bzona\b|\bcentro\b/.test(t) ? 'h_zona' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido'
     : /paso bajo|altura|puente/.test(t) ? 'h_altura' : /peso/.test(t) ? 'h_peso' : /largo/.test(t) ? 'h_largo'
     : /angost|ancho/.test(t) ? 'h_ancho' : /cortad|corte/.test(t) ? 'h_corte' : /obra/.test(t) ? 'h_obra'
     : /sin salida/.test(t) ? 'h_sinsalida' : /tierra|ripio/.test(t) ? 'h_tierra' : /barrera|port[oó]n|bolardo|cadena/.test(t) ? 'h_barrera' : /prohib|camiones grandes no/.test(t) ? 'h_prohibido' : 'h_otro';
@@ -6390,6 +6591,7 @@ function clipManiobra(t) {
   if (/mantenete|seguí por la (izquierda|derecha)|manten[eé]/.test(t)) return lado ? 'm_mant_' + lado : 'm_recto';
   if (/salida|rampa/.test(t)) return lado ? 'm_salida_' + lado : 'm_salida';
   if (/incorpor/.test(t)) return 'm_incorp';
+  if (!lado && /tom[aá] (la|el) (autopista|autov[ií]a|ruta|acceso|avenida|av\.)/.test(t)) return 'm_recto';   // v124
   if (lado && /cerrad|brusca/.test(t)) return 'm_' + lado + '_cer';
   if (lado && /levemente|ligeramente/.test(t)) return 'm_' + lado + '_lev';
   if (lado) return 'm_' + lado;
@@ -6644,10 +6846,17 @@ function terminarNavegacion(mensaje) {
   clearTimeout(VIAJE_GUARDADO.timer);
   marcarViajeNavegando(false);   // v113
   ponerTerreno(null);   // v98
-  gl.easeTo({ bearing: 0, pitch: 0, duration: 600 });   // al terminar: mapa derecho y el norte arriba
   pararCamion();
   cancelAnimationFrame(anim.raf); anim.raf = 0; anim.r = null; anim.mDisp = null;   // v102
-  sacarMargenViaje();
+  // v124: al terminar, mapa derecho, norte arriba y sin el margen del viaje, TODO en un solo movimiento. Antes el margen
+  // se sacaba con setPadding, que corta el movimiento anterior: el mapa quedaba inclinado y girado, sin forma de enderezarlo.
+  anim.margen = null;
+  gl.easeTo({ bearing: 0, pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
+  clearTimeout(nav.timerDerecho);
+  nav.timerDerecho = setTimeout(function () {   // por si otro movimiento lo cortó a la mitad
+    if (!nav.activo && gl.getPitch() > 0.5) gl.jumpTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 } });
+  }, 1500);
+  grabada.cola = [];   // v124: al salir no sigue hablando lo que quedaba en espera
   acopladoDerecho();
   if (ubicacion.punto) {
     ubicacion.punto.setRotation(0);
@@ -6872,6 +7081,10 @@ document.addEventListener('visibilitychange', function () {
   mapa.stopLocate();
   mapa.locate({ watch: true, enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
   anim.mDisp = null;
+  // v124: después de un rato en otra app podés estar mucho más adelante: se te busca en TODA la ruta (antes, solo cerca de
+  // donde estabas: daba "fuera de la ruta" de más) y, si el sonido quedó pausado a mitad de una frase, se destraba
+  nav.primera = true; nav.reanudado = true;
+  if (grabada.el && grabada.el.paused) { clearTimeout(grabada.guardia); grabada.cola = []; grabada.sonando = false; }
   mostrarMensaje('Volviste al mapa: sigo con la ruta desde donde estás.');
   setTimeout(ocultarMensaje, 3500);
 });
@@ -7014,8 +7227,8 @@ function seguirNavegacion(pos) {
   resumenNav(falta);
   // ¿Llegaste?
   if (falta < NAV.LLEGADA_M) {
-    hablar('Llegaste a destino.', true);
     terminarNavegacion('Llegaste a destino.');
+    hablar('Llegaste a destino.', true);   // v124: después de terminar (terminar corta lo que se estaba diciendo)
     borrarRuta();   // al llegar, la ruta ya no hace falta
     actualizarTrayecto();
     return;
@@ -7210,6 +7423,7 @@ function hojaViaje() {
     else if (acc === 'ver') verEnCamino(+v);
     else if (acc === 'parar') pararEnLista(+v);
     else if (acc === 'avisar') avisarRapido(v);
+    else if (acc === 'compartir') { cerrarHoja(); compartirViaje(); }   // v124
   });
   return h;
 }
@@ -7356,7 +7570,9 @@ function abrirAvisar() {
     '<div class="hv-avisos">' + AVISOS_RAPIDOS.map(function (a) {
       return '<button type="button" class="hv-aviso ' + a.id + '" data-accion="avisar" data-valor="' + a.id + '"' + (aca ? '' : ' disabled') + '>' +
              '<b>' + a.icono + '</b><span>' + a.nombre + '</span></button>';
-    }).join('') + '</div>';
+    }).join('') + '</div>' +
+    // v124: mandarle a alguien dónde estás y a qué hora llegás
+    '<button type="button" class="hv-compartir" data-accion="compartir">📤 Mandar dónde estoy y a qué hora llego (WhatsApp)</button>';
   abrirHoja('⚠️ Avisar a otros choferes', html, 'avisar');
 }
 function avisarRapido(id) {
@@ -7585,7 +7801,7 @@ function franja(P, ac, s0, s1, ancho, corrimiento) {
 }
 function armarPuentes3D() {
   if (!gl.getSource('openmaptiles') || !gl.getSource('puentes3d')) return;
-  if (gl.getZoom() < PUENTES.zoomMin - 0.3) {
+  if (modoLiviano || gl.getZoom() < PUENTES.zoomMin - 0.3) {   // v124: en modo liviano, sin puentes 3D
     if (puentes3d.firma) { puentes3d.firma = ''; ponerDatos('puentes3d', []); }
     return;
   }
@@ -8263,6 +8479,23 @@ function limpiarTablero() {
 // "Modo viaje" (pedido del chofer, 20/11/2026: "que se acerque y se ponga como navegador, como hace Maps"):
 // mapa inclinado (VIAJE.inclinacion), de cerca, girando hacia donde vas y con una flecha en vez del punto azul.
 // El zoom depende de la velocidad: en la ciudad más cerca, en la ruta un poco más lejos para ver lo que viene.
+// v124: MODO LIVIANO (Qué mostrar → "Si el mapa se traba al manejar"): menos inclinado (se dibuja mucho menos mapa), sin
+// edificios ni puentes en 3D y la cámara a la mitad de cuadros por segundo. Por defecto apagado.
+var CLAVE_LIVIANO = 'mapa-camiones:liviano';
+var modoLiviano = leerGuardado(CLAVE_LIVIANO) === true;
+function inclinacionViaje() { return modoLiviano ? 38 : VIAJE.inclinacion; }
+(function () {
+  var sel = document.getElementById('modo-liviano');
+  if (!sel) return;
+  sel.value = modoLiviano ? 'si' : 'no';
+  sel.addEventListener('change', function () {
+    modoLiviano = sel.value === 'si';
+    guardar(CLAVE_LIVIANO, modoLiviano);
+    if (nav.activo) { ponerModoViaje(true); if (nav.ultimaPos) seguirConCamara(nav.ultimaPos); }
+    mostrarMensaje(modoLiviano ? 'Modo liviano prendido: al manejar, menos 3D y más fluido.' : 'Modo liviano apagado.');
+    setTimeout(ocultarMensaje, 3000);
+  });
+})();
 var VIAJE = { inclinacion: 58, vuelo: 2200 };   // v100: 58° (con 68° se trababa: bajaba y dibujaba mapa hasta el horizonte)
 function zoomDeViaje() {
   var kmh = velocidad.kmh;
@@ -8308,7 +8541,7 @@ function seguirConCamara(pos, m) {
   moverCamion(pos, nav.ultimoRumbo, nav.libre ? 400 : nav.primeraCamara ? 0 : 900);
   if (nav.libre) return;   // el chofer está mirando otra parte del mapa (botón "Centrar")
   ponerMargenViaje();
-  var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; }, pitch: VIAJE.inclinacion };
+  var o = { center: [pos.lng, pos.lat], duration: 900, easing: function (t) { return t; }, pitch: inclinacionViaje() };
   // siempre se dice el giro: con "rumbo arriba" apagado, 0 (si no, un giro al norte a medias quedaba torcido)
   o.bearing = nav.rumbo ? (nav.ultimoRumbo != null ? nav.ultimoRumbo : gl.getBearing()) : 0;
   var z = zoomDeViaje();
@@ -8335,6 +8568,11 @@ function seguirConCamara(pos, m) {
 // para donde va la ruta ahí mismo y el acoplado sigue detrás (articulado: mira la ruta 3–16 m atrás). La cámara lo sigue
 // cuadro a cuadro y gira suave hacia la ruta 60 m adelante. Si el GPS no está sobre la ruta, se mueve como antes.
 var anim = { raf: 0 };
+var dedosEnMapa = { n: 0 };
+['touchstart', 'touchend', 'touchcancel'].forEach(function (t) {
+  gl.getCanvasContainer().addEventListener(t, function (e) { dedosEnMapa.n = e.touches ? e.touches.length : 0; dedosEnMapa.t = Date.now(); },
+                                           { capture: true, passive: true });
+});
 function ponerMargenViaje() {
   // el camión más abajo del centro (14% de la pantalla): el centro del mapa se corre con un margen arriba
   var alto = Math.round(gl.getContainer().clientHeight * 0.28);
@@ -8361,7 +8599,7 @@ function animarEnRuta(m, pos) {
       var b = nav.rumbo ? rumboEntre(p, puntoEnRuta(Math.min(total, m + 60))) : 0;
       nav.volandoHasta = Date.now() + VIAJE.vuelo;
       anim.bCam = b;
-      gl.flyTo({ center: [p.lng, p.lat], zoom: zoomDeViaje(), bearing: b, pitch: VIAJE.inclinacion, duration: VIAJE.vuelo,
+      gl.flyTo({ center: [p.lng, p.lat], zoom: zoomDeViaje(), bearing: b, pitch: inclinacionViaje(), duration: VIAJE.vuelo,
                  curve: 1.5, essential: true });
     }
   } else {
@@ -8379,6 +8617,9 @@ function cuadroViaje() {
   anim.raf = 0;
   if (!nav.activo || anim.r !== nav.r || !ubicacion.punto) return;
   var ahora = performance.now(), t = anim.dur ? Math.min(1, (ahora - anim.t0) / anim.dur) : 1;
+  // v124: en modo liviano, un cuadro sí y uno no (la mitad de trabajo)
+  if (modoLiviano && anim.tLiviano && ahora - anim.tLiviano < 28 && t < 1) { anim.raf = requestAnimationFrame(cuadroViaje); return; }
+  anim.tLiviano = ahora;
   var mc = anim.m0 + (anim.m1 - anim.m0) * t, total = nav.acum[nav.acum.length - 1];
   anim.mDisp = mc;
   pintarRecorrido(mc);   // v105: lo recorrido en gris, justo hasta el camión
@@ -8402,8 +8643,11 @@ function cuadroViaje() {
     aco.style.transform = gira ? 'rotate(' + gira.toFixed(1) + 'deg)' : '';
   }
   nav.ultimoRumbo = bCab;
-  var sigue = t < 1;
-  if (!nav.libre && Date.now() >= (nav.volandoHasta || 0)) {
+  var sigue = t < 1 && anim.m1 > anim.m0 + 0.05;   // v124: parado (semáforo) no se redibuja 60 veces por segundo
+  // v124: con un dedo apoyado en el mapa la cámara no se mueve sola (cada movimiento cortaba el gesto: andando casi no se
+  // podía arrastrar ni acercar con los dedos)
+  if (dedosEnMapa.n && Date.now() - (dedosEnMapa.t || 0) > 8000) dedosEnMapa.n = 0;   // (por si se perdió un "levantó el dedo")
+  if (!nav.libre && !dedosEnMapa.n && Date.now() >= (nav.volandoHasta || 0)) {
     var dt = anim.tCuadro ? Math.min(0.1, (ahora - anim.tCuadro) / 1000) : 0.016;
     var objetivo = nav.rumbo ? rumboEntre(p, puntoEnRuta(Math.min(total, mc + 60))) : 0;
     if (anim.bCam == null) anim.bCam = gl.getBearing();
@@ -8412,7 +8656,7 @@ function cuadroViaje() {
     var zObj = zoomDeViaje();
     if (anim.z == null) anim.z = gl.getZoom();
     anim.z += (zObj - anim.z) * Math.min(1, dt * 1.5);
-    gl.jumpTo({ center: [p.lng, p.lat], bearing: anim.bCam, zoom: anim.z, pitch: VIAJE.inclinacion });
+    gl.jumpTo({ center: [p.lng, p.lat], bearing: anim.bCam, zoom: anim.z, pitch: inclinacionViaje() });
     if (Math.abs(dif) > 0.3 || Math.abs(zObj - anim.z) > 0.01) sigue = true;   // la cámara todavía se está acomodando
   }
   anim.tCuadro = sigue ? ahora : null;
@@ -8521,8 +8765,15 @@ function volverALaRuta(pos, rumboGps) {
 }
 function recalcularDesde(pos, rumboGps) {
   if (!ruta.hasta) return;
-  nav.recalculando = true;
   nav.ultimoRecalculo = Date.now();
+  // v124: sin señal no se puede recalcular: antes cada 30 s decía "Recalculando la ruta" y fallaba
+  if (navigator.onLine === false) {
+    mostrarCartelNav('Fuera de la ruta', 'Sin señal: no puedo buscar otro camino. Volvé a la ruta azul.');
+    if (!nav.dijoSinSenal) { nav.dijoSinSenal = true; hablar('Recalculando la ruta.', true); }
+    return;
+  }
+  nav.dijoSinSenal = false;
+  nav.recalculando = true;
   mostrarCartelNav('Recalculando...', 'Te saliste de la ruta. Busco otra desde donde estás.');
   hablar('Recalculando la ruta.', true);
   marcarParadasPasadas(pos);
@@ -8533,8 +8784,11 @@ function recalcularDesde(pos, rumboGps) {
   // v82: si ya lo mandé de vuelta a la ruta hace menos de 4 min y se volvió a salir, el chofer eligió ir por otro lado
   // (conoce el camino, hay un corte que no figura...): no insistir con la ruta de antes, buscar una nueva desde ahí.
   // (y solo si de verdad se movió: más de 300 m desde donde lo mandé de vuelta)
-  if (nav.ultimaVuelta && Date.now() - nav.ultimaVuelta.t < 240000 && L.latLng(pos).distanceTo(nav.ultimaVuelta.pos) > 300) {
+  // v124: si todavía no se sabe en qué parte de la ruta estás (viaje guardado que se retoma parado en una estación, o volver
+  // de otra app lejos de la ruta), "volver a la ruta" apuntaba al km 8 de la SALIDA: mandaba para atrás. Ruta nueva completa.
+  if (nav.reanudado || (nav.ultimaVuelta && Date.now() - nav.ultimaVuelta.t < 240000 && L.latLng(pos).distanceTo(nav.ultimaVuelta.pos) > 300)) {
     nav.ultimaVuelta = null;
+    nav.reanudado = false;
     recalcularTodo();
     return;
   }
@@ -8631,21 +8885,17 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
     // En la primera visita la página se bajó antes de que el service worker existiera: se guarda ahora
     // lo que hace falta para abrir sin señal (código, estilos, índice de zonas y las zonas ya vistas)
     navigator.serviceWorker.ready.then(function () {
-      if (!window.caches) return;
-      var archivos = ['./', 'index.html', 'datos/zonas.json'];
-      document.querySelectorAll('script[src*="js/app.js"], link[href*="css/estilos.css"]').forEach(function (e) {
-        archivos.push(e.getAttribute('src') || e.getAttribute('href'));
-      });
+      // v124: se vuelven a pedir (ahora pasan por el service worker, que los guarda donde corresponde). Antes se
+      // guardaban a mano en "el último caché", elegido por orden alfabético (v9 quedaba después de v12).
+      var archivos = ['./', 'datos/zonas.json'];
       zonasCargadas.forEach(function (z) {
-        ['archivo', 'lugares', 'red', 'normas'].forEach(function (k) { if (z.zona[k]) archivos.push('datos/' + z.zona[k]); });
+        ['archivo', 'normas', 'obstaculos'].forEach(function (k) { if (z.zona[k]) archivos.push('datos/' + z.zona[k]); });
       });
-      caches.keys().then(function (nombres) {
-        var nombre = nombres.filter(function (n) { return n.indexOf('mapa-camiones-app-') === 0; }).sort().pop();
-        if (!nombre) return;
-        caches.open(nombre).then(function (c) {
-          archivos.forEach(function (u) { c.match(u).then(function (r) { if (!r) c.add(u).catch(function () {}); }); });
-        });
-      });
+      try {
+        if (sessionStorage.getItem('mapa-camiones:primera-guardada')) return;
+        sessionStorage.setItem('mapa-camiones:primera-guardada', '1');
+      } catch (e) { return; }
+      archivos.forEach(function (u, i) { setTimeout(function () { fetch(u).catch(function () {}); }, 3000 + i * 300); });
     });
   });
 }
@@ -8692,7 +8942,7 @@ gl.on('click', function (e) {
     return;
   }
   // v117: un negocio del mapa de fondo (McDonald's, farmacia, banco...): cartel con "Ir hasta acá"
-  var capasPoi = (gl.getStyle().layers || []).filter(function (l) { return l['source-layer'] === 'poi' && l.type === 'symbol'; })
+  var capasPoi = ((gl.getStyle() || {}).layers || []).filter(function (l) { return l['source-layer'] === 'poi' && l.type === 'symbol'; })
                                              .map(function (l) { return l.id; });
   var negocio = buscar(['negocios', 'negocios-otros'], 18)[0] ||   // v123: los de Overture
                 buscar(capasPoi, 16).filter(function (f) { return f.properties.name && f.geometry.type === 'Point'; })[0];

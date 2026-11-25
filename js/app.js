@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 122;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 123;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -263,6 +263,10 @@ function datosIcono(id) {
   if ((m = /^ic-r-(\d+)$/.exec(id))) return ['#' + m[1]];
   if ((m = /^ic-c-(.+)$/.exec(id))) return [(CONTROLES[m[1]] || CONTROLES.policial).icono, '#263238', '#eceff1'];
   if (id === 'ic-reporte') return ['📣', '#e65100', '#ffffff'];
+  if ((m = /^ic-n-(.+)$/.exec(id))) {   // v123: negocios de Overture
+    var t = TIPOS_OV.filter(function (x) { return x[1] === m[1]; })[0] || TIPO_OV_OTRO;
+    return [t[2], '#8a94a3', '#ffffff'];
+  }
   return null;
 }
 function dibujarIcono(emoji, borde, relleno) {
@@ -1480,7 +1484,7 @@ function ponerCapasPropias() {
   ponerRelieveYSatelite();   // v98: relieve y satélite (debajo de las calles)
   var nombres = gl.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0];
   var debajo = nombres ? nombres.id : undefined;
-  ['red', 'ruta', 'ruta-letras', 'curvas', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'trenes', 'lugares', 'controles', 'reportes'].forEach(function (id) {
+  ['red', 'ruta', 'ruta-letras', 'curvas', 'maniobra', 'puentes3d', 'peajes3d', 'peajes', 'restr', 'feriados', 'precision', 'trenes', 'negocios', 'lugares', 'controles', 'reportes'].forEach(function (id) {
     var op = { type: 'geojson', data: fuentes[id] || VACIO, tolerance: 0.4, buffer: 32 };
     if (id === 'ruta') op.lineMetrics = true;   // v105: para pintar de gris lo ya recorrido (line-progress)
     gl.addSource(id, op);
@@ -1590,6 +1594,11 @@ function ponerCapasPropias() {
     { id: 'precision-borde', type: 'line', source: 'precision', paint: { 'line-color': '#1a73e8', 'line-opacity': 0.4, 'line-width': 1 } },
     // de lejos: solo los que entran sin taparse y con lugar alrededor (MapLibre esconde los que se pisan; en una ciudad
     // quedan pocos, en la ruta casi todos), un poco más chicos
+    // v123: negocios de Overture (McDonald's, farmacias...) que no están en el mapa de fondo; solo de cerca
+    // los importantes (comida, estaciones, farmacias, hoteles, bancos...) desde zoom 15,5; los demás negocios recién bien de cerca
+    // (los "otros" van primero = debajo: en MapLibre la capa de arriba gana el lugar cuando dos íconos se pisan)
+    capaNegocios('negocios-otros', ['==', ['get', 'ic'], 'ic-n-tienda'], 17.6),
+    capaNegocios('negocios', ['!=', ['get', 'ic'], 'ic-n-tienda'], ZOOM_NEGOCIOS_GL),
     { id: 'lugares-lejos', type: 'symbol', source: 'lugares', minzoom: ZOOM_LUGARES_LEJOS - 1, maxzoom: ZOOM_LUGARES - 1,
       layout: { 'icon-image': ['get', 'ic'], 'icon-allow-overlap': false, 'icon-padding': 16, 'symbol-sort-key': ['get', 'pr'],
                 'icon-size': ['interpolate', ['linear'], ['zoom'], ZOOM_LUGARES_LEJOS - 1, 0.8, ZOOM_LUGARES - 1, 0.95] } },
@@ -3427,24 +3436,23 @@ var CATEGORIAS_BUSCAR = [   // palabra que escribís → categorías de Overture
   [/^almacen|^kiosco|^despensa/, /convenience/], [/^lavadero/, /laundry|car_wash/], [/^policia|^comisaria/, /police/],
   [/^estacionam|^playon/, /parking/], [/^correo/, /shipping|post/]
 ];
-function iconoOverture(cat) {
+var TIPOS_OV = [   // categoría de Overture → [clave del ícono, emoji, nombre]
+  [/fast_food/, 'rapida', '🍔', 'Comida rápida'], [/restaurant|eatery|food_service|food_and_drink/, 'comida', '🍽️', 'Restaurante'],
+  [/gas_station/, 'nafta', '⛽', 'Estación de servicio'], [/pharmacy/, 'farmacia', '💊', 'Farmacia'],
+  [/hotel|lodging|bed_and/, 'hotel', '🏨', 'Alojamiento'], [/hospital|clinic|medical/, 'salud', '🏥', 'Salud'],
+  [/bank|financial/, 'banco', '🏦', 'Banco'], [/^atm$/, 'cajero', '🏧', 'Cajero'],
+  [/superstore|grocery|food_and_beverage|convenience/, 'super', '🛒', 'Almacén / supermercado'], [/tire/, 'gomeria', '🛞', 'Gomería'],
+  [/automotive|vehicle/, 'taller', '🔧', 'Taller / servicio del auto'], [/cafe|coffee/, 'cafe', '☕', 'Café'],
+  [/parking/, 'parking', '🅿️', 'Estacionamiento'], [/police/, 'policia', '👮', 'Policía'], [/bar$|^bar_|pub/, 'bar', '🍺', 'Bar'],
+  [/hardware/, 'ferreteria', '🔩', 'Ferretería']
+];
+var TIPO_OV_OTRO = [null, 'tienda', '🏪', 'Negocio'];
+function tipoOverture(cat) {
   cat = cat || '';
-  if (/fast_food/.test(cat)) return '🍔 ';
-  if (/restaurant|eatery|food_service/.test(cat)) return '🍽️ ';
-  if (/gas_station/.test(cat)) return '⛽ ';
-  if (/pharmacy/.test(cat)) return '💊 ';
-  if (/hotel|lodging|bed_and/.test(cat)) return '🏨 ';
-  if (/hospital|clinic|medical/.test(cat)) return '🏥 ';
-  if (/bank|financial/.test(cat)) return '🏦 ';
-  if (/^atm$/.test(cat)) return '🏧 ';
-  if (/superstore|grocery|food_and_beverage|convenience/.test(cat)) return '🛒 ';
-  if (/tire/.test(cat)) return '🛞 ';
-  if (/automotive|vehicle/.test(cat)) return '🔧 ';
-  if (/cafe|coffee/.test(cat)) return '☕ ';
-  if (/parking/.test(cat)) return '🅿️ ';
-  if (/police/.test(cat)) return '👮 ';
-  return '🏪 ';
+  for (var i = 0; i < TIPOS_OV.length; i++) if (TIPOS_OV[i][0].test(cat)) return TIPOS_OV[i];
+  return TIPO_OV_OTRO;
 }
+function iconoOverture(cat) { return tipoOverture(cat)[2] + ' '; }
 function cargarIndiceNegocios() {
   if (!negociosOv.pedidoIndice) {
     negociosOv.pedidoIndice = bajarJSON('negocios.json', true).then(function (d) { negociosOv.indice = d; return d; },
@@ -3505,6 +3513,71 @@ function buscarEnNegocios(texto, c) {
   });
   return res;
 }
+// v123: los negocios de Overture también se DIBUJAN (el chofer: "existen todos, lo que sí sigo sin verlos en el mapa").
+// Con zoom ≥ ZOOM_NEGOCIOS_GL: los de la vista que no están ya en el mapa de fondo (mismo nombre a < 80 m) ni en los lugares
+// útiles; navegando no (para que siga liviano).
+var ZOOM_NEGOCIOS_GL = 15.5;
+function capaNegocios(id, filtro, minzoom) {
+  var letras = !!gl.getStyle().glyphs;   // el mapa de respaldo (OSM) no tiene letras
+  return { id: id, type: 'symbol', source: 'negocios', minzoom: minzoom, filter: filtro,
+    layout: Object.assign({ 'icon-image': ['get', 'ic'], 'icon-size': 0.62, 'icon-allow-overlap': false, 'icon-padding': 4,
+                            'symbol-sort-key': ['get', 'pr'] },
+                          letras ? { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 11,
+                            'text-offset': [0, 1.05], 'text-anchor': 'top', 'text-optional': true, 'text-max-width': 8 } : {}),
+    paint: letras ? { 'text-color': fondo.oscuro ? '#b8c3d1' : '#5b6573', 'text-halo-color': fondo.oscuro ? '#141b26' : '#ffffff',
+                      'text-halo-width': 1.2 } : {} };
+}
+var mapaNegocios = { timer: 0, firma: '' };
+function actualizarNegociosMapa() {
+  clearTimeout(mapaNegocios.timer);
+  mapaNegocios.timer = setTimeout(armarNegociosMapa, 250);
+}
+function armarNegociosMapa() {
+  if (gl.getZoom() < ZOOM_NEGOCIOS_GL - 0.3 || (typeof nav !== 'undefined' && nav.activo)) {
+    if (mapaNegocios.firma) { mapaNegocios.firma = ''; ponerDatos('negocios', []); }
+    return;
+  }
+  var c = gl.getCenter(), centro = { lat: c.lat, lng: c.lng };
+  if (!negociosOvListos(centro)) {
+    cargarNegociosCerca(centro).then(function () { if (negociosOvListos(centro)) actualizarNegociosMapa(); }).catch(function () {});
+    return;
+  }
+  var b = gl.getBounds(), s = b.getSouth(), n = b.getNorth(), o = b.getWest(), e = b.getEast();
+  var my = (n - s) * 0.25, mx = (e - o) * 0.25;
+  s -= my; n += my; o -= mx; e += mx;
+  // lo que ya dibuja el mapa de fondo (OpenStreetMap), para no repetir
+  var yaEsta = {};
+  if (gl.getSource('openmaptiles')) {
+    gl.querySourceFeatures('openmaptiles', { sourceLayer: 'poi' }).forEach(function (f) {
+      if (!f.properties.name || f.geometry.type !== 'Point') return;
+      var k = claveMarca(f.properties.name), q = f.geometry.coordinates;
+      (yaEsta[k] = yaEsta[k] || []).push(q);
+    });
+  }
+  var lista = [];
+  hojasNegociosCerca(centro).forEach(function (h) {
+    (negociosOv.hojas[h[4]] || []).forEach(function (r) {
+      if (r.lat < s || r.lat > n || r.lng < o || r.lng > e) return;
+      var otros = yaEsta[r.k];
+      if (otros && otros.some(function (q) { return Math.abs(q[1] - r.lat) < 0.0008 && Math.abs(q[0] - r.lng) < 0.001; })) return;
+      if (negocioCerrado(r.n, r)) return;
+      lista.push(r);
+    });
+  });
+  // los más cerca del centro primero (si hay muchos, MapLibre esconde los que se pisan)
+  lista.sort(function (a, b2) { return Math.hypot(a.lat - c.lat, a.lng - c.lng) - Math.hypot(b2.lat - c.lat, b2.lng - c.lng); });
+  lista = lista.slice(0, 1500);
+  var firma = lista.length + ':' + (lista[0] ? lista[0].k + lista[0].lat : '') + ':' + Math.round(s * 1000) + ':' + Math.round(o * 1000);
+  if (firma === mapaNegocios.firma) return;
+  mapaNegocios.firma = firma;
+  ponerDatos('negocios', lista.map(function (r, i) {
+    var t = tipoOverture(r.cat);
+    return { type: 'Feature', geometry: { type: 'Point', coordinates: [r.lng, r.lat] },
+             properties: { name: r.n, cat: r.cat, dir: r.dir, ov: 1, ic: 'ic-n-' + t[1], pr: (t === TIPO_OV_OTRO ? 2000 : 0) + i } };
+  }));
+}
+gl.on('moveend', actualizarNegociosMapa);
+
 // Junta los de Overture con los otros: si ya está el mismo nombre a menos de 300 m (Overture corre las posiciones), queda el otro
 function sumarOverture(lista, ovs) {
   var res = lista.slice();
@@ -8621,7 +8694,8 @@ gl.on('click', function (e) {
   // v117: un negocio del mapa de fondo (McDonald's, farmacia, banco...): cartel con "Ir hasta acá"
   var capasPoi = (gl.getStyle().layers || []).filter(function (l) { return l['source-layer'] === 'poi' && l.type === 'symbol'; })
                                              .map(function (l) { return l.id; });
-  var negocio = buscar(capasPoi, 16).filter(function (f) { return f.properties.name && f.geometry.type === 'Point'; })[0];
+  var negocio = buscar(['negocios', 'negocios-otros'], 18)[0] ||   // v123: los de Overture
+                buscar(capasPoi, 16).filter(function (f) { return f.properties.name && f.geometry.type === 'Point'; })[0];
   if (negocio) { abrirCartelNegocio(negocio); return; }
   // las zonas prohibidas (polígonos) van al final: si no, adentro de una zona cualquier toque abría la zona
   // y no se podían abrir las calles ni los puntos que hay adentro
@@ -8659,10 +8733,10 @@ function abrirCartelNegocio(f) {
   var p = f.properties, c = f.geometry.coordinates, ll = L.latLng(c[1], c[0]);
   var sub = p.subclass || p.class || '';
   var caja = document.createElement('div');
-  var tipo = TIPOS_NEGOCIO[sub] || TIPOS_NEGOCIO[p.class] || '';
+  var tipo = p.ov ? tipoOverture(p.cat)[3] : (TIPOS_NEGOCIO[sub] || TIPOS_NEGOCIO[p.class] || '');
   var d = ubicacion.ultima ? L.latLng(ubicacion.ultima).distanceTo(ll) : null;
-  caja.innerHTML = '<div class="cartel-tipo">' + iconoNegocio(sub).trim() + ' ' + esc(tipo || 'Lugar') + '</div>' +
-    '<div class="cartel-valor">' + esc(p.name) + '</div>' +
+  caja.innerHTML = '<div class="cartel-tipo">' + (p.ov ? iconoOverture(p.cat) : iconoNegocio(sub)).trim() + ' ' + esc(tipo || 'Lugar') + '</div>' +
+    '<div class="cartel-valor">' + esc(p.name) + '</div>' + (p.dir ? '<div class="cartel-calle">' + esc(p.dir) + '</div>' : '') +
     (d != null ? '<div class="cartel-calle">A ' + esc(textoDistancia(d)) + ' de vos (en línea recta)</div>' : '');
   var ir = document.createElement('button');
   ir.type = 'button';
@@ -8682,7 +8756,8 @@ function abrirCartelNegocio(f) {
   mas.innerHTML = '<a class="cartel-boton fotos" target="_blank" rel="noopener" href="https://www.google.com/maps/search/' +
     encodeURIComponent(p.name) + '/@' + c[1] + ',' + c[0] + ',18z">Ver fotos, horario y opiniones (Google)</a>' +
     botonReportar(ll, 'Negocio del mapa: ' + p.name + ' (¿cerró o está mal?)') +
-    '<div class="cartel-fuente">Dato de OpenStreetMap: puede estar desactualizado. Si cerró, avisá con "Reportar".</div>';
+    '<div class="cartel-fuente">Dato de ' + (p.ov ? 'Overture Maps (Meta, Microsoft y otros)' : 'OpenStreetMap') +
+    ': puede estar desactualizado. Si cerró, avisá con "Reportar".</div>';
   caja.appendChild(mas);
   abrirCartel(ll, caja);
 }

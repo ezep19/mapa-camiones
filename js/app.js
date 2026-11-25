@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 119;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 120;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3365,6 +3365,54 @@ function juntarNegocios(lista) {
   return res;
 }
 
+// ===== v120: CADENAS CONOCIDAS AUNQUE ESTÉN MAL ESCRITAS (el chofer buscó "mac donals" y no salía nada) =====
+// Se compara el texto sin espacios ni signos ("mac" = "mc"): igual, empieza igual (mientras escribís) o con 1–2 letras distintas.
+var MARCAS = ["McDonald's", 'Burger King', 'Mostaza', 'Subway', 'KFC', "Wendy's", 'Starbucks', 'Havanna', 'Grido', 'Freddo',
+              'Café Martínez', 'Pizza Hut', 'Bonafide', 'YPF', 'Shell', 'Axion', 'Puma', 'Gulf', 'Refinor', 'Dapsa', 'Voy',
+              'Carrefour', 'Coto', 'Disco', 'Jumbo', 'Vea', 'Changomas', 'La Anónima', 'Día', 'Walmart', 'Makro', 'Vital', 'Maxiconsumo',
+              'Diarco', 'Yaguar', 'Easy', 'Sodimac', 'Farmacity', 'Rapipago', 'Pago Fácil', 'Banco Nación', 'Banco Provincia',
+              'Santander', 'Galicia', 'BBVA', 'Macro', 'Correo Argentino', 'OCA', 'Andreani', 'Mercado Libre', 'Full', 'Spot', 'Automóvil Club Argentino'];
+var ALIAS_MARCAS = { mcdonalds: "McDonald's", mcdonald: "McDonald's", mcdonals: "McDonald's", mcdonal: "McDonald's",
+                     macdonals: "McDonald's", burguerking: 'Burger King', burgerkin: 'Burger King', aca: 'Automóvil Club Argentino',
+                     automovilclub: 'Automóvil Club Argentino', farmasity: 'Farmacity', farmacitty: 'Farmacity',
+                     bancodelanacion: 'Banco Nación', bancodelaprovincia: 'Banco Provincia', supermercadodia: 'Día', laanonima: 'La Anónima' };
+function claveMarca(t) { return sinTildes(t).replace(/\bmac\s*/g, 'mc').replace(/[^a-z0-9]/g, ''); }
+function distanciaLetras(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 9;
+  var ant = [], i, j;
+  for (j = 0; j <= b.length; j++) ant[j] = j;
+  for (i = 1; i <= a.length; i++) {
+    var act = [i];
+    for (j = 1; j <= b.length; j++) act[j] = Math.min(ant[j] + 1, act[j - 1] + 1, ant[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    ant = act;
+  }
+  return ant[b.length];
+}
+var marcasClaves = null;
+function marcaDe(texto) {
+  var k = claveMarca(texto);
+  if (k.length < 3) return null;
+  if (!marcasClaves) {
+    marcasClaves = MARCAS.map(function (m) { return [claveMarca(m), m]; });
+    Object.keys(ALIAS_MARCAS).forEach(function (a) { marcasClaves.push([a, ALIAS_MARCAS[a]]); });
+  }
+  var mejor = null;
+  marcasClaves.forEach(function (x) {
+    var d = x[0] === k ? 0 : (k.length >= 4 && x[0].indexOf(k) === 0) ? 0.5 :
+            distanciaLetras(k, x[0]) <= (x[0].length >= 7 ? 2 : x[0].length >= 5 ? 1 : 0) ? 1 : 9;
+    if (d < 9 && (!mejor || d < mejor.d)) mejor = { d: d, m: x[1] };
+  });
+  return mejor ? mejor.m : null;
+}
+// Lo que se le pide aparte al buscador: el nombre bien escrito de la cadena y la forma sin apóstrofo
+function variantesDeBusqueda(texto) {
+  var v = [], m = marcaDe(texto);
+  function sumar(t) { if (t && t.toLowerCase() !== texto.toLowerCase() && v.indexOf(t) < 0) v.push(t); }
+  if (m) { sumar(m); if (/['’´`]/.test(m)) sumar(m.replace(/['’´`]/g, '')); }
+  if (/['’´`]/.test(texto)) sumar(texto.replace(/['’´`]/g, ''));
+  return v.slice(0, 2);
+}
+
 function buscarPhoton(cual, texto, conRespaldo) {
   var esParada = /^p\d/.test(cual);
   var lista = document.getElementById('resultados-' + cual);
@@ -3380,12 +3428,14 @@ function buscarPhoton(cual, texto, conRespaldo) {
     pedirPhoton(base + '&limit=10&osm_tag=place:city&osm_tag=place:town&osm_tag=place:village' + q, ctrl).catch(nada),
     // v116: location_bias_scale bajo = lo cercano pesa mucho más ("McDonald's" en Mar del Plata da los de Mar del Plata)
     pedirPhoton(base + '&limit=20&location_bias_scale=0.1&zoom=12&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4) + q, ctrl).catch(nada),
-    // "McDonald's" y "McDonalds": en el mapa están escritos de las dos formas
-    /['’´`]/.test(texto) ? pedirPhoton(base + '&limit=10&location_bias_scale=0.1&zoom=12&lat=' + c.lat.toFixed(4) + '&lon=' +
-                           c.lng.toFixed(4) + '&q=' + encodeURIComponent(texto.replace(/['’´`]/g, '')), ctrl).catch(nada) : null
-  ]).then(function (r) {
+  ].concat(variantesDeBusqueda(texto).map(function (v) {
+    // v120: "McDonald's" y "McDonalds" (en el mapa están de las dos formas) y las cadenas mal escritas ("mac donals")
+    return pedirPhoton(base + '&limit=12&location_bias_scale=0.1&zoom=12&lat=' + c.lat.toFixed(4) + '&lon=' +
+                       c.lng.toFixed(4) + '&q=' + encodeURIComponent(v), ctrl).catch(nada);
+  }))).then(function (r) {
     if (abortado || document.getElementById('ruta-' + cual).value.trim() !== texto) return;   // ya escribió otra cosa
-    var pueblos = r[0], cerca = r[1] || r[2] ? (r[1] || []).concat(r[2] || []) : null;
+    var pueblos = r[0], extra = r.slice(1).filter(Boolean);
+    var cerca = extra.length ? [].concat.apply([], extra) : null;
     if (!pueblos && !cerca) {   // los dos fallaron (¿sin señal?): quedan las de la lista propia
       if (conRespaldo && !locales.length) buscarNominatim(cual, texto);
       else if (!locales.length) lista.innerHTML = '<li class="ruta-cargando">No pude buscar. Revisá la conexión.</li>';
@@ -3424,7 +3474,7 @@ function buscarPhoton(cual, texto, conRespaldo) {
       vistos[nombre] = true;
       calles.push({ icono: '📍 ', etiqueta: nombre, nombre: nombre, lat: ll.lat, lng: ll.lng });
     });
-    negocios = juntarNegocios(negocios.concat(lugaresQueCoinciden(texto, c)));
+    negocios = juntarNegocios(negocios.concat(lugaresQueCoinciden(marcaDe(texto) || texto, c)));
     // con número ("Colón 2500") primero las direcciones; si no, primero ciudades y pueblos
     var res;
     var ciudadExacta = lugares.some(function (o) { return sinTildes(o.ciudad || o.nombre || '').indexOf(sinTildes(texto)) === 0; });

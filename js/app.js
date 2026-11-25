@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 128;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 129;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -6731,7 +6731,13 @@ var grabada = { el: null, cola: [], sonando: false, bajadas: false, enMemoria: {
 var VOCES_GRABADAS = { elena: 'Elena', tomas: 'Tomás', daniela: 'Daniela' };
 voz.grabada = leerGuardado('mapa-camiones:voz-grabada');
 if (!VOCES_GRABADAS[voz.grabada]) voz.grabada = 'elena';
-function urlClip(k) { return voz.grabada === 'daniela' ? 'voz/' + k + '.wav' : 'voz/' + voz.grabada + '/' + k + '.mp3'; }
+// v129: las frases que se volvieron a grabar llevan un número en la dirección: así el teléfono baja la nueva (las
+// frases quedan guardadas "para siempre" y, si no, seguiría sonando la vieja). Al regrabar otra, sumarla acá.
+var FRASES_REGRABADAS = { prueba: 2 };   // 25/11/2026: "Soy la voz de Buena Ruta"
+function urlClip(k) {
+  var u = voz.grabada === 'daniela' ? 'voz/' + k + '.wav' : 'voz/' + voz.grabada + '/' + k + '.mp3';
+  return FRASES_REGRABADAS[k] ? u + '?v=' + FRASES_REGRABADAS[k] : u;
+}
 function reproductor() {
   if (!grabada.el) {
     grabada.el = new Audio();
@@ -6946,7 +6952,7 @@ function probarVoz() {
     bajarVozGrabada();
     sonar([urlClip('prueba')]);
     if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
-    mostrarMensaje('🔊 Tiene que sonar "Hola, soy la voz del mapa para camiones". Si no escuchás nada, ' +
+    mostrarMensaje('🔊 Tiene que sonar "Hola, soy la voz de Buena Ruta". Si no escuchás nada, ' +
                    'subí el volumen con los botones del costado del teléfono (con el silencio puesto también tiene que sonar).');
     ocultarMensajeLuego(12000);
     return;
@@ -6958,7 +6964,7 @@ function probarVoz() {
   setTimeout(function () { probarVoz2(voces, es, hubo); }, 900);
 }
 function probarVoz2(voces, es, hubo) {
-  decirFrase('Hola. Soy la voz del mapa para camiones. Si me escuchás, la voz anda bien.', true, function (ok, detalle) {
+  decirFrase('Hola. Soy la voz de Buena Ruta. Si me escuchás, la voz anda bien.', true, function (ok, detalle) {
     var datos = ' (voces en español: ' + es.length + ' de ' + voces.length + (detalle && ok ? '; modo ' + detalle : '') +
                 ')';
     if (ok) {

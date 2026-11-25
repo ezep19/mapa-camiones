@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 120;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 122;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -3321,7 +3321,7 @@ function direccionPhoton(p) {
 }
 function negocioCerrado(nombre, ll) {
   return (correccionesMapa.sacar || []).some(function (x) {
-    return x.nombre && sinTildes(x.nombre) === sinTildes(nombre) && L.latLng(ll).distanceTo([x.lat, x.lon]) < 80;
+    return x.nombre && claveMarca(x.nombre) === claveMarca(nombre) && L.latLng(ll).distanceTo([x.lat, x.lon]) < 150;
   });
 }
 function opcionNegocio(nombre, icono, direccion, ll, desde) {
@@ -3413,12 +3413,120 @@ function variantesDeBusqueda(texto) {
   return v.slice(0, 2);
 }
 
+// ===== v121: NEGOCIOS DE OVERTURE EN EL BUSCADOR (el chofer: "solo salen dos o tres McDonald's en Mar del Plata y hay
+// más; si faltan esos deben faltar muchos más negocios"). OpenStreetMap tiene pocos negocios; Overture (Meta, Microsoft...)
+// ~880.000 con dirección. datos/negocios.json = índice de pedazos (scripts/hacer_negocios.py); se bajan solo los pedazos de
+// cerca de donde buscás (±6 km, máx. 6, ~100 KB cada uno). Funciona también sin señal si ya se bajaron.
+var negociosOv = { indice: null, pedidoIndice: null, hojas: {}, pedidas: {} };
+var CATEGORIAS_BUSCAR = [   // palabra que escribís → categorías de Overture
+  [/^farmac/, /pharmacy/], [/^restaur|^parrill|^comida|^comer/, /restaurant|eatery|food_service|food_and_drink/],
+  [/^hotel|^hosped|^alojam|^motel|^dormir/, /hotel|lodging|bed_and_breakfast/], [/^banco/, /bank/], [/^cajero/, /^atm$/],
+  [/^hospital|^clinica|^guardia|^sanatorio/, /hospital|clinic/], [/^estacion|^nafta|^combust|^gasoil|^surtidor/, /gas_station/],
+  [/^gomer|^neumat|^cubierta/, /tire/], [/^taller|^mecanic/, /automotive_service|automotive_repair|vehicle_service/],
+  [/^ferret/, /hardware/], [/^cafe|^cafeteria/, /cafe|coffee/], [/^supermerc|^super$|^hiper/, /superstore|grocery|supermarket/],
+  [/^almacen|^kiosco|^despensa/, /convenience/], [/^lavadero/, /laundry|car_wash/], [/^policia|^comisaria/, /police/],
+  [/^estacionam|^playon/, /parking/], [/^correo/, /shipping|post/]
+];
+function iconoOverture(cat) {
+  cat = cat || '';
+  if (/fast_food/.test(cat)) return '🍔 ';
+  if (/restaurant|eatery|food_service/.test(cat)) return '🍽️ ';
+  if (/gas_station/.test(cat)) return '⛽ ';
+  if (/pharmacy/.test(cat)) return '💊 ';
+  if (/hotel|lodging|bed_and/.test(cat)) return '🏨 ';
+  if (/hospital|clinic|medical/.test(cat)) return '🏥 ';
+  if (/bank|financial/.test(cat)) return '🏦 ';
+  if (/^atm$/.test(cat)) return '🏧 ';
+  if (/superstore|grocery|food_and_beverage|convenience/.test(cat)) return '🛒 ';
+  if (/tire/.test(cat)) return '🛞 ';
+  if (/automotive|vehicle/.test(cat)) return '🔧 ';
+  if (/cafe|coffee/.test(cat)) return '☕ ';
+  if (/parking/.test(cat)) return '🅿️ ';
+  if (/police/.test(cat)) return '👮 ';
+  return '🏪 ';
+}
+function cargarIndiceNegocios() {
+  if (!negociosOv.pedidoIndice) {
+    negociosOv.pedidoIndice = bajarJSON('negocios.json', true).then(function (d) { negociosOv.indice = d; return d; },
+      function (e) { negociosOv.pedidoIndice = null; throw e; });
+  }
+  return negociosOv.pedidoIndice;
+}
+function hojasNegociosCerca(c) {
+  var d = negociosOv.indice;
+  if (!d) return [];
+  var m = 0.06;
+  return d.hojas.filter(function (h) { return h[0] < c.lat + m && h[2] > c.lat - m && h[1] < c.lng + m && h[3] > c.lng - m; })
+    .sort(function (a, b) {
+      return Math.hypot((a[0] + a[2]) / 2 - c.lat, (a[1] + a[3]) / 2 - c.lng) - Math.hypot((b[0] + b[2]) / 2 - c.lat, (b[1] + b[3]) / 2 - c.lng);
+    }).slice(0, 6);
+}
+// Baja (si falta) los pedazos de cerca de c; devuelve una promesa que se cumple cuando están todos
+function cargarNegociosCerca(c) {
+  return cargarIndiceNegocios().then(function () {
+    var cats = negociosOv.indice.cat;
+    return Promise.all(hojasNegociosCerca(c).map(function (h) {
+      var a = h[4];
+      if (!negociosOv.pedidas[a]) {
+        negociosOv.pedidas[a] = bajarJSON('negocios/' + a, true).then(function (d) {
+          // se preparan una sola vez: nombre para comparar y sus palabras
+          negociosOv.hojas[a] = d.p.map(function (r) {
+            var n = sinTildes(r[0]);
+            return { n: r[0], k: claveMarca(r[0]), w: n.split(' '), cat: cats[r[1]] || '', lat: r[2] / 1e5, lng: r[3] / 1e5, dir: r[4] };
+          });
+        }, function (e) { delete negociosOv.pedidas[a]; console.warn(e); });
+      }
+      return negociosOv.pedidas[a];
+    }));
+  });
+}
+function negociosOvListos(c) {
+  var hs = hojasNegociosCerca(c);
+  return hs.length > 0 && hs.every(function (h) { return negociosOv.hojas[h[4]]; });
+}
+// Los negocios de Overture que coinciden con lo que escribiste (por cadena, por palabras del nombre o por tipo)
+function buscarEnNegocios(texto, c) {
+  var res = [];
+  if (!negociosOv.indice) return res;
+  var marca = marcaDe(texto), km = marca ? claveMarca(marca) : null;
+  var palabras = sinTildes(texto).split(' ').filter(function (w) { return w && !PALABRAS_SUELTAS[w]; });
+  if (!palabras.length) return res;
+  var cat = null;
+  CATEGORIAS_BUSCAR.forEach(function (x) { if (!cat && palabras.length === 1 && x[0].test(palabras[0])) cat = x[1]; });
+  hojasNegociosCerca(c).forEach(function (h) {
+    (negociosOv.hojas[h[4]] || []).forEach(function (r) {
+      var ok = (km && r.k.indexOf(km) === 0) || (cat && cat.test(r.cat)) ||
+               palabras.every(function (w) { return r.w.some(function (x) { return x.indexOf(w) === 0; }); });
+      if (!ok || negocioCerrado(r.n, r)) return;
+      var o = opcionNegocio(r.n, iconoOverture(r.cat), r.dir, r, c);
+      o.ov = true;
+      res.push(o);
+    });
+  });
+  return res;
+}
+// Junta los de Overture con los otros: si ya está el mismo nombre a menos de 300 m (Overture corre las posiciones), queda el otro
+function sumarOverture(lista, ovs) {
+  var res = lista.slice();
+  ovs.sort(function (a, b) { return a.d - b.d; }).slice(0, 60).forEach(function (o) {
+    if (res.some(function (x) { return x.clave === o.clave && L.latLng(x.lat, x.lng).distanceTo([o.lat, o.lng]) < 300; })) return;
+    res.push(o);
+  });
+  return res;
+}
+
 function buscarPhoton(cual, texto, conRespaldo) {
   var esParada = /^p\d/.test(cual);
   var lista = document.getElementById('resultados-' + cual);
   if (sugerencia.ctrl) sugerencia.ctrl.abort();
   var ctrl = sugerencia.ctrl = window.AbortController ? new AbortController() : null;
   var c = puntoDeBusqueda(), q = '&q=' + encodeURIComponent(texto);
+  var ovAntes = negociosOvListos(c);
+  if (!ovAntes && !esParada) cargarNegociosCerca(c).then(function () {
+    // llegaron después de armar la lista: se vuelve a buscar (si seguís con el mismo texto)
+    var input = document.getElementById('ruta-' + cual);
+    if (input && input.value.trim() === texto && negociosOvListos(c) && sugerencia.ultimoArmado === texto) buscarPhoton(cual, texto, conRespaldo);
+  }).catch(function () {});
   var base = 'https://photon.komoot.io/api/?bbox=-73.6,-55.1,-53.6,-21.7';
   var locales = ciudadesQueCoinciden(texto);
   if (conRespaldo && !locales.length) { lista.hidden = false; lista.innerHTML = '<li class="ruta-cargando">Buscando...</li>'; }
@@ -3437,6 +3545,8 @@ function buscarPhoton(cual, texto, conRespaldo) {
     var pueblos = r[0], extra = r.slice(1).filter(Boolean);
     var cerca = extra.length ? [].concat.apply([], extra) : null;
     if (!pueblos && !cerca) {   // los dos fallaron (¿sin señal?): quedan las de la lista propia
+      var sinSenal = esParada ? [] : juntarNegocios(sumarOverture(lugaresQueCoinciden(marcaDe(texto) || texto, c), buscarEnNegocios(texto, c)));
+      if (sinSenal.length) { mostrarOpciones(cual, locales.concat(sinSenal.slice(0, 10))); return; }   // v121
       if (conRespaldo && !locales.length) buscarNominatim(cual, texto);
       else if (!locales.length) lista.innerHTML = '<li class="ruta-cargando">No pude buscar. Revisá la conexión.</li>';
       return;
@@ -3475,6 +3585,8 @@ function buscarPhoton(cual, texto, conRespaldo) {
       calles.push({ icono: '📍 ', etiqueta: nombre, nombre: nombre, lat: ll.lat, lng: ll.lng });
     });
     negocios = juntarNegocios(negocios.concat(lugaresQueCoinciden(marcaDe(texto) || texto, c)));
+    if (!esParada) negocios = juntarNegocios(sumarOverture(negocios, buscarEnNegocios(texto, c)));   // v121
+    sugerencia.ultimoArmado = texto;
     // con número ("Colón 2500") primero las direcciones; si no, primero ciudades y pueblos
     var res;
     var ciudadExacta = lugares.some(function (o) { return sinTildes(o.ciudad || o.nombre || '').indexOf(sinTildes(texto)) === 0; });
@@ -3533,7 +3645,8 @@ function prepararCampo(cual) {
     if (ev.key === 'Enter') { ev.preventDefault(); buscarDireccion(cual); }
   });
   campo.addEventListener('input', function () { sugerir(cual, false); });
-  campo.addEventListener('focus', cargarCiudades);   // la lista de ciudades (20 KB) se baja la primera vez que se toca
+  campo.addEventListener('focus', cargarCiudades);
+  if (!/^p\d/.test(cual)) campo.addEventListener('focus', function () { cargarNegociosCerca(puntoDeBusqueda()).catch(function () {}); });   // v121   // la lista de ciudades (20 KB) se baja la primera vez que se toca
   // al tocar el campo: elegir todo (para escribir encima) y, si "Hasta" está vacío, mostrar los recientes
   campo.addEventListener('focus', function () {
     if (/^Mi ubicación$|^Punto en el mapa/.test(campo.value)) campo.select();

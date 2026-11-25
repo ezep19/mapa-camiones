@@ -13,7 +13,7 @@
    10. Utilidades
 */
 'use strict';
-var VERSION_APP = 124;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
+var VERSION_APP = 125;   // se muestra abajo en "Qué mostrar" (para saber si el celular tiene la última)
 
 // ===== 1. Configuración de capas y colores =====
 // forma: 'linea', 'punteada' o 'punto' (los puntos se dibujan como círculo)
@@ -483,7 +483,7 @@ var botonDiaNoche = crearBotonMapa('boton-dia-noche', 'Cambiar a mapa de noche',
   revisarNoche();
   ponerBotonDiaNoche();
   mostrarMensaje(modoNoche === 'oscuro' ? '🌙 Mapa de noche.' : '☀️ Mapa de día.');
-  setTimeout(ocultarMensaje, 2000);
+  ocultarMensajeLuego(2000);
 });
 function ponerBotonDiaNoche() {
   var noche = esDeNoche();
@@ -507,7 +507,7 @@ var botonBrujula = crearBotonMapa('boton-brujula', 'Poner el norte arriba',
     if (typeof nav !== 'undefined' && nav.activo) { cambiarRumbo(!nav.rumbo); return; }
     if (botonBrujula.classList.contains('al-norte')) {
       mostrarMensaje('Para girar el mapa, girá dos dedos sobre el mapa. Tocá la brújula para volver al norte.');
-      setTimeout(ocultarMensaje, 3500);
+      ocultarMensajeLuego(3500);
     } else girarA(0);
   });
 var controlBrujula = { boton: botonBrujula };
@@ -958,15 +958,37 @@ function zonasEn(limites) {
 // Zonas por donde pasan uno o varios recorridos. No el rectángulo entero: en un viaje en diagonal
 // (Mar del Plata → Córdoba) el rectángulo toca casi todas las zonas y el celular bajaría varios MB de más.
 function zonasEnRutas(listas) {
-  var cajas = zonasIndice.map(function (z) { return { z: z, b: L.latLngBounds(z.limites).pad(0.02) }; });
+  // v125: más rápido en viajes largos: solo las zonas que tocan el rectángulo de la ruta, sin objetos por cada punto y
+  // salteando los puntos pegados al último que se miró (a menos de ~400 m). Se llama unas 10 veces por viaje largo.
+  var cajas = zonasIndice.map(function (z) {
+    var b = L.latLngBounds(z.limites).pad(0.02);
+    return { z: z, s: b.getSouth(), n: b.getNorth(), o: b.getWest(), e: b.getEast() };
+  });
   var res = {};
   listas.forEach(function (puntos) {
-    for (var i = 0; i < puntos.length; i++) {
+    if (!puntos.length) return;
+    var s0 = Infinity, n0 = -Infinity, o0 = Infinity, e0 = -Infinity, i;
+    for (i = 0; i < puntos.length; i++) {
+      if (puntos[i][0] < s0) s0 = puntos[i][0];
+      if (puntos[i][0] > n0) n0 = puntos[i][0];
+      if (puntos[i][1] < o0) o0 = puntos[i][1];
+      if (puntos[i][1] > e0) e0 = puntos[i][1];
+    }
+    var cerca = cajas.filter(function (c) { return !res[c.z.id] && c.s <= n0 && c.n >= s0 && c.o <= e0 && c.e >= o0; });
+    if (!cerca.length) return;
+    var ult = null;
+    for (i = 0; i < puntos.length; i++) {
       var a = puntos[i], b = puntos[i + 1] || a;
-      var n = Math.max(1, Math.ceil(L.latLng(a).distanceTo(b) / 2000));   // un punto cada 2 km como mínimo
+      var largo = Math.max(Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+      if (ult && i < puntos.length - 1 && largo < 0.004 && Math.abs(a[0] - ult[0]) < 0.004 && Math.abs(a[1] - ult[1]) < 0.004) continue;
+      ult = a;
+      var n = Math.max(1, Math.ceil(largo / 0.018));   // un punto cada ~2 km como mínimo
       for (var k = 0; k < n; k++) {
-        var ll = L.latLng(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n);
-        for (var j = 0; j < cajas.length; j++) if (!res[cajas[j].z.id] && cajas[j].b.contains(ll)) res[cajas[j].z.id] = cajas[j].z;
+        var lat = a[0] + (b[0] - a[0]) * k / n, lng = a[1] + (b[1] - a[1]) * k / n;
+        for (var j = 0; j < cerca.length; j++) {
+          var c = cerca[j];
+          if (!res[c.z.id] && lat >= c.s && lat <= c.n && lng >= c.o && lng <= c.e) res[c.z.id] = c.z;
+        }
       }
     }
   });
@@ -2108,7 +2130,7 @@ function armarPanelLugares() {
       cargarLugaresVista();
       if (ev.target.checked && mapa.getZoom() < ZOOM_LUGARES_LEJOS) {
         mostrarMensaje('Acercá el mapa para ver los lugares.');
-        setTimeout(ocultarMensaje, 3000);
+        ocultarMensajeLuego(3000);
       }
     });
     lista.appendChild(li);
@@ -2138,8 +2160,19 @@ function cargarReportes() {
         return r.text();
       });
     })
-    .then(function (csv) { if (csv) mostrarReportes(leerCSV(csv)); else dibujarReportes(); mandarPendientes(); })
-    .catch(function (e) { console.warn('Reportes:', e.message); try { dibujarReportes(); } catch (e2) { /* nada */ } })   // v124
+    .then(function (csv) {
+      if (csv) { mostrarReportes(leerCSV(csv)); if (csv.length < 200000) guardar('mapa-camiones:reportes-csv', csv); }   // v125
+      else dibujarReportes();
+      mandarPendientes();
+    })
+    .catch(function (e) {
+      console.warn('Reportes:', e.message);
+      // v125: sin señal, la última lista de reportes aprobados que se bajó (antes no se veía ninguno)
+      try {
+        var guardados = leerGuardado('mapa-camiones:reportes-csv');
+        if (guardados) mostrarReportes(leerCSV(guardados)); else dibujarReportes();
+      } catch (e2) { /* nada */ }
+    })
     .then(armarPanelReportes);
 }
 
@@ -2755,7 +2788,7 @@ function cambiarOpcion(o, prender) {
     guardar(CLAVE_LUGARES, lugaresPrendidos);
     mostrarLugares();
     cargarLugaresVista();
-    if (prender && mapa.getZoom() < ZOOM_LUGARES_LEJOS) { mostrarMensaje('Acercá el mapa para ver los lugares.'); setTimeout(ocultarMensaje, 3000); }
+    if (prender && mapa.getZoom() < ZOOM_LUGARES_LEJOS) { mostrarMensaje('Acercá el mapa para ver los lugares.'); ocultarMensajeLuego(3000); }
     return;
   }
   if (o.alReves) {
@@ -2773,7 +2806,7 @@ function cambiarOpcion(o, prender) {
   o.capas.forEach(function (id) { if (prender) delete apagadas[id]; else apagadas[id] = true; });
   guardar(CLAVE_CAPAS, apagadas);
   if (o.id === 'sin_salida' && prender && mapa.getZoom() < ZOOM_SIN_SALIDA) {
-    mostrarMensaje('Acercá el mapa para ver las calles sin salida.'); setTimeout(ocultarMensaje, 3000);
+    mostrarMensaje('Acercá el mapa para ver las calles sin salida.'); ocultarMensajeLuego(3000);
   }
   if (o.id === 'corte' && prender) mostrarCortes();
   repintar();
@@ -3115,7 +3148,7 @@ function cancelarRuta() {
   abrirPanelRuta(false);
   actualizarTrayecto();
   mostrarMensaje('Ruta cancelada.');
-  setTimeout(ocultarMensaje, 2500);
+  ocultarMensajeLuego(2500);
 }
 if (document.getElementById('btn-cancelar-ruta')) document.getElementById('btn-cancelar-ruta').addEventListener('click', cancelarRuta);
 
@@ -4032,6 +4065,7 @@ function pedirCaminos(a, b, evitar, conAlternativas) {
   // (403 = cupo del día o clave mala: 15 minutos; 429 = demasiados pedidos por minuto: 1 minuto; sin respuesta
   // legible —cuando se queda sin cupo contesta sin permiso CORS y el navegador lo ve como "Failed to fetch"—: 2 minutos)
   if (clave && ruta.orsHasta && Date.now() < ruta.orsHasta) clave = null;
+  if (clave && evitar && evitar.indexOf(ANILLO_CAPITAL) >= 0) clave = null;   // v125: no acepta áreas tan grandes (se perdían 2 pedidos)
   if (clave && evitar && evitar.length && L.latLng(a || ruta.desde.latlng).distanceTo(b || ruta.hasta.latlng) > 140000) clave = null;
   // v74: si OpenRouteService no está (cupo del día gastado, caído), TomTom (también calcula para camión; 20.000
   // rutas gratis por mes con la cuenta del chofer) y recién después Valhalla (el de respaldo, que respeta menos)
@@ -4375,6 +4409,10 @@ function idasYVueltas(puntos) {
       if (camino < 1000) continue;
       var recto = d(k, j);
       if (recto < 120) mejor = { i: k, j: j, camino: camino, recto: recto };   // la vuelta más larga que empieza acá
+      else {   // v125: está a `recto` metros: no puede volver a menos de 120 m sin recorrer (recto − 120) m más
+        var hastaM = acum[j] + recto - 120;
+        while (j + 1 < n && acum[j + 1] < hastaM) j++;
+      }
     }
     if (mejor) { res.push(mejor); k = mejor.j + 1; } else k += 3;
   }
@@ -5035,6 +5073,7 @@ function borrarRuta() {
   borrarViajeGuardado();   // v113
   quitarLineasRuta();
   ruta.opciones = null;
+  ruta.saleEn = null;   // v125
   ruta.paradas.slice().forEach(function (c) { sacarParada(c, true); });
   ['desde', 'hasta'].forEach(function (cual) {
     if (ruta.marcas[cual]) ruta.marcas[cual].remove();
@@ -5053,7 +5092,60 @@ function borrarRuta() {
 var DESCANSO = { cadaSeg: 2.5 * 3600, paradoReinicia: 15 * 60, sinEstacionKm: 150 };
 var TIPOS_DESCANSO = { parador: 0, estacionamiento: 5, combustible: 10 };   // cuanto menos, mejor para parar
 // Hora en que se pasa por el km (tiempo de la ruta, en proporción a la distancia)
-function horaEnKm(r, km) { return new Date(Date.now() + (r.segundos || 0) * Math.min(1, km / (r.km || 1)) * 1000); }
+// v125: A QUÉ HORA SALÍS (tarjeta de la ruta: "Salgo ahora ▾"). Antes todo suponía que salías ya: los feriados, el
+// clima, los descansos y los horarios de las ordenanzas (RP 307 a Tafí) se calculaban mal si armabas el viaje la noche
+// anterior. ruta.saleEn = momento elegido (o nada = ahora). Navegando siempre es "ahora".
+function horaSalida() {
+  var ahora = Date.now();
+  return (typeof nav !== 'undefined' && nav && nav.activo) || !ruta.saleEn || ruta.saleEn < ahora ? ahora : ruta.saleEn;
+}
+function horaEnKm(r, km) { return new Date(horaSalida() + (r.segundos || 0) * Math.min(1, km / (r.km || 1)) * 1000); }
+function opcionesSalida() {
+  var ahora = new Date(), res = [{ t: 0, texto: 'Salgo ahora' }];
+  [1, 2, 3, 4, 6, 8].forEach(function (h) { res.push({ t: ahora.getTime() + h * 3600000, texto: 'Salgo en ' + h + (h === 1 ? ' hora' : ' horas') }); });
+  [4, 5, 6, 7, 8, 10, 14, 18, 22].forEach(function (h) {
+    var d = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + 1, h, 0, 0);
+    res.push({ t: d.getTime(), texto: 'Salgo mañana a las ' + h });
+  });
+  return res;
+}
+function htmlSalida(r) {
+  var elegida = ruta.saleEn && ruta.saleEn > Date.now() ? ruta.saleEn : 0, llega = horaEnKm(r, r.km);
+  var ops = opcionesSalida();
+  if (elegida && !ops.some(function (o) { return Math.abs(o.t - elegida) < 60000; })) {
+    ops.push({ t: elegida, texto: 'Salgo ' + horaViaje(new Date(elegida)) });
+  }
+  return '<div class="ruta-salida">🕐 <select id="salgo-a" aria-label="A qué hora salís">' + ops.map(function (o) {
+    return '<option value="' + o.t + '"' + (Math.abs(o.t - elegida) < 60000 ? ' selected' : '') + '>' + esc(o.texto) + '</option>';
+  }).join('') + '</select><span>llegás ' + esc(horaViaje(llega)) + '</span></div>';
+}
+// Las ordenanzas con horario (prohibido de 5 a 23 los fines de semana...) se miran a la hora en que PASÁS por ahí, no a
+// la de ahora: rojo si vas a pasar en horario prohibido, amarillo si no.
+function ajustarHorarios(r) {
+  if (!r || !r.avisos || !r.puntos) return;
+  var cambio = false, acum = null;
+  r.avisos.forEach(function (a) {
+    var p = a.capa && a.capa.feature && a.capa.feature.properties;
+    if (!p || !p.horario || a.feriado || a.posible || a.orden == null) return;
+    if (p.peso_desde && camion && camion.peso <= p.peso_desde) return;
+    if (!acum) {
+      acum = [0];
+      for (var i = 1; i < r.puntos.length; i++) acum.push(acum[i - 1] + L.latLng(r.puntos[i - 1]).distanceTo(r.puntos[i]));
+    }
+    var total = acum[acum.length - 1] || 1, km = (acum[Math.min(a.orden, acum.length - 1)] || 0) / total * (r.km || 0);
+    var cuando = horaEnKm(r, km), prohibido = enHorario(p.horario, cuando), h = horarioDe(p) || {};
+    if (a.textoBase == null) { a.textoBase = String(a.texto).replace(/ \(hasta las [^)]*\)$/, ''); a.zonasBase = a.zonas; }
+    a.rojo = prohibido;
+    a.color = prohibido ? COLORES.no : COLORES.sin_dato;
+    a.texto = (prohibido ? a.textoBase.replace(/^Verificar: /, '') : a.textoBase) + ' (pasás ' + horaViaje(cuando) + ': ' +
+              (prohibido ? 'a esa hora está PROHIBIDO' + (h.texto ? ', ' + h.texto : '') + '; salí a otra hora o buscá otro camino)'
+                         : 'a esa hora se puede' + (h.texto ? '; prohibido ' + h.texto : '') + ')');
+    cambio = true;
+  });
+  if (!cambio) return;
+  r.avisos.sort(function (a, b) { return (a.rojo ? 0 : 1) - (b.rojo ? 0 : 1) || (a.orden || 0) - (b.orden || 0); });
+  r.rojos = r.avisos.filter(function (x) { return x.rojo; }).length;
+}
 function horaViaje(d) {
   var hoy = new Date(), dias = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) -
                                           new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate())) / 86400000);
@@ -5152,7 +5244,7 @@ function climaEnRuta(r) {
             '&longitude=' + muestras.map(function (x) { return pts[x.i][1].toFixed(3); }).join(',') +
             '&hourly=wind_gusts_10m,precipitation,weather_code,visibility,temperature_2m,snowfall' +
             '&past_days=1&forecast_days=3&timezone=GMT&timeformat=unixtime&wind_speed_unit=kmh';
-  var salida = Date.now();
+  var salida = horaSalida();   // v125
   r.climaPedido = conTiempoLimite(url, {}, 15).then(function (resp) {
     if (!resp.ok) throw new Error('Open-Meteo ' + resp.status);
     return resp.json();
@@ -5364,7 +5456,7 @@ function controlarDescanso() {
   mostrarMensaje('☕ Hace ' + duracion(manejo.seg) + ' que manejás. Te conviene parar a descansar.' +
                  (p ? ' Próximo lugar: ' + (p.nombre || LUGAR_POR_ID[p.tipo].uno) + ', a ' + textoDistancia((prox.km - hecho) * 1000) + '.' : ''));
   clearTimeout(manejo.timer);
-  manejo.timer = setTimeout(ocultarMensaje, 40000);
+  manejo.timer = ocultarMensajeLuego(40000);
   hablar('Ya llevás varias horas manejando. Te conviene parar a descansar un rato.');
 }
 
@@ -5577,7 +5669,7 @@ function tramosFeriadoEnRuta(puntos) {
 
 // Avisos de la ruta por las restricciones de feriado (se agregan a r.avisos; los rojos suman a r.rojos)
 function agregarFeriados(r) {
-  var versionF = feriados.version + '|' + (camion && camion.peso) + '|' + Math.floor(Date.now() / 600000);   // v124: + la hora (cada 10 min)
+  var versionF = feriados.version + '|' + (camion && camion.peso) + '|' + Math.floor(horaSalida() / 600000);   // v124: + la hora (cada 10 min); v125: la de salida
   if (!r || r.feriadosVersion === versionF) return;
   r.feriadosVersion = versionF;
   r.avisos = (r.avisos || []).filter(function (a) { return !a.feriado; });
@@ -5647,6 +5739,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   var r = opciones[indice];
   ruta.elegida = indice;
   opciones.forEach(agregarFeriados);   // v91: restricciones por feriado (dependen de la hora en que pasás)
+  opciones.forEach(ajustarHorarios);   // v125: ordenanzas con horario, a la hora en que pasás
   quitarLineasRuta();
   // la otra opción, en gris finito, para que se vea por dónde iría
   function linea(o, t, i) {
@@ -5668,6 +5761,7 @@ function mostrarRuta(indice, sinMoverMapa) {
   var html = '<div class="ruta-cabeza"><div class="ruta-tiempo"><b>' + duracion(r.segundos) + '</b><span>' +
              numero(r.km, 1) + ' km</span></div>' +
              '<button type="button" id="empezar-manejo" class="boton-ir">▶ Ir</button></div>';
+  if (!nav.activo && r.km > 30) html += htmlSalida(r);   // v125: a qué hora salís (viajes de más de 30 km)
   if (r.rojos) {
     html += '<div class="ruta-estado mal">⛔ Pasa por ' + r.rojos + (r.rojos === 1 ? ' lugar' : ' lugares') +
             ' donde NO pasás<small>' + explicarRojos(avisos) + '</small></div>';
@@ -5775,6 +5869,12 @@ function mostrarRuta(indice, sinMoverMapa) {
     mostrarRuta(indice, true);
   });
   if (botCompartir) botCompartir.addEventListener('click', compartirViaje);
+  var selSalida = document.getElementById('salgo-a');   // v125
+  if (selSalida) selSalida.addEventListener('change', function () {
+    ruta.saleEn = +selSalida.value || null;
+    (ruta.opciones || []).forEach(function (o) { o.climaPedido = null; o.clima = null; });   // el pronóstico es para otra hora
+    mostrarRuta(indice, true);
+  });
   salida.querySelectorAll('[data-opcion]').forEach(function (b) {
     b.addEventListener('click', function () { mostrarRuta(+b.getAttribute('data-opcion'), true); });
   });
@@ -5880,18 +5980,18 @@ function compartirViaje() {
   if (r && destino) {
     var totalM = nav.activo && nav.acum ? nav.acum[nav.acum.length - 1] : r.km * 1000;
     var faltaM = nav.activo ? Math.max(0, totalM - (nav.recorrido || 0)) : totalM;
-    var llega = new Date(Date.now() + (r.segundos || 0) * faltaM / (totalM || 1) * 1000);
+    var llega = new Date(horaSalida() + (r.segundos || 0) * faltaM / (totalM || 1) * 1000);
     var hora = ('0' + llega.getHours()).slice(-2) + ':' + ('0' + llega.getMinutes()).slice(-2);
     var otroDia = llega.toDateString() !== new Date().toDateString()
       ? ' del ' + ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][llega.getDay()] : '';
-    partes.push('🚛 Voy a ' + destino + '. ' + (nav.activo ? 'Me faltan ' + textoDistancia(faltaM) : 'Son ' + textoDistancia(faltaM) + ' (salgo ahora)') +
+    partes.push('🚛 Voy a ' + destino + '. ' + (nav.activo ? 'Me faltan ' + textoDistancia(faltaM) : 'Son ' + textoDistancia(faltaM) + (ruta.saleEn && ruta.saleEn > Date.now() ? ' (salgo ' + horaViaje(new Date(ruta.saleEn)) + ')' : ' (salgo ahora)')) +
                 ': llego a eso de las ' + hora + otroDia + '.');
   }
   if (pos) {
     var ll = L.latLng(pos);
     partes.push('Estoy acá: https://www.google.com/maps?q=' + ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5));
   }
-  if (!partes.length) { mostrarMensaje('Todavía no sé dónde estás: tocá el botón de ubicación (abajo a la derecha).'); setTimeout(ocultarMensaje, 5000); return; }
+  if (!partes.length) { mostrarMensaje('Todavía no sé dónde estás: tocá el botón de ubicación (abajo a la derecha).'); ocultarMensajeLuego(5000); return; }
   var texto = partes.join('\n');
   if (navigator.share) navigator.share({ text: texto }).catch(function () { /* lo cerró sin mandar */ });
   else window.open('https://wa.me/?text=' + encodeURIComponent(texto), '_blank', 'noopener');
@@ -6241,8 +6341,16 @@ function fecha(iso) {
   return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : iso;
 }
 
+// v125: cada cartel tiene su número; "ocultar a los N segundos" esconde solo ESE cartel (antes borraba cualquier otro
+// que hubiera aparecido en el medio, por ejemplo "No pude cargar...")
+var mensajeTurno = 0;
+function ocultarMensajeLuego(ms) {
+  var turno = mensajeTurno;
+  setTimeout(function () { if (turno === mensajeTurno) ocultarMensaje(); }, ms);
+}
 function mostrarMensaje(texto, esError) {
   var m = document.getElementById('mensaje');
+  mensajeTurno++;
   m.textContent = texto;
   m.className = 'mensaje' + (esError ? ' error' : '');
   m.hidden = false;
@@ -6299,7 +6407,7 @@ function cambiarRumbo(prender) {
   if (!nav.rumbo) girarA(0);
   else if (nav.activo && nav.ultimaPos) { nav.ultimoRumbo = null; seguirNavegacion(nav.ultimaPos); }
   mostrarMensaje(nav.rumbo ? 'El mapa gira hacia donde vas.' : 'Norte arriba: el mapa queda fijo.');
-  setTimeout(ocultarMensaje, 2500);
+  ocultarMensajeLuego(2500);
 }
 function ponerRumboBoton() {
   var b = document.getElementById('nav-rumbo');
@@ -6349,7 +6457,7 @@ function avisarVozFalla(motivo) {
     ? '🔇 El teléfono no está hablando' + (motivo ? ' (' + motivo + ')' : '') + '. Subí el volumen "multimedia" y ' +
       'revisá que tenga la voz en español (Ajustes → Texto a voz). Las indicaciones siguen en el cartel verde.'
     : '🔇 ' + textoSinVoz() + ' Las indicaciones siguen en el cartel verde.', true);
-  setTimeout(ocultarMensaje, 15000);
+  ocultarMensajeLuego(15000);
 }
 // Arma una frase según el modo: 'elegida' = una voz en español del teléfono; 'telefono' = la que el teléfono use
 function armarFrase(texto, modo) {
@@ -6682,7 +6790,7 @@ function probarVoz() {
     if (!nav.voz) { nav.voz = true; guardar('mapa-camiones:voz', true); }
     mostrarMensaje('🔊 Tiene que sonar "Hola, soy la voz del mapa para camiones". Si no escuchás nada, ' +
                    'subí el volumen con los botones del costado del teléfono (con el silencio puesto también tiene que sonar).');
-    setTimeout(ocultarMensaje, 12000);
+    ocultarMensajeLuego(12000);
     return;
   }
   var hubo = pitido();
@@ -6705,7 +6813,7 @@ function probarVoz2(voces, es, hubo) {
       mostrarMensaje('🔇 El teléfono no habló' + (detalle ? ' (error: ' + detalle + ')' : '') + datos +
                      '. Revisá en Ajustes del teléfono → "Texto a voz" que haya una voz en español instalada.', true);
     }
-    setTimeout(ocultarMensaje, 30000);
+    ocultarMensajeLuego(30000);
   });
 }
 
@@ -6822,7 +6930,7 @@ function empezarNavegacion(rutaElegida) {
   // si la voz quedó apagada (botón 🔇) o el navegador no habla, se dice en pantalla (antes no avisaba nada)
   if (!ruta.esRecalculo && !nav.voz) {
     mostrarMensaje('🔇 La voz está apagada. Tocá 🔇 abajo para prenderla.');
-    setTimeout(ocultarMensaje, 10000);
+    ocultarMensajeLuego(10000);
   } else if (!ruta.esRecalculo && !hayVoz()) avisarVozFalla();
   ruta.esRecalculo = false;
   pedirPantallaPrendida();
@@ -6875,7 +6983,7 @@ function terminarNavegacion(mensaje) {
   document.body.classList.remove('navegando');
   if (nav.wake) { try { nav.wake.release(); } catch (e) { /* nada */ } nav.wake = null; }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
-  if (mensaje) { mostrarMensaje(mensaje); setTimeout(ocultarMensaje, 6000); }
+  if (mensaje) { mostrarMensaje(mensaje); ocultarMensajeLuego(6000); }
 }
 
 // ===== v113: EL VIAJE NO SE PIERDE SI LA PÁGINA SE RECARGA =====
@@ -6956,7 +7064,7 @@ function ofrecerSeguirViaje() {
   caja.querySelector('.seguir-viaje-no').addEventListener('click', function () {
     borrarViajeGuardado();
     mostrarMensaje('Listo, borré ese viaje.');
-    setTimeout(ocultarMensaje, 2500);
+    ocultarMensajeLuego(2500);
   });
   caja.querySelector('.seguir-viaje-ir').addEventListener('click', function () {
     // con el toque: el iPhone deja sonar la voz y mantener la pantalla prendida (después ya no hay "toque")
@@ -6971,7 +7079,7 @@ function ofrecerSeguirViaje() {
       if (!ok) {
         borrarViajeGuardado();
         mostrarMensaje('No pude recuperar el viaje. Buscá el destino de nuevo en "¿A dónde vas?".', true);
-        setTimeout(ocultarMensaje, 7000);
+        ocultarMensajeLuego(7000);
       }
     });
   });
@@ -7086,7 +7194,7 @@ document.addEventListener('visibilitychange', function () {
   nav.primera = true; nav.reanudado = true;
   if (grabada.el && grabada.el.paused) { clearTimeout(grabada.guardia); grabada.cola = []; grabada.sonando = false; }
   mostrarMensaje('Volviste al mapa: sigo con la ruta desde donde estás.');
-  setTimeout(ocultarMensaje, 3500);
+  ocultarMensajeLuego(3500);
 });
 
 // Barra de abajo: "14:35 llegada" y "12 min · 7,4 km". El tiempo es el de la ruta (de auto), en proporción a lo que falta.
@@ -7165,6 +7273,21 @@ function seguirNavegacion(pos) {
   // mientras se recalcula, el mapa sigue al camión igual (si no, se iba de la pantalla justo cuando te perdiste)
   if (nav.recalculando) { nav.ultimaPos = pos; seguirConCamara(pos); return; }
   nav.ultimaPos = pos;
+  // v125: parado 25 segundos a menos de 120 m del destino (adentro de una planta, un puerto, un playón) = llegaste.
+  // Antes solo contaba llegar al final de la línea azul: si no, la ruta quedaba abierta y al otro día aparecía "Seguir el viaje".
+  // (solo si ya hiciste casi todo el camino: en un viaje de ida y vuelta la salida también queda al lado del destino)
+  if (ruta.hasta && ruta.hasta.latlng && nav.acum && nav.acum[nav.acum.length - 1] - (nav.recorrido || 0) < 2000 &&
+      L.latLng(pos).distanceTo(ruta.hasta.latlng) < 120 && velocidad.kmh != null && velocidad.kmh < 3) {
+    nav.quietoEnDestino = nav.quietoEnDestino || Date.now();
+    if (Date.now() - nav.quietoEnDestino > 25000) {
+      nav.quietoEnDestino = 0;
+      terminarNavegacion('Llegaste a destino.');
+      hablar('Llegaste a destino.', true);
+      borrarRuta();
+      actualizarTrayecto();
+      return;
+    }
+  } else nav.quietoEnDestino = 0;
   var u = ubicarEnRuta(pos);
   // ¿Te saliste de la ruta?
   var rumboGps = null;   // hacia dónde vas (con las últimas posiciones)
@@ -7518,7 +7641,7 @@ function pararEnLista(i) {
 // Agregar una parada en el camino y rehacer la ruta desde donde estás (sigue navegando)
 function pararEn(ll, nombre) {
   if (!nav.activo || !ruta.hasta) return;
-  if (ruta.paradas.length >= MAX_PARADAS) { mostrarMensaje('Ya tenés ' + MAX_PARADAS + ' paradas en la ruta.'); setTimeout(ocultarMensaje, 4000); return; }
+  if (ruta.paradas.length >= MAX_PARADAS) { mostrarMensaje('Ya tenés ' + MAX_PARADAS + ' paradas en la ruta.'); ocultarMensajeLuego(4000); return; }
   var cual = agregarParada(true);
   if (!cual) return;
   // va antes de las paradas que todavía no pasaste y quedan más adelante
@@ -8493,7 +8616,7 @@ function inclinacionViaje() { return modoLiviano ? 38 : VIAJE.inclinacion; }
     guardar(CLAVE_LIVIANO, modoLiviano);
     if (nav.activo) { ponerModoViaje(true); if (nav.ultimaPos) seguirConCamara(nav.ultimaPos); }
     mostrarMensaje(modoLiviano ? 'Modo liviano prendido: al manejar, menos 3D y más fluido.' : 'Modo liviano apagado.');
-    setTimeout(ocultarMensaje, 3000);
+    ocultarMensajeLuego(3000);
   });
 })();
 var VIAJE = { inclinacion: 58, vuelo: 2200 };   // v100: 58° (con 68° se trababa: bajaba y dibujaba mapa hasta el horizonte)
